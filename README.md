@@ -51,7 +51,7 @@ API_KEY=your_api_key_here
 
 ## CLI（命令行接口）
 ```
-python run_all.py --input ./images --out ./out --format jsonl --log-level info
+python run_all.py --input ./images --out ./out --format jsonl --log-level info --device cpu
 ```
 
 查看完整参数：
@@ -73,6 +73,13 @@ python run_all.py --help
 - `model_sn_ocr.jsonl`：最终识别结果（每行一个 JSON）
 - `debug_ocr_barcode.log`：识别过程日志
 默认输出在项目根目录；使用 `--out` 可指定输出根目录。
+
+## 量化统计
+CLI 会打印统计信息（示例字段）：
+- 处理总量 N、总耗时、平均单张耗时
+- SN 提取成功率
+- 正则校验通过率
+- 错误类型分布（barcode_fail / ocr_fail / regex_fail）
 
 ## 输出格式示例
 下面是一个简化的 JSONL 示例（单行）：
@@ -96,4 +103,4 @@ python run_all.py --help
 - GitHub 仓库不包含 `.env`，API Key 不会暴露。
 - 需要共享给别人使用时，私下发送 `.env` 文件即可。
 - 不建议将 API Key 写进代码或公开仓库。
- - 轮换 Key：替换 `.env` 中的 `API_KEY` 即可，无需改代码。
+- 轮换 Key：替换 `.env` 中的 `API_KEY` 即可，无需改代码。

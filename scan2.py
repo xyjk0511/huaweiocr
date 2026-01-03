@@ -484,6 +484,7 @@ def recognize_sn(sn_path: str, label_id: str = ""):
     append_debug(f"[SN] {tag}{os.path.basename(sn_path)}")
     codes = read_barcodes(sn_path)
     append_debug(f"[SN][BARCODE] {tag}{os.path.basename(sn_path)} | {codes}")
+    meta = {"barcode_found": bool(codes), "ocr_text_found": False}
 
     candidate_lines = filter_sn_lines(codes) or codes
     candidate_sns = []
@@ -494,39 +495,47 @@ def recognize_sn(sn_path: str, label_id: str = ""):
     candidate_sns = list(dict.fromkeys(candidate_sns))
 
     if len(candidate_sns) == 1:
-        return candidate_sns[0], f"[BARCODE] {'; '.join(codes)}", "barcode"
+        return candidate_sns[0], f"[BARCODE] {'; '.join(codes)}", "barcode", meta
 
     color_img = load_for_ocr_color(sn_path)
     if color_img is None:
         if codes:
-            return "", f"[BARCODE] {'; '.join(codes)}", "barcode_raw"
-        return "", "", "none"
+            return "", f"[BARCODE] {'; '.join(codes)}", "barcode_no_match", meta
+        return "", "", "none", meta
 
     text, concat, texts = ocr_text_with_details(color_img)
     append_debug(f"[SN][OCR_COLOR] {tag}{os.path.basename(sn_path)} | text={text!r} concat={concat!r}")
     append_debug(f"[SN][OCR_COLOR][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
+    if text or concat:
+        meta["ocr_text_found"] = True
     sn = extract_sn_from_text(concat or text)
     if sn:
-        return sn, text, "ocr"
+        return sn, text, "ocr", meta
 
     img = load_and_preprocess(sn_path, roi_bottom=True)
     text, concat, texts = ocr_text_with_details(img)
     append_debug(f"[SN][OCR_BIN] {tag}{os.path.basename(sn_path)} | text={text!r} concat={concat!r}")
     append_debug(f"[SN][OCR_BIN][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
+    if text or concat:
+        meta["ocr_text_found"] = True
     sn = extract_sn_from_text(concat or text)
     if sn:
-        return sn, text, "ocr_bin"
+        return sn, text, "ocr_bin", meta
 
     top_text, top_concat = ocr_sn_top_text(sn_path)
     append_debug(f"[SN][OCR_TOP] {tag}{os.path.basename(sn_path)} | text={top_text!r} concat={top_concat!r}")
+    if top_text or top_concat:
+        meta["ocr_text_found"] = True
     sn = extract_sn_from_text(top_concat or top_text)
     if sn:
-        return sn, top_text, "ocr_top"
+        return sn, top_text, "ocr_top", meta
 
     if codes:
-        return "", f"[BARCODE] {'; '.join(codes)}", "barcode_raw"
+        return "", f"[BARCODE] {'; '.join(codes)}", "barcode_no_match", meta
 
-    return "", text, "none"
+    if meta["ocr_text_found"]:
+        return "", top_text or text, "ocr_no_match", meta
+    return "", text, "none", meta
 
 
 def label_key(name: str) -> str:
@@ -548,6 +557,14 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     records = {}
     model_files = []
     sn_files = []
+    stats = {
+        "sn_total": 0,
+        "sn_attempted": 0,
+        "sn_success": 0,
+        "regex_fail": 0,
+        "barcode_fail": 0,
+        "ocr_fail": 0,
+    }
 
     for fname in os.listdir(MODEL_CROP_DIR):
         ext = os.path.splitext(fname)[1].lower()
@@ -577,12 +594,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             sn_code = sn_raw = ""
             model_src = "missing"
             sn_src = "missing"
+            sn_meta = {"barcode_found": False, "ocr_text_found": False}
 
             if "model_path" in item:
                 model_code, model_raw, model_src = recognize_model(item["model_path"], label_id=key)
 
             if "sn_path" in item:
-                sn_code, sn_raw, sn_src = recognize_sn(item["sn_path"], label_id=key)
+                sn_code, sn_raw, sn_src, sn_meta = recognize_sn(item["sn_path"], label_id=key)
 
             if sn_code.startswith("4E25A017") and model_code in {"", "S380-S8P"}:
                 model_code = "S380-S8P2T"
@@ -609,6 +627,22 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             )
 
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+            if "sn_path" in item:
+                stats["sn_total"] += 1
+                if sn_meta.get("barcode_found") or sn_meta.get("ocr_text_found"):
+                    stats["sn_attempted"] += 1
+                if sn_code:
+                    stats["sn_success"] += 1
+                else:
+                    if sn_meta.get("barcode_found") or sn_meta.get("ocr_text_found"):
+                        stats["regex_fail"] += 1
+                    if not sn_meta.get("barcode_found"):
+                        stats["barcode_fail"] += 1
+                    if not sn_meta.get("ocr_text_found"):
+                        stats["ocr_fail"] += 1
+
+    return stats
 
 
 if __name__ == "__main__":
