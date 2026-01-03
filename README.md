@@ -81,6 +81,17 @@ CLI 会打印统计信息（示例字段）：
 - 正则校验通过率
 - 错误类型分布（barcode_fail / ocr_fail / regex_fail）
 
+## Roadmap
+- CSV 导出与可配置字段映射
+- 更细的错误分类与可视化报告
+- CLI 增量处理与断点续跑
+- 轻量化发布（可选 LFS 或模型下载脚本）
+
+## Resume（可直接复用）
+- Built an end-to-end label recognition pipeline (crop -> barcode decode -> OCR -> regex validation) and exported structured results (JSONL) for batch processing on Windows.
+- Implemented secure configuration management using .env (API keys excluded from repo) and provided one-click execution via start.bat + CLI interface.
+- Improved robustness with multi-scale enhancement, ROI strategies, and failure logging; achieved X% extraction success rate on N real-world images.
+
 ## 输出格式示例
 下面是一个简化的 JSONL 示例（单行）：
 ```
