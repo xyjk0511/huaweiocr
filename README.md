@@ -49,6 +49,16 @@ API_KEY=your_api_key_here
 
 2) 双击 `start.bat` 启动流程。
 
+## CLI（命令行接口）
+```
+python run_all.py --input ./images --out ./out --format jsonl --log-level info
+```
+
+查看完整参数：
+```
+python run_all.py --help
+```
+
 ## 处理流程概览
 1) 读取 `new_images/` 中的原始图片。
 2) 阶段 1：检测并裁剪标签区域，保存到 `stage1_labels/`。
@@ -62,11 +72,12 @@ API_KEY=your_api_key_here
 - `stage2_fields/sn/`：序列号裁剪结果
 - `model_sn_ocr.jsonl`：最终识别结果（每行一个 JSON）
 - `debug_ocr_barcode.log`：识别过程日志
+默认输出在项目根目录；使用 `--out` 可指定输出根目录。
 
 ## 输出格式示例
 下面是一个简化的 JSONL 示例（单行）：
 ```
-{"file":"img_001.jpg","sn":"4E25XXXXXXXX","model":"S380-S8P2T","barcode":"CODE128","confidence":0.92}
+{"label_id":"img_001__label_1","model":"S380-S8P2T","sn":"4E25XXXXXXXX","model_src":"barcode","sn_src":"ocr","model_raw":"...","sn_raw":"..."}
 ```
 
 ## 鲁棒性策略

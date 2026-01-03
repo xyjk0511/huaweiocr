@@ -13,5 +13,5 @@ if "%API_KEY%"=="" (
   exit /b 1
 )
 
-python run_all.py
+python run_all.py --pause
 pause

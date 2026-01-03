@@ -8,6 +8,20 @@ from ocr import init_ocr, ocr_one_image
 from barcode import decode_small_patch
 from app_paths import ensure_models_installed
 
+# Simple log gating for CLI usage.
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
+
+def set_log_level(level: str) -> None:
+    global LOG_LEVEL
+    LOG_LEVEL = (level or "info").lower()
+
+def _log(msg: str, level: str = "info") -> None:
+    levels = {"debug": 10, "info": 20, "warn": 30, "error": 40}
+    cur = levels.get(LOG_LEVEL, 20)
+    val = levels.get(level, 20)
+    if val >= cur:
+        print(msg)
+
 # ===================== CONFIG =====================
 MODEL_CROP_DIR = r"stage2_fields\model"
 SN_CROP_DIR = r"stage2_fields\sn"
@@ -28,6 +42,22 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 ensure_models_installed()
 
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+def configure_paths(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None):
+    global MODEL_CROP_DIR, SN_CROP_DIR, OUT_JSONL, DEBUG_LOG_PATH
+    if out_dir:
+        MODEL_CROP_DIR = os.path.join(out_dir, "stage2_fields", "model")
+        SN_CROP_DIR = os.path.join(out_dir, "stage2_fields", "sn")
+        OUT_JSONL = os.path.join(out_dir, "model_sn_ocr.jsonl")
+        DEBUG_LOG_PATH = os.path.join(out_dir, "debug_ocr_barcode.log")
+    if model_dir:
+        MODEL_CROP_DIR = model_dir
+    if sn_dir:
+        SN_CROP_DIR = sn_dir
+    if out_jsonl:
+        OUT_JSONL = out_jsonl
+    if debug_log:
+        DEBUG_LOG_PATH = debug_log
 
 # ===================== OCR =====================
 OCR_ENGINE = None
@@ -505,7 +535,15 @@ def label_key(name: str) -> str:
 
 
 # ===================== MAIN =====================
-def main():
+def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level="info"):
+    set_log_level(log_level)
+    configure_paths(
+        out_dir=out_dir,
+        model_dir=model_dir,
+        sn_dir=sn_dir,
+        out_jsonl=out_jsonl,
+        debug_log=debug_log,
+    )
     start_debug_run()
     records = {}
     model_files = []
@@ -563,10 +601,11 @@ def main():
                 "sn_src": sn_src,
             }
 
-            print(
+            _log(
                 f"[{key}] "
                 f"MODEL={model_code} (M_SRC={model_src}) | "
-                f"SN={sn_code} (SN_SRC={sn_src})"
+                f"SN={sn_code} (SN_SRC={sn_src})",
+                "info",
             )
 
             f.write(json.dumps(out, ensure_ascii=False) + "\n")

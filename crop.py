@@ -6,6 +6,19 @@ import shutil
 import numpy as np
 from inference_sdk import InferenceHTTPClient
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
+
+def set_log_level(level: str) -> None:
+    global LOG_LEVEL
+    LOG_LEVEL = (level or "info").lower()
+
+def _log(msg: str, level: str = "info") -> None:
+    levels = {"debug": 10, "info": 20, "warn": 30, "error": 40}
+    cur = levels.get(LOG_LEVEL, 20)
+    val = levels.get(level, 20)
+    if val >= cur:
+        print(msg)
+
 def load_dotenv(path=".env"):
     if not os.path.exists(path):
         return
@@ -46,6 +59,20 @@ OUT_MODEL_DIR = os.path.join(STAGE2_DIR, "model")
 OUT_SN_DIR = os.path.join(STAGE2_DIR, "sn")
 MANIFEST_PATH = os.path.join(STAGE2_DIR, "manifest.jsonl")
 FAILED_DIR = os.path.join(STAGE2_DIR, "failed")
+
+def configure_paths(input_dir=None, out_dir=None):
+    global INPUT_DIR, STAGE1_DIR, STAGE2_DIR
+    global OUT_MODEL_DIR, OUT_SN_DIR, MANIFEST_PATH, FAILED_DIR, TMP_DIR
+    if input_dir:
+        INPUT_DIR = input_dir
+    if out_dir:
+        STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
+        STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
+    OUT_MODEL_DIR = os.path.join(STAGE2_DIR, "model")
+    OUT_SN_DIR = os.path.join(STAGE2_DIR, "sn")
+    MANIFEST_PATH = os.path.join(STAGE2_DIR, "manifest.jsonl")
+    FAILED_DIR = os.path.join(STAGE2_DIR, "failed")
+    TMP_DIR = os.path.join(STAGE1_DIR, "_tmp_infer")
 
 # 裁剪/过滤参数（按需微调）
 MIN_CONF_1 = 0.50
@@ -250,7 +277,7 @@ def infer_with_resize(original_img_bgr, original_img_path, model_id, max_side=16
 def stage1_crop_labels(img_path):
     img = read_image(img_path)
     if img is None:
-        print(f"❌ 读图失败: {img_path}")
+        _log(f"❌ 读图失败: {img_path}", "error")
         return []
 
     # 直接推理，不做额外过滤
@@ -274,7 +301,7 @@ def stage1_crop_labels(img_path):
         save_png(out_path, crop)
         out_paths.append(out_path)
 
-    print(f"Stage1: {os.path.basename(img_path)} -> {len(out_paths)} label crops")
+    _log(f"Stage1: {os.path.basename(img_path)} -> {len(out_paths)} label crops", "info")
     return out_paths
 
 # ==================== Stage 2：标签小图 -> model/sn 小块 ====================
@@ -303,7 +330,7 @@ def stage2_crop_fields(label_img_path):
     # Debug（保留你原本的调试逻辑）
     bn = os.path.basename(label_img_path)
     if bn in {"1__label_6.png", "2__label_6.png"} or bn.startswith("2dc0ee5e") or bn.startswith("358d508d"):
-        print(f"DEBUG {bn} RAW PREDS (R1):", json.dumps(preds1, ensure_ascii=False)[:2000])
+        _log(f"DEBUG {bn} RAW PREDS (R1): {json.dumps(preds1, ensure_ascii=False)[:2000]}", "debug")
 
     model_preds, sn_preds = parse_preds(preds1)
 
@@ -356,7 +383,9 @@ def stage2_crop_fields(label_img_path):
 
     return out
 
-def main():
+def main(input_dir=None, out_dir=None, log_level="info"):
+    set_log_level(log_level)
+    configure_paths(input_dir=input_dir, out_dir=out_dir)
     ensure_dirs()
     
     # 额外创建分类文件夹
@@ -369,7 +398,7 @@ def main():
 
     imgs = list_images(INPUT_DIR)
     if not imgs:
-        print(f"⚠️ {INPUT_DIR} 没有图片，把原始大图放进去再跑")
+        _log(f"⚠️ {INPUT_DIR} 没有图片，把原始大图放进去再跑", "warn")
         return
 
     # 清空 manifest（每次跑重新生成）
@@ -407,10 +436,10 @@ def main():
             elif (not has_sn) and (not has_model):
                 shutil.copy2(lp, os.path.join(MISS_BOTH_DIR, os.path.basename(lp)))
 
-    print(f"\n✅ 完成：Stage1 产出 {len(all_label_crops)} 张小图")
-    print(f"📊 统计：至少有一个字段 {ok_any} 张；两个字段都有 {ok_both} 张")
-    print(f"📄 结果清单：{MANIFEST_PATH}")
-    print(f"📂 失败分类：{MISS_SN_DIR} / {MISS_MODEL_DIR}")
+    _log(f"\n✅ 完成：Stage1 产出 {len(all_label_crops)} 张小图", "info")
+    _log(f"📊 统计：至少有一个字段 {ok_any} 张；两个字段都有 {ok_both} 张", "info")
+    _log(f"📄 结果清单：{MANIFEST_PATH}", "info")
+    _log(f"📂 失败分类：{MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
 
 if __name__ == "__main__":
     main()
