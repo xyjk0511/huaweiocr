@@ -13,11 +13,6 @@ This project is a local batch-processing tool for device label / barcode images.
 - Run barcode decoding and OCR on the cropped fields.
 - Output structured results (JSONL) and debug logs for tracing and tuning.
 
-## Demo
-Add a GIF or screenshot so people understand without reading code.
-
-- `docs/demo.gif`
-- `docs/screenshot.png`
 
 ## Pipeline
 ```
@@ -101,11 +96,6 @@ Single JSONL line:
 - Finer error taxonomy and visual reports
 - Incremental CLI processing with resume support
 - Lighter releases (optional LFS or model download scripts)
-
-## Resume bullets
-- Built an end-to-end label recognition pipeline (crop -> barcode decode -> OCR -> regex validation) and exported structured results (JSONL) for batch processing on Windows.
-- Implemented secure configuration management using .env (API keys excluded from repo) and provided one-click execution via start.bat + CLI interface.
-- Improved robustness with multi-scale enhancement, ROI strategies, and failure logging; achieved X% extraction success rate on N real-world images.
 
 ## FAQ
 - No results: check image clarity, angle, lighting; or tune crop/thresholds.
