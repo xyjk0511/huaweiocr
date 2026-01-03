@@ -1,5 +1,7 @@
 # HuaweiOCR
 
+[中文](README.md) | [English](README_EN.md)
+
 ## 一句话定义
 面向设备标签图片的自动化识别工具：裁剪字段 -> 条码识别 -> OCR -> 结构化导出（JSONL），提供 Windows 一键运行。
 
