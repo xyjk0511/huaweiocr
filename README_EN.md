@@ -1,6 +1,6 @@
 # HuaweiOCR
 
-[English](README_EN.md) | [中文](README.md)
+[English](README.md) | [中文](README_ZH.md)
 
 ## One-line summary
 An automated device-label recognition tool: crop fields -> barcode decode -> OCR -> structured export (JSONL), with Windows one-click run.
