@@ -1,5 +1,8 @@
 # HuaweiOCR
 
+## 一句话定义
+面向设备标签图片的自动化识别工具：裁剪字段 -> 条码识别 -> OCR -> 结构化导出（JSONL），提供 Windows 一键运行。
+
 ## 项目简介
 这是一个面向设备标签/条码图片的本地批处理工具，结合目标检测（Roboflow 推理）、条码识别与 OCR，自动提取设备型号（Model）与序列号（SN）。项目核心思路是“先定位，再识别”：
 
@@ -7,6 +10,17 @@
 - 对标签区域进行二次裁剪，分别提取 model/sn 的小块图像。
 - 对小块图像执行条码识别与 OCR，提取最终的型号/序列号。
 - 输出结构化结果（JSONL）与调试日志，便于回溯与优化。
+
+## Demo
+建议放一张 GIF 或截图，让人不看代码也能理解。
+
+- `docs/demo.gif`
+- `docs/screenshot.png`
+
+## Pipeline
+```
+Input -> crop -> barcode -> ocr -> postprocess -> output
+```
 
 ## 功能亮点
 - 端到端批量处理：从原图到结果一键完成。
@@ -49,6 +63,19 @@ API_KEY=your_api_key_here
 - `model_sn_ocr.jsonl`：最终识别结果（每行一个 JSON）
 - `debug_ocr_barcode.log`：识别过程日志
 
+## 输出格式示例
+下面是一个简化的 JSONL 示例（单行）：
+```
+{"file":"img_001.jpg","sn":"4E25XXXXXXXX","model":"S380-S8P2T","barcode":"CODE128","confidence":0.92}
+```
+
+## 鲁棒性策略
+- 多尺度放大：对小条码做放大后再识别。
+- ROI 截取：只处理标签关键区域，减少干扰。
+- 旋转尝试：0/90/180/270 方向轮询。
+- 正则校验：对 SN/Model 做规则过滤。
+- 失败样本归档：失败图片会落盘，方便复盘。
+
 ## 常见问题
 - 没有识别结果：请检查图片清晰度、角度、光照；或调大裁剪尺寸/阈值。
 - 报 API_KEY 缺失：确认 `.env` 存在且格式正确。
@@ -58,3 +85,4 @@ API_KEY=your_api_key_here
 - GitHub 仓库不包含 `.env`，API Key 不会暴露。
 - 需要共享给别人使用时，私下发送 `.env` 文件即可。
 - 不建议将 API Key 写进代码或公开仓库。
+ - 轮换 Key：替换 `.env` 中的 `API_KEY` 即可，无需改代码。
