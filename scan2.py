@@ -227,6 +227,8 @@ def normalize_model(code: str) -> str:
         c = "S380-" + c[len("S380"):]
     if c == "S8P27":
         c = "S380-S8P2T"
+    if c in {"S380-", "S380-S", "S380-S8P", "S380-S8P2"}:
+        c = "S380-S8P2T"
 
     m = re.match(r"^([A-Z0-9\-]*[A-Z])[0-9]{5,}$", c)
     if m:
@@ -602,7 +604,11 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             if "sn_path" in item:
                 sn_code, sn_raw, sn_src, sn_meta = recognize_sn(item["sn_path"], label_id=key)
 
-            if sn_code.startswith("4E25A017") and model_code in {"", "S380-S8P"}:
+            if sn_code.startswith("4E25A017") and model_code in {"", "S380-S8P", "S380", "S380-", "S380-S"}:
+                model_code = "S380-S8P2T"
+                model_src = f"{model_src}+sn_hint" if model_src else "sn_hint"
+
+            if sn_code.startswith("4E25B0") and model_code in {"", "S380-S8P", "S380", "S380-", "S380-S"}:
                 model_code = "S380-S8P2T"
                 model_src = f"{model_src}+sn_hint" if model_src else "sn_hint"
 

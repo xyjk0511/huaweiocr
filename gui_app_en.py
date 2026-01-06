@@ -255,6 +255,22 @@ class App(BaseTk):
         else:
             self.write_log("Note: pillow is not installed. Ctrl+V can only paste file paths; to paste images run: pip install pillow")
 
+    def _mask_sn(self, sn: str) -> str:
+        s = str(sn or "")
+        if len(s) <= 4:
+            return s
+        if len(s) <= 8:
+            return s[:4] + ("*" * (len(s) - 4))
+        return s[:4] + ("*" * (len(s) - 8)) + s[-4:]
+
+    def _mask_model(self, model: str) -> str:
+        s = str(model or "")
+        if len(s) <= 2:
+            return s
+        if len(s) <= 3:
+            return s[:2] + ("*" * (len(s) - 2))
+        return s[:2] + ("*" * (len(s) - 3)) + s[-1:]
+
     # ========== 工具函数 ==========
 
     def write_log(self, text: str):
@@ -501,8 +517,8 @@ class App(BaseTk):
             for r in rows:
                 values = (
                     r.get("label_id", ""),
-                    r.get("model", ""),
-                    r.get("sn", ""),
+                    self._mask_model(r.get("model", "")),
+                    self._mask_sn(r.get("sn", "")),
                     r.get("model_src", ""),
                     r.get("sn_src", ""),
                 )

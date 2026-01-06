@@ -165,6 +165,7 @@ def normalize_sn_text(text):
     if "21500871484ER" in normalized:
         normalized = normalized.replace("21500871484ER", "21500871494ER")
 
+    normalized = normalized.replace("ERAD", "ERA0")
     normalized = normalized.replace("ER8", "ERB").replace("ER4", "ERA")
     # S380-S8P2T 常见 SN 前缀：4E25A017xxxx，如果识别成 4E28A017 则纠正
     if "4E28A017" in normalized:

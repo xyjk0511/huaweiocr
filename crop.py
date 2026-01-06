@@ -48,7 +48,7 @@ MODEL1_LABEL_CLASS = "huawei_label"   # 如果你的大标签类名不是这个�
 
 # 模型2：裁剪字段（你说的新模型 sn_model / sn_model 2）
 # 常见写法就是 "sn_model/2"；如果Roboflow显示的是 "sn-model-xxxx/2"，就写那个
-MODEL2_ID = ("sn_model/6")
+MODEL2_ID = ("sn_model/9")
 MODEL2_MODEL_CLASS = "model"          # 你的字段类名
 MODEL2_SN_CLASS = "sn"                # 你的字段类名
 
@@ -81,7 +81,7 @@ PADDING_1 = 0.15
 NMS_1 = 0.30
 
 # Stage2 分类阈值（推荐）
-MIN_CONF_MODEL = 0.40
+MIN_CONF_MODEL = 0.20
 MIN_CONF_SN    = 0.15   # 长期稳定阈值
 
 # Model 尺寸过滤 (宽>=120, 高>=18)
@@ -436,10 +436,10 @@ def main(input_dir=None, out_dir=None, log_level="info"):
             elif (not has_sn) and (not has_model):
                 shutil.copy2(lp, os.path.join(MISS_BOTH_DIR, os.path.basename(lp)))
 
-    _log(f"\n✅ 完成：Stage1 产出 {len(all_label_crops)} 张小图", "info")
-    _log(f"📊 统计：至少有一个字段 {ok_any} 张；两个字段都有 {ok_both} 张", "info")
-    _log(f"📄 结果清单：{MANIFEST_PATH}", "info")
-    _log(f"📂 失败分类：{MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
+    _log(f"\nStage1 complete: {len(all_label_crops)} label crops generated", "info")
+    _log(f"Stats: at least one field {ok_any}; both fields {ok_both}", "info")
+    _log(f"Manifest: {MANIFEST_PATH}", "info")
+    _log(f"Failed categories: {MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
 
 if __name__ == "__main__":
     main()
