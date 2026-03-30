@@ -17,6 +17,10 @@
 
 ![HuaweiOCR summary card](assets/summary-card.svg)
 
+### Visual snapshot / 示例图像
+
+![Sample device label](assets/sample_label.png)
+
 An end-to-end OCR pipeline for device-label extraction, combining detection, multi-stage cropping, barcode decoding, OCR, and structured JSONL export.
 
 一个端到端的设备标签 OCR 流水线，整合了目标检测、多阶段裁剪、条码识别、OCR 和结构化 JSONL 导出。
