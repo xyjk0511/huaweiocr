@@ -15,6 +15,8 @@
 | Strength | Batch processing with debugging artifacts |
 | Project value | OCR engineering, CV workflow design, structured extraction |
 
+![HuaweiOCR summary card](assets/summary-card.svg)
+
 An end-to-end OCR pipeline for device-label extraction, combining detection, multi-stage cropping, barcode decoding, OCR, and structured JSONL export.
 
 一个端到端的设备标签 OCR 流水线，整合了目标检测、多阶段裁剪、条码识别、OCR 和结构化 JSONL 导出。
