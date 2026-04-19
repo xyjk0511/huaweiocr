@@ -26,6 +26,10 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             sn_barcode.extract_sn_from_payload("S/N 21500671494ERA050003"),
             "21500671494ERA050003",
         )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("[)>06 1P50087149 18VLEHWT S21500871494ERB006054"),
+            "21500871494ERB006054",
+        )
 
     def test_conflicting_barcode_sns_are_ambiguous(self):
         report = sn_barcode.select_sn_from_decoder_results(

@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_RE = re.compile(r"(2[0-9]{9,10}(?:ERA|ER|LDR|LDRA|SRA)[0-9]{4,7})")
+SN20_RE = re.compile(r"(2[0-9]{9,10}(?:ERA|ERB|ER|LDR|LDRA|SRA)[0-9]{4,7})")
 SN12_RE = re.compile(r"(4E[0-9A-Z]{10})")
 
 NON_SN_PREFIX_RE = re.compile(
@@ -624,9 +624,11 @@ def _decode_pyzbar(candidate: CandidateImage) -> tuple[list[DecoderResult], list
 
     try:
         symbols = []
-        code128 = getattr(getattr(pyzbar, "ZBarSymbol", object()), "CODE128", None)
-        if code128 is not None:
-            symbols = [code128]
+        zbar_symbol = getattr(pyzbar, "ZBarSymbol", object())
+        for name in ("CODE128", "QRCODE", "CODE39", "CODE93", "I25"):
+            symbol = getattr(zbar_symbol, name, None)
+            if symbol is not None:
+                symbols.append(symbol)
         decoded = pyzbar.decode(candidate.image, symbols=symbols or None)
     except Exception as exc:
         return [], [f"pyzbar_error:{exc.__class__.__name__}"]
@@ -834,7 +836,7 @@ def scan_sn_barcodes(
 
                 if early_exit:
                     partial = select_sn_from_decoder_results(all_results)
-                    if partial.status == "hit":
+                    if partial.status in {"hit", "ambiguous"}:
                         partial.attempts = attempts
                         partial.quality_issues = quality_issues
                         partial.decoder_errors = decoder_errors

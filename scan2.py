@@ -301,7 +301,7 @@ def extract_model_from_text(text: str) -> str:
 # ========= SN RULES =========
 
 SN20_RE = re.compile(
-    r"(2[0-9]{9,10}(?:ERA|ER|LDR|LDRA|SRA)[0-9]{4,7})"
+    r"(2[0-9]{9,10}(?:ERA|ERB|ER|LDR|LDRA|SRA)[0-9]{4,7})"
 )
 
 SN12_RE = re.compile(
