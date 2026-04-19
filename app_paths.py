@@ -35,25 +35,56 @@ def _pid_is_running(pid):
         return True
 
 
-def _read_lock_metadata(lock_path):
+def _read_lock_snapshot(lock_path):
     try:
-        with open(lock_path, "r", encoding="utf-8") as f:
-            lines = [line.strip() for line in f.readlines()]
-        return int(lines[0]), float(lines[1])
+        stat = os.stat(lock_path)
+        with open(lock_path, "rb") as f:
+            data = f.read()
+        return {
+            "mtime_ns": getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
+            "size": stat.st_size,
+            "data": data,
+        }
+    except FileNotFoundError:
+        return None
+
+
+def _lock_metadata_from_snapshot(snapshot):
+    if not snapshot:
+        return None, None
+    try:
+        lines = snapshot["data"].decode("utf-8").splitlines()
+        return int(lines[0].strip()), float(lines[1].strip())
     except Exception:
         return None, None
 
 
-def _lock_is_stale(lock_path):
+def _lock_snapshot_is_stale(snapshot):
+    if snapshot is None:
+        return True
     now = time.time()
-    pid, created = _read_lock_metadata(lock_path)
+    pid, created = _lock_metadata_from_snapshot(snapshot)
     if pid is not None and created is not None:
         return not _pid_is_running(pid)
-    try:
-        age = now - os.path.getmtime(lock_path)
-    except OSError:
-        return True
+    age = now - (snapshot["mtime_ns"] / 1_000_000_000)
     return age > MODEL_INSTALL_LOCK_MALFORMED_GRACE_SECONDS
+
+
+def _reclaim_stale_lock(lock_path):
+    first = _read_lock_snapshot(lock_path)
+    if not _lock_snapshot_is_stale(first):
+        return False
+    time.sleep(0.05)
+    second = _read_lock_snapshot(lock_path)
+    if first != second or not _lock_snapshot_is_stale(second):
+        return False
+    try:
+        os.remove(lock_path)
+        return True
+    except FileNotFoundError:
+        return True
+    except PermissionError:
+        return False
 
 
 def _write_lock_metadata(lock_fd):
@@ -91,14 +122,8 @@ def ensure_models_installed():
             lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
             _write_lock_metadata(lock_fd)
         except FileExistsError:
-            if _lock_is_stale(lock_path):
-                try:
-                    os.remove(lock_path)
-                    continue
-                except FileNotFoundError:
-                    continue
-                except PermissionError:
-                    pass
+            if _reclaim_stale_lock(lock_path):
+                continue
             if time.time() >= deadline:
                 raise TimeoutError(f"Timed out waiting for model install lock: {lock_path}")
             time.sleep(0.2)

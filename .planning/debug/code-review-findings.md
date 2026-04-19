@@ -60,3 +60,9 @@
 - `app_paths.py` now writes lock metadata, reclaims stale/malformed locks, and keeps the temporary-copy plus completion-marker install flow.
 - `gui_pipeline.py` now stages files as `input_0001.ext` style names and writes only `source_index`, `input_name`, and content `sha256`; absolute paths are no longer persisted in the default GUI manifest.
 - Regression coverage now includes stale lock recovery and asserts GUI staging manifest rows do not contain absolute paths.
+
+## Subagent Re-review Closure
+
+- Subagent re-review found one remaining race: stale lock reclamation could delete a newly-created live lock if another process replaced the lock between stale detection and `os.remove`.
+- `app_paths.py` now reclaims a lock only after two unchanged snapshots both indicate stale/malformed state.
+- Regression coverage now simulates a lock changing between the first and second stale observations and asserts the changed live lock is not removed.

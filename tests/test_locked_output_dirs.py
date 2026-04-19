@@ -326,6 +326,9 @@ class GuiPipelineTest(unittest.TestCase):
             self.assertNotIn("source_path", manifest_text)
             self.assertNotIn("input_path", manifest_text)
             self.assertNotIn(os.path.abspath(root), manifest_text)
+            for row in manifest_rows:
+                self.assertEqual(set(row), {"source_index", "input_name", "sha256"})
+                self.assertNotIn("same.png", row["input_name"])
             self.assertEqual([row["source_index"] for row in manifest_rows], [1, 2])
             self.assertEqual([row["input_name"] for row in manifest_rows], names)
             self.assertTrue(all(len(row["sha256"]) == 64 for row in manifest_rows))
@@ -453,6 +456,34 @@ class AppPathsInstallTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(target, "weights.bin")))
             self.assertTrue(os.path.exists(os.path.join(target, app_paths.MODEL_INSTALL_MARKER)))
             self.assertFalse(os.path.exists(lock_path))
+
+    def test_stale_lock_reclaim_does_not_remove_changed_lock(self):
+        import app_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            lock_path = os.path.join(root, ".huaweiocr_install.lock")
+            with open(lock_path, "w", encoding="utf-8") as f:
+                f.write("")
+            old = time.time() - 10
+            os.utime(lock_path, (old, old))
+            real_read = app_paths._read_lock_snapshot
+            calls = {"count": 0}
+
+            def racing_read(path):
+                snapshot = real_read(path)
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    with open(lock_path, "w", encoding="utf-8") as f:
+                        f.write(f"{os.getpid()}\n{time.time()}\n")
+                return snapshot
+
+            with mock.patch.object(app_paths, "_read_lock_snapshot", side_effect=racing_read):
+                self.assertFalse(app_paths._reclaim_stale_lock(lock_path))
+
+            self.assertTrue(os.path.exists(lock_path))
+            with open(lock_path, "r", encoding="utf-8") as f:
+                data = f.read()
+            self.assertIn(str(os.getpid()), data)
 
 
 if __name__ == "__main__":
