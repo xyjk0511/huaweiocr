@@ -194,7 +194,17 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
             )
         )
 
-    unique_sns = sorted({candidate.sn for candidate in sn_candidates})
+    best_rank = None
+    best_rank_candidates: list[SnCandidate] = []
+    for candidate in sn_candidates:
+        rank = _source_rank(candidate.source_region)
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_rank_candidates = [candidate]
+        elif rank == best_rank:
+            best_rank_candidates.append(candidate)
+
+    unique_sns = sorted({candidate.sn for candidate in best_rank_candidates})
     if len(unique_sns) > 1:
         return SnBarcodeReport(
             status="ambiguous",
@@ -208,7 +218,7 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
 
     if len(unique_sns) == 1:
         chosen = sorted(
-            sn_candidates,
+            best_rank_candidates,
             key=lambda c: (_source_rank(c.source_region), c.rotation, c.decoder_name),
         )[0]
         return SnBarcodeReport(

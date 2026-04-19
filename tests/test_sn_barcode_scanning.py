@@ -35,7 +35,7 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         report = sn_barcode.select_sn_from_decoder_results(
             [
                 sn_barcode.DecoderResult("fake", "SN:4E25A0170000", "sn", "sn"),
-                sn_barcode.DecoderResult("fake", "SN:4E25A0170001", "label", "label.region.1"),
+                sn_barcode.DecoderResult("fake", "SN:4E25A0170001", "sn", "sn.region.1"),
             ]
         )
 
@@ -52,6 +52,19 @@ class SnBarcodeSelectionTest(unittest.TestCase):
 
         self.assertEqual(report.status, "hit")
         self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(report.source_region, "sn")
+
+    def test_unique_higher_priority_source_wins_over_original_conflicts(self):
+        report = sn_barcode.select_sn_from_decoder_results(
+            [
+                sn_barcode.DecoderResult("fake", "SN:21500872884ERA005572", "sn", "sn"),
+                sn_barcode.DecoderResult("fake", "SN:21500872884ERA005405", "original", "original"),
+                sn_barcode.DecoderResult("fake", "SN:21500872884ERA005765", "original", "original"),
+            ]
+        )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "21500872884ERA005572")
         self.assertEqual(report.source_region, "sn")
 
 
