@@ -250,6 +250,63 @@ class RunAllPathPropagationTest(unittest.TestCase):
             scan2.main.assert_not_called()
 
 
+class PaddleOcrModelKwargsTest(unittest.TestCase):
+    def test_local_model_dirs_include_matching_model_names(self):
+        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+            sys.modules.pop(name, None)
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+
+        class DummyPaddleOCR:
+            def __init__(
+                self,
+                use_doc_orientation_classify=None,
+                use_doc_unwarping=None,
+                use_textline_orientation=None,
+                text_detection_model_name=None,
+                text_detection_model_dir=None,
+                text_recognition_model_name=None,
+                text_recognition_model_dir=None,
+                textline_orientation_model_name=None,
+                textline_orientation_model_dir=None,
+            ):
+                pass
+
+        paddleocr.PaddleOCR = DummyPaddleOCR
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        sys.modules["app_paths"] = app_paths
+
+        import ocr
+
+        with tempfile.TemporaryDirectory() as root:
+            models = os.path.join(root, "official_models")
+            for name in (
+                "PP-OCRv5_server_det",
+                "en_PP-OCRv5_mobile_rec",
+                "PP-LCNet_x1_0_textline_ori",
+            ):
+                os.makedirs(os.path.join(models, name))
+
+            kwargs = ocr._paddleocr_model_kwargs(models)
+
+        self.assertEqual(kwargs["text_detection_model_name"], "PP-OCRv5_server_det")
+        self.assertEqual(kwargs["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")
+        self.assertEqual(kwargs["textline_orientation_model_name"], "PP-LCNet_x1_0_textline_ori")
+        self.assertIs(kwargs["use_doc_orientation_classify"], False)
+        self.assertIs(kwargs["use_doc_unwarping"], False)
+        self.assertIs(kwargs["use_textline_orientation"], True)
+        self.assertTrue(kwargs["text_detection_model_dir"].endswith("PP-OCRv5_server_det"))
+        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("en_PP-OCRv5_mobile_rec"))
+        self.assertTrue(kwargs["textline_orientation_model_dir"].endswith("PP-LCNet_x1_0_textline_ori"))
+
+
 class Scan2ManifestTest(unittest.TestCase):
     def test_main_signature_keeps_legacy_arguments(self):
         scan2 = _import_scan2()

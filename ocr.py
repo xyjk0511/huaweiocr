@@ -106,19 +106,27 @@ def _paddleocr_model_kwargs(model_root):
     det_dir = _first_existing_model_dir(model_root, ["PP-OCRv5_server_det"])
     rec_dir = _first_existing_model_dir(model_root, ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_server_rec"])
     cls_dir = _first_existing_model_dir(model_root, ["PP-LCNet_x1_0_textline_ori"])
+    rec_name = os.path.basename(rec_dir) if rec_dir else None
     desired = {
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": True,
+        "use_angle_cls": True,
+        "text_detection_model_name": "PP-OCRv5_server_det" if det_dir else None,
         "det_model_dir": det_dir,
-        "rec_model_dir": rec_dir,
-        "cls_model_dir": cls_dir,
         "text_detection_model_dir": det_dir,
+        "text_recognition_model_name": rec_name,
+        "rec_model_dir": rec_dir,
         "text_recognition_model_dir": rec_dir,
+        "textline_orientation_model_name": "PP-LCNet_x1_0_textline_ori" if cls_dir else None,
+        "cls_model_dir": cls_dir,
         "textline_orientation_model_dir": cls_dir,
     }
     try:
         params = inspect.signature(PaddleOCR).parameters
     except Exception:
         return {}
-    return {name: value for name, value in desired.items() if value and name in params}
+    return {name: value for name, value in desired.items() if value is not None and name in params}
 
 
 def init_ocr():
@@ -139,7 +147,6 @@ def init_ocr():
         OCR_LANG, device
     ))
     ocr = PaddleOCR(
-        use_angle_cls=True,   # 自动判断文字方向
         lang=OCR_LANG,
         **_paddleocr_model_kwargs(model_root),
     )
