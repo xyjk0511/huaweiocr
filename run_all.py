@@ -149,10 +149,18 @@ def main() -> int:
             print(f"  - sn_success: {sn_success}")
             print(f"  - sn_success_rate: {success_rate:.3f}")
             print(f"  - sn_regex_pass_rate: {regex_rate:.3f}")
+            print(f"  - sn_barcode_attempts: {stats.get('sn_barcode_attempts', 0)}")
+            print(f"  - sn_barcode_hits: {stats.get('sn_barcode_hits', 0)}")
+            print(f"  - sn_barcode_hit_rate: {stats.get('sn_barcode_hit_rate', 0.0):.3f}")
+            print(f"  - sn_ocr_recoveries: {stats.get('sn_ocr_recoveries', 0)}")
             print("  - error_distribution:")
             print(f"    - barcode_fail: {stats.get('barcode_fail', 0)}")
             print(f"    - ocr_fail: {stats.get('ocr_fail', 0)}")
             print(f"    - regex_fail: {stats.get('regex_fail', 0)}")
+            print(f"    - barcode_parse_failures: {stats.get('sn_barcode_parse_failures', 0)}")
+            print(f"    - barcode_decoder_misses: {stats.get('sn_barcode_decoder_misses', 0)}")
+            print(f"    - barcode_ambiguous: {stats.get('sn_barcode_ambiguous', 0)}")
+            print(f"    - barcode_quality_rejects: {stats.get('sn_barcode_quality_rejects', 0)}")
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         if args.log_level == "debug":

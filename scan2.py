@@ -7,6 +7,7 @@ import numpy as np
 from ocr import init_ocr, ocr_one_image
 from barcode import decode_small_patch
 from app_paths import ensure_models_installed
+from sn_barcode import extract_sn_from_payload, scan_sn_barcodes
 
 # Simple log gating for CLI usage.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
@@ -337,7 +338,7 @@ def extract_sn_from_text(text: str) -> str:
 
 
 def extract_sn_from_barcode_candidate(text: str) -> str:
-    return extract_sn_from_text(text)
+    return extract_sn_from_payload(text)
 
 
 def filter_sn_lines(lines: list[str]) -> list[str]:
@@ -470,6 +471,37 @@ def _format_barcode_entries(entries: list[dict]) -> str:
     return "; ".join(parts)
 
 
+def _debug_candidate_dir() -> str:
+    if not _env_flag("SN_BARCODE_DEBUG_CANDIDATES"):
+        return ""
+    root = os.environ.get("SN_BARCODE_DEBUG_DIR", "").strip()
+    if root:
+        return root
+    return os.path.join(os.path.dirname(os.path.abspath(DEBUG_LOG_PATH)), "sn_barcode_candidates")
+
+
+def _format_barcode_report(report) -> str:
+    parts = []
+    for result in report.results:
+        if result.raw_text:
+            parts.append(f"{result.source_region}:{result.raw_text}")
+    return "; ".join(parts)
+
+
+def _scan_sn_barcode_report(
+    sources: list[tuple[str, str]],
+    label_id: str = "",
+    allow_early_exit: bool = True,
+):
+    return scan_sn_barcodes(
+        sources,
+        fallback_path_decoder=read_barcodes,
+        label_id=label_id,
+        debug_dir=_debug_candidate_dir(),
+        early_exit=allow_early_exit,
+    )
+
+
 def _select_sn_from_barcode_entries(entries: list[dict]) -> tuple[str, str, str]:
     candidates = []
     seen = set()
@@ -502,15 +534,14 @@ def _select_sn_from_barcode_entries(entries: list[dict]) -> tuple[str, str, str]
 
 
 def try_sn_from_barcode(img_path: str) -> tuple[str, str]:
-    entries = _scan_barcode_sources([("sn", img_path)], field="SN")
-    if not entries:
+    report = _scan_sn_barcode_report([("sn", img_path)], allow_early_exit=True)
+    if not report.results:
         return "", ""
 
-    sn, raw, _source = _select_sn_from_barcode_entries(entries)
-    if sn:
-        return sn, raw
+    if report.status == "hit":
+        return report.sn, report.raw_text
 
-    return "", _format_barcode_entries(entries)
+    return "", _format_barcode_report(report)
 
 
 def extract_model_from_barcode_candidate(text: str) -> str:
@@ -572,37 +603,63 @@ def preprocess_sn_image(path: str):
         return None
 
 
-def recognize_sn(sn_path: str = "", label_id: str = "", label_path: str = ""):
+def recognize_sn(
+    sn_path: str = "",
+    label_id: str = "",
+    label_path: str = "",
+    original_path: str = "",
+    allow_ocr: bool = True,
+):
     tag = f"{label_id} " if label_id else ""
     append_debug(
         f"[SN] {tag}sn={os.path.basename(sn_path) if sn_path else '[missing]'} "
-        f"label={os.path.basename(label_path) if label_path else '[missing]'}"
+        f"label={os.path.basename(label_path) if label_path else '[missing]'} "
+        f"original={os.path.basename(original_path) if original_path else '[missing]'}"
     )
     sources = []
     if sn_path:
         sources.append(("sn", sn_path))
     if label_path and label_path != sn_path:
         sources.append(("label", label_path))
+    if original_path and original_path not in {sn_path, label_path}:
+        sources.append(("original", original_path))
 
-    barcode_entries = _scan_barcode_sources(sources, label_id=label_id, field="SN")
-    meta = {
-        "barcode_found": bool(barcode_entries),
-        "ocr_text_found": False,
-        "barcode_sources": sorted({entry.get("source", "unknown") for entry in barcode_entries}),
-    }
-    barcode_raw = _format_barcode_entries(barcode_entries)
-    sn_from_barcode, barcode_line, barcode_source = _select_sn_from_barcode_entries(barcode_entries)
-    if sn_from_barcode:
-        return sn_from_barcode, f"[BARCODE:{barcode_source}] {barcode_line}", "barcode", meta
+    barcode_report = _scan_sn_barcode_report(sources, label_id=label_id, allow_early_exit=True)
+    meta = barcode_report.to_meta()
+    meta["ocr_text_found"] = False
+    barcode_raw = _format_barcode_report(barcode_report)
+    append_sensitive_debug(
+        f"[SN][BARCODE_REPORT] {tag}status={barcode_report.status} "
+        f"attempts={barcode_report.attempts} decoded={barcode_report.decoded_count} raw={barcode_raw!r}"
+    )
+
+    if barcode_report.status == "hit":
+        return (
+            barcode_report.sn,
+            f"[BARCODE:{barcode_report.source_region}] {barcode_report.raw_text}",
+            "barcode",
+            meta,
+        )
+
+    if not allow_ocr:
+        if barcode_report.status == "ambiguous":
+            return "", f"[BARCODE_AMBIGUOUS] {barcode_raw}", "barcode_ambiguous", meta
+        if barcode_report.status == "parse_failure":
+            return "", f"[BARCODE_PARSE_FAIL] {barcode_raw}", "barcode_parse_fail", meta
+        if barcode_report.status == "quality_reject":
+            return "", "[BARCODE_QUALITY_REJECT]", "barcode_quality_reject", meta
+        return "", "", "barcode_decoder_miss", meta
 
     if not sn_path:
-        if barcode_entries:
+        if barcode_report.results:
+            if barcode_report.status == "ambiguous":
+                return "", f"[BARCODE_AMBIGUOUS] {barcode_raw}", "barcode_ambiguous", meta
             return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
         return "", "", "none", meta
 
     color_img = load_for_ocr_color(sn_path)
     if color_img is None:
-        if barcode_entries:
+        if barcode_report.results:
             return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
         return "", "", "none", meta
 
@@ -633,7 +690,11 @@ def recognize_sn(sn_path: str = "", label_id: str = "", label_path: str = ""):
     if sn:
         return sn, top_text, "ocr_top", meta
 
-    if barcode_entries:
+    if barcode_report.results:
+        if barcode_report.status == "ambiguous":
+            return "", f"[BARCODE_AMBIGUOUS] {barcode_raw}", "barcode_ambiguous", meta
+        if barcode_report.status == "parse_failure":
+            return "", f"[BARCODE_PARSE_FAIL] {barcode_raw}", "barcode_parse_fail", meta
         return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
 
     if meta["ocr_text_found"]:
@@ -694,6 +755,11 @@ def _load_manifest_records():
                 if not os.path.isfile(item["sn_path"]):
                     raise FileNotFoundError(f"Manifest sn_path is missing at {path}:{line_no}: {item['sn_path']}")
                 record["sn_path"] = item["sn_path"]
+            original_path = item.get("original_image_path") or item.get("image_path")
+            if original_path:
+                if not os.path.isfile(original_path):
+                    raise FileNotFoundError(f"Manifest original image is missing at {path}:{line_no}: {original_path}")
+                record["original_image_path"] = original_path
     return records
 
 
@@ -720,6 +786,14 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         "sn_total": 0,
         "sn_attempted": 0,
         "sn_success": 0,
+        "sn_barcode_attempts": 0,
+        "sn_barcode_hits": 0,
+        "sn_barcode_hit_rate": 0.0,
+        "sn_ocr_recoveries": 0,
+        "sn_barcode_parse_failures": 0,
+        "sn_barcode_decoder_misses": 0,
+        "sn_barcode_ambiguous": 0,
+        "sn_barcode_quality_rejects": 0,
         "regex_fail": 0,
         "barcode_fail": 0,
         "ocr_fail": 0,
@@ -755,7 +829,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             sn_code = sn_raw = ""
             model_src = "missing"
             sn_src = "missing"
-            sn_meta = {"barcode_found": False, "ocr_text_found": False}
+            sn_meta = {
+                "barcode_found": False,
+                "ocr_text_found": False,
+                "barcode_status": "not_attempted",
+                "barcode_attempts": 0,
+                "barcode_decoded_count": 0,
+            }
 
             if "model_path" in item:
                 model_code, model_raw, model_src = recognize_model(
@@ -770,6 +850,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     item.get("sn_path", ""),
                     label_id=key,
                     label_path=item.get("label_crop", ""),
+                    original_path=item.get("original_image_path", ""),
                 )
 
             if sn_code.startswith("4E25A017") and model_code in {"", "S380-S8P", "S380", "S380-", "S380-S"}:
@@ -791,6 +872,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "sn_raw": sn_raw if unsafe_raw else _mask_sensitive_text(sn_raw),
                 "model_src": model_src,
                 "sn_src": sn_src,
+                "sn_barcode_status": sn_meta.get("barcode_status", "not_attempted"),
+                "sn_barcode_attempts": sn_meta.get("barcode_attempts", 0),
+                "sn_barcode_decoded_count": sn_meta.get("barcode_decoded_count", 0),
+                "sn_barcode_sources": sn_meta.get("barcode_sources", []),
+                "sn_barcode_source_regions": sn_meta.get("barcode_source_regions", []),
+                "sn_barcode_decoder_names": sn_meta.get("barcode_decoder_names", []),
+                "sn_barcode_ambiguous_sns": sn_meta.get("barcode_ambiguous_sns", []),
             }
 
             log_model = _mask_sensitive_text(model_code)
@@ -807,6 +895,25 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
             if sn_input_available:
                 stats["sn_total"] += 1
+                barcode_status = sn_meta.get("barcode_status", "not_attempted")
+                stats["sn_barcode_attempts"] += int(sn_meta.get("barcode_attempts", 0) or 0)
+                if sn_src == "barcode":
+                    stats["sn_barcode_hits"] += 1
+                elif sn_src.startswith("ocr") and barcode_status in {
+                    "decoder_miss",
+                    "parse_failure",
+                    "ambiguous",
+                    "quality_reject",
+                }:
+                    stats["sn_ocr_recoveries"] += 1
+                if barcode_status == "parse_failure":
+                    stats["sn_barcode_parse_failures"] += 1
+                elif barcode_status == "decoder_miss":
+                    stats["sn_barcode_decoder_misses"] += 1
+                elif barcode_status == "ambiguous":
+                    stats["sn_barcode_ambiguous"] += 1
+                elif barcode_status == "quality_reject":
+                    stats["sn_barcode_quality_rejects"] += 1
                 if sn_meta.get("barcode_found") or sn_meta.get("ocr_text_found"):
                     stats["sn_attempted"] += 1
                 if sn_code:
@@ -818,6 +925,9 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                         stats["barcode_fail"] += 1
                     if not sn_meta.get("ocr_text_found"):
                         stats["ocr_fail"] += 1
+
+    if stats["sn_total"]:
+        stats["sn_barcode_hit_rate"] = stats["sn_barcode_hits"] / float(stats["sn_total"])
 
     return stats
 

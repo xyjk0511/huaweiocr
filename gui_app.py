@@ -43,6 +43,23 @@ def _mask_path_text(text: str) -> str:
     return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\r\n\t|,;]+", "[path]", text)
 
 
+def _display_sn_src(value: str) -> str:
+    src = str(value or "")
+    if src == "barcode":
+        return "barcode SN"
+    if src.startswith("ocr"):
+        return "OCR fallback"
+    if src == "barcode_ambiguous":
+        return "barcode ambiguous"
+    if src == "barcode_parse_fail":
+        return "barcode parse fail"
+    if src == "barcode_quality_reject":
+        return "barcode quality reject"
+    if src == "barcode_decoder_miss":
+        return "barcode miss"
+    return src
+
+
 def _self_check():
     if getattr(sys, "frozen", False):
         base_dir = os.path.dirname(sys.executable)
@@ -491,7 +508,7 @@ class App(BaseTk):
                     r.get("model", ""),
                     r.get("sn", ""),
                     r.get("model_src", ""),
-                    r.get("sn_src", ""),
+                    _display_sn_src(r.get("sn_src", "")),
                 )
                 self.table.insert("", tk.END, values=values)
         self.after(0, _append)
