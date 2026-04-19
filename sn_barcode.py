@@ -814,8 +814,9 @@ def scan_sn_barcodes(
             continue
 
         candidates = generate_candidate_images(image, source, max_candidates=max_candidates)
+        source_attempts = 0
         for index, candidate in enumerate(candidates, 1):
-            if attempts >= max_decoder_attempts:
+            if source_attempts >= max_decoder_attempts:
                 break
             if debug_dir:
                 _dump_candidate(debug_dir, label_id or source, index, candidate)
@@ -832,9 +833,10 @@ def scan_sn_barcodes(
                 )
 
             for decoder in (_decode_pyzbar, _decode_zxingcpp, _decode_cli):
-                if attempts >= max_decoder_attempts:
+                if source_attempts >= max_decoder_attempts:
                     break
                 attempts += 1
+                source_attempts += 1
                 decoded, errors = decoder(candidate)
                 decoder_errors.extend(errors)
                 for result in decoded:

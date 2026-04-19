@@ -67,6 +67,34 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(report.sn, "21500872884ERA005572")
         self.assertEqual(report.source_region, "sn")
 
+    def test_attempt_budget_is_isolated_per_source(self):
+        candidates_by_source = {
+            "sn": [sn_barcode.CandidateImage(object(), "sn", "sn", "raw")],
+            "label": [sn_barcode.CandidateImage(object(), "label", "label", "raw")],
+        }
+
+        def fake_candidates(_image, source, max_candidates=96):
+            return candidates_by_source[source]
+
+        def fake_decode(candidate):
+            if candidate.source == "label":
+                return [
+                    sn_barcode.DecoderResult("fake", "SN:4E25A0170000", "label", "label")
+                ], []
+            return [], []
+
+        with mock.patch.object(sn_barcode, "_read_image", return_value=object()):
+            with mock.patch.object(sn_barcode, "generate_candidate_images", side_effect=fake_candidates):
+                with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_decode):
+                    report = sn_barcode.scan_sn_barcodes(
+                        [("sn", "sn.png"), ("label", "label.png")],
+                        max_decoder_attempts=1,
+                    )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(report.attempts, 2)
+
 
 class Scan2BarcodeAccountingTest(unittest.TestCase):
     def test_ambiguous_barcode_is_not_silently_selected(self):
