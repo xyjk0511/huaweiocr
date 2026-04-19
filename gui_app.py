@@ -39,8 +39,34 @@ SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 def _mask_path_text(text: str) -> str:
     text = "" if text is None else str(text)
-    text = re.sub(r"(?i)[a-z]:[\\/][^\r\n\t|,;]+", "[path]", text)
-    return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\r\n\t|,;]+", "[path]", text)
+
+    safe_roots = [os.getcwd(), os.path.dirname(os.path.abspath(__file__))]
+    if getattr(sys, "frozen", False):
+        safe_roots.append(os.path.dirname(os.path.abspath(sys.executable)))
+    safe_roots = [
+        os.path.normcase(os.path.abspath(root))
+        for root in safe_roots
+        if root
+    ]
+
+    def replace_path(match):
+        value = match.group(0)
+        trailing = ""
+        while value and value[-1] in ".:)]}":
+            trailing = value[-1] + trailing
+            value = value[:-1]
+        abs_value = os.path.normcase(os.path.abspath(value))
+        for root in safe_roots:
+            try:
+                if os.path.commonpath([root, abs_value]) == root:
+                    rel = os.path.relpath(value, root)
+                    return rel + trailing
+            except ValueError:
+                continue
+        return "[path]" + trailing
+
+    text = re.sub(r"(?i)[a-z]:[\\/][^\s|,;\"']+", replace_path, text)
+    return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\s|,;\"']+", replace_path, text)
 
 
 def _display_sn_src(value: str) -> str:

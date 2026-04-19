@@ -693,6 +693,21 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertNotIn("crop", sys.modules)
         self.assertNotIn("scan2", sys.modules)
 
+    def test_gui_log_mask_keeps_app_relative_output_paths(self):
+        sys.modules.pop("gui_app", None)
+        import gui_app
+
+        app_path = os.path.join(os.getcwd(), "stage2_fields", "manifest.jsonl")
+        external_path = r"F:\wechat\xwechat_files\sample.jpg"
+
+        masked = gui_app._mask_path_text(
+            f"Manifest: {app_path}; source: {external_path}"
+        )
+
+        self.assertIn(os.path.join("stage2_fields", "manifest.jsonl"), masked)
+        self.assertIn("source: [path]", masked)
+        self.assertNotIn(external_path, masked)
+
 
 class BarcodeCliBudgetTest(unittest.TestCase):
     def test_decode_small_patch_caps_cli_attempts(self):
