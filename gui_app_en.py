@@ -317,8 +317,8 @@ class App(BaseTk):
         - 如果剪贴板是文件列表：直接加入
         - 如果剪贴板是图片：保存为 PNG 到 crop.INPUT_DIR，再加入
         """
-        # 目标保存目录：和你 pipeline 输入目录一致
-        input_dir = os.path.abspath(crop.INPUT_DIR)
+        # Keep pasted images outside the pipeline input folder so cleanup cannot delete the source.
+        input_dir = os.path.abspath("pasted_images")
         os.makedirs(input_dir, exist_ok=True)
 
         # 方案 A：优先用 Pillow 直接抓剪贴板（Windows 下最稳）
@@ -434,6 +434,7 @@ class App(BaseTk):
         input_dir = os.path.abspath(crop.INPUT_DIR)
 
         try:
+            selected_sources = {os.path.abspath(p) for p in self.image_paths}
             # 1) 准备 INPUT_DIR：清空旧图片，拷贝新图片进去
             self.write_log(f"[1/4] Preparing input directory: {input_dir}")
 
@@ -442,6 +443,8 @@ class App(BaseTk):
             # 清理旧的输入图片（只删图片类型）
             for name in os.listdir(input_dir):
                 full = os.path.join(input_dir, name)
+                if os.path.abspath(full) in selected_sources:
+                    continue
                 if os.path.isfile(full) and os.path.splitext(full)[1].lower() in SUPPORTED_EXTS:
                     try:
                         os.remove(full)
@@ -449,34 +452,32 @@ class App(BaseTk):
                         self.write_log(f"WARN: Failed to delete old file {full}: {e}")
 
             # 拷贝新图片
+            copied = 0
             for p in self.image_paths:
                 dst = os.path.join(input_dir, os.path.basename(p))
+                if os.path.abspath(p) == os.path.abspath(dst):
+                    continue
                 shutil.copy2(p, dst)
-            self.write_log(f"Copied {len(self.image_paths)} image(s) to {input_dir}")
-
-            # 2) 把 print 重定向到 GUI 日志
-            import builtins
-            old_print = builtins.print
-
-            def gui_print(*args, **kwargs):
-                s = " ".join(str(a) for a in args)
-                self.write_log(s)
-
-            builtins.print = gui_print
+                copied += 1
+            self.write_log(f"Copied {copied} image(s) to {input_dir}")
+            old_crop_sink = getattr(crop, "LOG_SINK", None)
+            old_scan_sink = getattr(scan2, "LOG_SINK", None)
+            crop.set_log_sink(self.write_log)
+            scan2.set_log_sink(self.write_log)
 
             try:
                 # 3) 运行 crop_labels（Stage1 + Stage2 裁剪）
                 self.write_log("[2/4] Running crop.main(): full image -> label -> model/sn crops")
-                crop.main()
+                crop.main(input_dir=input_dir)
 
                 # 4) 运行 scan2（条码 + OCR 提取 MODEL / SN）
                 self.write_log("[3/4] Running scan2.main(): read MODEL / SN")
                 scan2.main(model_dir=crop.OUT_MODEL_DIR, sn_dir=crop.OUT_SN_DIR)
-                self.load_results_into_table()
+                self.after(0, self.load_results_into_table)
 
             finally:
-                # 恢复原来的 print
-                builtins.print = old_print
+                crop.set_log_sink(old_crop_sink)
+                scan2.set_log_sink(old_scan_sink)
 
             # 结束提示
             self.write_log("[4/4] Pipeline complete.")
@@ -488,7 +489,7 @@ class App(BaseTk):
 
         finally:
             # 重新启用按钮
-            self.btn_start.config(state="normal")
+            self.after(0, lambda: self.btn_start.config(state="normal"))
 
 
     def load_results_into_table(self):

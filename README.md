@@ -118,6 +118,11 @@ gui_app.py      # GUI entrypoints
 
 ## Quick Start / 快速开始
 
+### Install dependencies
+```bash
+python -m pip install -r requirements.txt
+```
+
 ### Windows one-click
 1. Create `.env` in the project root:
 ```bash
@@ -282,6 +287,11 @@ gui_app.py      # GUI entrypoints
 ---
 
 ## Quick Start / 快速开始
+
+### Install dependencies
+```bash
+python -m pip install -r requirements.txt
+```
 
 ### Windows one-click
 1. Create `.env` in the project root:

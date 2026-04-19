@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -34,11 +35,47 @@ def _install_crop_import_fakes():
     sys.modules["inference_sdk"] = inference_sdk
 
 
+def _install_scan2_import_fakes():
+    cv2 = types.ModuleType("cv2")
+    cv2.IMREAD_COLOR = 1
+    cv2.THRESH_BINARY = 0
+    cv2.THRESH_OTSU = 0
+    cv2.COLOR_BGR2GRAY = 1
+    cv2.COLOR_GRAY2BGR = 2
+    cv2.BORDER_CONSTANT = 0
+    cv2.ROTATE_90_COUNTERCLOCKWISE = 0
+    cv2.INTER_CUBIC = 0
+    cv2.imread = lambda *args, **kwargs: None
+    sys.modules["cv2"] = cv2
+
+    numpy = types.ModuleType("numpy")
+    sys.modules["numpy"] = numpy
+
+    ocr = types.ModuleType("ocr")
+    ocr.init_ocr = lambda: object()
+    ocr.ocr_one_image = lambda *args, **kwargs: ([], "")
+    sys.modules["ocr"] = ocr
+
+    barcode = types.ModuleType("barcode")
+    barcode.decode_small_patch = lambda *args, **kwargs: {"results": []}
+    sys.modules["barcode"] = barcode
+
+    app_paths = types.ModuleType("app_paths")
+    app_paths.ensure_models_installed = lambda: None
+    sys.modules["app_paths"] = app_paths
+
+
 def _import_crop():
     os.environ["API_KEY"] = "test-key"
     sys.modules.pop("crop", None)
     _install_crop_import_fakes()
     return importlib.import_module("crop")
+
+
+def _import_scan2():
+    sys.modules.pop("scan2", None)
+    _install_scan2_import_fakes()
+    return importlib.import_module("scan2")
 
 
 @unittest.skipUnless(os.name == "nt", "Windows file locking behavior only")
@@ -117,6 +154,98 @@ class RunAllPathPropagationTest(unittest.TestCase):
                 calls["out_jsonl"],
                 os.path.join(out_dir, "model_sn_ocr.jsonl"),
             )
+
+    def test_empty_input_returns_nonzero_without_running_pipeline(self):
+        import run_all
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "empty")
+            os.makedirs(input_dir)
+            crop = types.ModuleType("crop")
+            crop.set_log_level = lambda level: None
+            crop.main = mock.Mock()
+
+            scan2 = types.ModuleType("scan2")
+            scan2.set_log_level = lambda level: None
+            scan2.main = mock.Mock()
+
+            argv = ["run_all.py", "--input", input_dir, "--out", os.path.join(root, "out")]
+            with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
+                with mock.patch.object(sys, "argv", argv):
+                    self.assertEqual(run_all.main(), 2)
+
+            crop.main.assert_not_called()
+            scan2.main.assert_not_called()
+
+
+class Scan2ManifestTest(unittest.TestCase):
+    def test_manifest_keeps_labels_without_model_or_sn_crops(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+
+            manifest_path = os.path.join(stage2, "manifest.jsonl")
+            with open(manifest_path, "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "img__with__sep__label_1"}) + "\n")
+                manifest.write(json.dumps({"label_id": "missing_both__label_1"}) + "\n")
+
+            with open(os.path.join(model_dir, "img__with__sep__label_1__model.png"), "wb") as image:
+                image.write(b"model")
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.object(scan2, "recognize_model", return_value=("M1", "raw", "test")):
+                stats = scan2.main(
+                    model_dir=model_dir,
+                    sn_dir=sn_dir,
+                    out_jsonl=out_jsonl,
+                    debug_log=os.path.join(root, "debug.log"),
+                )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+
+            self.assertEqual([row["label_id"] for row in rows], ["img__with__sep__label_1", "missing_both__label_1"])
+            self.assertEqual(rows[1]["model_src"], "missing")
+            self.assertEqual(rows[1]["sn_src"], "missing")
+            self.assertEqual(stats["sn_total"], 0)
+
+
+class CropTempFileTest(unittest.TestCase):
+    def test_infer_with_resize_uses_unique_temp_file_and_cleans_it(self):
+        crop = _import_crop()
+
+        calls = []
+
+        class FakeClient:
+            def infer(self, path, model_id):
+                calls.append(path)
+                self.seen_exists = os.path.exists(path)
+                return {"predictions": []}
+
+        fake_client = FakeClient()
+        fake_img = types.SimpleNamespace(shape=(100, 200, 3))
+
+        def write_tmp(_bgr, path, quality=85):
+            with open(path, "wb") as f:
+                f.write(b"tmp")
+            return True
+
+        with tempfile.TemporaryDirectory() as root:
+            crop.TMP_DIR = root
+            with mock.patch.object(crop, "get_inference_client", return_value=fake_client):
+                with mock.patch.object(crop, "_write_tmp_jpg", side_effect=write_tmp):
+                    self.assertEqual(crop.infer_with_resize(fake_img, "same__name.png", "model/1"), [])
+                    self.assertEqual(crop.infer_with_resize(fake_img, "same__name.png", "model/1"), [])
+
+            self.assertEqual(len(calls), 2)
+            self.assertNotEqual(calls[0], calls[1])
+            self.assertFalse(os.path.exists(calls[0]))
+            self.assertFalse(os.path.exists(calls[1]))
 
 
 if __name__ == "__main__":

@@ -42,8 +42,8 @@ DEFAULT_DIRS = [
 ]
 
 BARCODE_CLI_PATH = get_barcode_cli_path() if get_barcode_cli_path else ""
-CLI_SCALE_FACTORS = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0]
-CLI_MAX_PIXELS = 12_000_000_000
+CLI_SCALE_FACTORS = [1.0, 1.5, 2.0, 2.5]
+CLI_MAX_PIXELS = 50_000_000
 
 PAD_X = 30
 PAD_Y = 16
@@ -203,8 +203,10 @@ def decode_with_transforms(gray_or_bin: np.ndarray,
             else:
                 img = rot
 
-            with _StderrSilencer():
+            try:
                 decoded = pyzbar.decode(img, symbols=[pyzbar.ZBarSymbol.CODE128])
+            except Exception:
+                decoded = []
             for d in decoded:
                 try:
                     data_str = d.data.decode("utf-8", errors="ignore")
@@ -327,6 +329,8 @@ def decode_cli_multi(img: np.ndarray, tag: str) -> List[Dict]:
                         continue
                     seen.add(key)
                     results.append(r)
+                if results:
+                    return results
 
     return results
 

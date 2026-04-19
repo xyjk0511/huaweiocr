@@ -9,6 +9,7 @@ _tmp_barcode_debug/
 crops_labels_only/
 debug_images/
 new_images/
+pasted_images/
 scan_failed_ocr/
 stage1_labels/
 stage2_fields/

@@ -3,22 +3,31 @@ import sys
 import json
 import cv2
 import shutil
+import tempfile
 import time
 import numpy as np
 from inference_sdk import InferenceHTTPClient
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
+LOG_SINK = None
 
 def set_log_level(level: str) -> None:
     global LOG_LEVEL
     LOG_LEVEL = (level or "info").lower()
+
+def set_log_sink(sink) -> None:
+    global LOG_SINK
+    LOG_SINK = sink
 
 def _log(msg: str, level: str = "info") -> None:
     levels = {"debug": 10, "info": 20, "warn": 30, "error": 40}
     cur = levels.get(LOG_LEVEL, 20)
     val = levels.get(level, 20)
     if val >= cur:
-        print(msg)
+        if LOG_SINK:
+            LOG_SINK(msg)
+        else:
+            print(msg)
 
 def load_dotenv(path=".env"):
     if not os.path.exists(path):
@@ -40,8 +49,6 @@ def load_dotenv(path=".env"):
 # ==================== 基础配置 ====================
 load_dotenv()
 API_KEY = os.environ.get("API_KEY", "")
-if not API_KEY:
-    raise RuntimeError("API_KEY is missing. Set it in .env or environment variables.")
 
 # 模型1：裁剪大标签（你原来类似 "huawei-2ha7t/7"）
 MODEL1_ID = "huawei-2ha7t/7"
@@ -126,9 +133,18 @@ def _run_sibling_dir(path):
             return candidate
     raise RuntimeError(f"Could not allocate a clean output directory near {path}")
 
-def _prepare_clean_output_dir(path, label):
+def _prepare_output_dir(path, label, clean=False):
     if not os.path.exists(path):
         return path
+
+    if not clean:
+        fallback = _run_sibling_dir(path)
+        _log(
+            f"WARN: {label} output folder already exists: {path}. "
+            f"Using {fallback} for this run.",
+            "warn",
+        )
+        return fallback
 
     last_error = None
     for _ in range(3):
@@ -149,11 +165,11 @@ def _prepare_clean_output_dir(path, label):
     )
     return fallback
 
-def ensure_dirs():
+def ensure_dirs(clean=False):
     # 每次启动时清空目录
     global STAGE1_DIR, STAGE2_DIR
-    STAGE1_DIR = _prepare_clean_output_dir(STAGE1_DIR, "stage1")
-    STAGE2_DIR = _prepare_clean_output_dir(STAGE2_DIR, "stage2")
+    STAGE1_DIR = _prepare_output_dir(STAGE1_DIR, "stage1", clean=clean)
+    STAGE2_DIR = _prepare_output_dir(STAGE2_DIR, "stage2", clean=clean)
     _refresh_output_paths()
 
     os.makedirs(INPUT_DIR, exist_ok=True)
@@ -233,7 +249,16 @@ def list_images(folder):
             if os.path.splitext(f)[1].lower() in exts]
 
 # ==================== Roboflow Client ====================
-client = InferenceHTTPClient(api_url="https://detect.roboflow.com", api_key=API_KEY)
+client = None
+
+def get_inference_client():
+    global client, API_KEY
+    if client is None:
+        API_KEY = os.environ.get("API_KEY", API_KEY)
+        if not API_KEY:
+            raise RuntimeError("API_KEY is missing. Set it in .env or environment variables.")
+        client = InferenceHTTPClient(api_url="https://detect.roboflow.com", api_key=API_KEY)
+    return client
 
 # ⚠️ 修正：TMP_DIR 必须在 ensure_dirs 之后创建，或者在 infer_with_resize 里确保存在
 # 因为 ensure_dirs 会删除 STAGE1_DIR，导致 TMP_DIR 也不存在了
@@ -267,9 +292,6 @@ def infer_with_resize(original_img_bgr, original_img_path, model_id, max_side=16
     else:
         resized = original_img_bgr
 
-    base = os.path.splitext(os.path.basename(original_img_path))[0]
-    tmp_path = os.path.join(TMP_DIR, f"{base}__infer_tmp.jpg")
-
     # 两次尝试：第一次质量85，仍413就再降质量+再缩
     attempts = [
         {"quality": 85, "max_side": max_side},
@@ -290,10 +312,14 @@ def infer_with_resize(original_img_bgr, original_img_path, model_id, max_side=16
         else:
             resized = original_img_bgr
 
-        _write_tmp_jpg(resized, tmp_path, quality=q)
-
+        os.makedirs(TMP_DIR, exist_ok=True)
+        tmp = tempfile.NamedTemporaryFile(prefix="infer_", suffix=".jpg", dir=TMP_DIR, delete=False)
+        tmp_path = tmp.name
+        tmp.close()
         try:
-            res = client.infer(tmp_path, model_id=model_id)
+            if not _write_tmp_jpg(resized, tmp_path, quality=q):
+                raise RuntimeError(f"Failed to write temporary inference image: {tmp_path}")
+            res = get_inference_client().infer(tmp_path, model_id=model_id)
             preds = (res.get("predictions", []) if isinstance(res, dict) else res) or []
 
             # 坐标从 resized 映射回 original：除以 scale
@@ -311,10 +337,20 @@ def infer_with_resize(original_img_bgr, original_img_path, model_id, max_side=16
                     mapped.append(p2)
                 preds = mapped
 
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
             return preds
 
         except Exception as e:
             last_err = e
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
             # 继续下一轮降质量/降分辨率
             continue
 
@@ -399,6 +435,7 @@ def stage2_crop_fields(label_img_path):
 
     base = os.path.splitext(os.path.basename(label_img_path))[0]
     out = {
+        "label_id": base,
         "label_crop": label_img_path,
         "model_path": None,
         "sn_path": None,
@@ -431,10 +468,10 @@ def stage2_crop_fields(label_img_path):
 
     return out
 
-def main(input_dir=None, out_dir=None, log_level="info"):
+def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     set_log_level(log_level)
     configure_paths(input_dir=input_dir, out_dir=out_dir)
-    ensure_dirs()
+    ensure_dirs(clean=clean)
     
     # 额外创建分类文件夹
     MISS_SN_DIR = os.path.join(STAGE2_DIR, "miss_sn")

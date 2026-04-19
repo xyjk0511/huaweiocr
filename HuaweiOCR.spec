@@ -1,27 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
-datas = [('bundle\\models', 'models'), ('bundle\\BarcodeReaderCLI', 'BarcodeReaderCLI'), ('C:\\Users\\55093\\PycharmProjects\\PythonProject24\\.venv\\Lib\\site-packages\\paddlex\\.version', 'paddlex'), ('C:\\Users\\55093\\PycharmProjects\\PythonProject24\\.venv\\Lib\\site-packages\\paddlex\\configs', 'paddlex\\configs')]
+datas = [
+    ('bundle\\models', 'models'),
+    ('bundle\\BarcodeReaderCLI', 'BarcodeReaderCLI'),
+]
+datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
 datas += copy_metadata('opencv-contrib-python')
 datas += copy_metadata('pyclipper')
 datas += copy_metadata('python-bidi')
+
+binaries = []
+binaries += collect_dynamic_libs('paddle')
+binaries += collect_dynamic_libs('pyzbar')
 
 
 a = Analysis(
     ['gui_app.py'],
     pathex=[],
-    binaries=[
-        ('C:\\Users\\55093\\PycharmProjects\\PythonProject24\\.venv\\Lib\\site-packages\\paddle\\libs\\*', 'paddle\\libs'),
-        ('C:\\Users\\55093\\PycharmProjects\\PythonProject24\\.venv\\Lib\\site-packages\\pyzbar\\libiconv.dll', 'pyzbar'),
-        ('C:\\Users\\55093\\PycharmProjects\\PythonProject24\\.venv\\Lib\\site-packages\\pyzbar\\libzbar-64.dll', 'pyzbar'),
-        ('C:\\Windows\\System32\\vcruntime140.dll', '.'),
-        ('C:\\Windows\\System32\\vcruntime140_1.dll', '.'),
-        ('C:\\Windows\\System32\\msvcp140.dll', '.'),
-        ('C:\\Windows\\System32\\msvcp140_1.dll', '.'),
-        ('C:\\Windows\\System32\\msvcp140_2.dll', '.'),
-        ('C:\\Windows\\System32\\concrt140.dll', '.'),
-        ('C:\\Windows\\System32\\vcomp140.dll', '.'),
-    ],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[],
     hookspath=[],

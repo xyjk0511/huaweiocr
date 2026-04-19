@@ -1,0 +1,13 @@
+inference-sdk
+opencv-contrib-python
+numpy
+paddlepaddle
+paddleocr
+paddlex
+pyzbar
+openpyxl
+Pillow
+tkinterdnd2
+pyclipper
+python-bidi
+pyinstaller

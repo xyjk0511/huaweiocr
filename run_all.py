@@ -5,6 +5,8 @@ import sys
 import time
 import traceback
 
+SUPPORTED_INPUT_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -44,7 +46,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pause before exit (useful for double-click runs)",
     )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Delete existing generated output folders before running",
+    )
     return parser
+
+
+def _list_images(folder: str) -> list[str]:
+    return [
+        os.path.join(folder, f)
+        for f in os.listdir(folder)
+        if os.path.splitext(f)[1].lower() in SUPPORTED_INPUT_EXTS
+    ]
 
 
 def main() -> int:
@@ -61,18 +76,20 @@ def main() -> int:
 
     os.environ["LOG_LEVEL"] = args.log_level
 
-    def _list_images(folder: str) -> list[str]:
-        exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-        try:
-            return [
-                os.path.join(folder, f)
-                for f in os.listdir(folder)
-                if os.path.splitext(f)[1].lower() in exts
-            ]
-        except Exception:
-            return []
+    if not os.path.isdir(args.input):
+        print(f"Input directory does not exist: {args.input}", file=sys.stderr)
+        return 2
 
-    input_images = _list_images(args.input)
+    try:
+        input_images = _list_images(args.input)
+    except OSError as exc:
+        print(f"Input directory is not readable: {args.input} ({exc})", file=sys.stderr)
+        return 2
+
+    if not input_images:
+        print(f"No supported images found in input directory: {args.input}", file=sys.stderr)
+        return 2
+
     total_images = len(input_images)
 
     try:
@@ -84,7 +101,7 @@ def main() -> int:
 
         print("===== [1/2] Crop labels & model/sn fields =====")
         t0 = time.perf_counter()
-        crop.main(input_dir=args.input, out_dir=out_dir, log_level=args.log_level)
+        crop.main(input_dir=args.input, out_dir=out_dir, log_level=args.log_level, clean=args.clean)
         t1 = time.perf_counter()
 
         print("\n===== [2/2] Barcode + OCR for MODEL/SN =====")

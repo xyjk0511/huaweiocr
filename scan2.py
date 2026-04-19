@@ -10,17 +10,25 @@ from app_paths import ensure_models_installed
 
 # Simple log gating for CLI usage.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
+LOG_SINK = None
 
 def set_log_level(level: str) -> None:
     global LOG_LEVEL
     LOG_LEVEL = (level or "info").lower()
+
+def set_log_sink(sink) -> None:
+    global LOG_SINK
+    LOG_SINK = sink
 
 def _log(msg: str, level: str = "info") -> None:
     levels = {"debug": 10, "info": 20, "warn": 30, "error": 40}
     cur = levels.get(LOG_LEVEL, 20)
     val = levels.get(level, 20)
     if val >= cur:
-        print(msg)
+        if LOG_SINK:
+            LOG_SINK(msg)
+        else:
+            print(msg)
 
 # ===================== CONFIG =====================
 MODEL_CROP_DIR = r"stage2_fields\model"
@@ -38,8 +46,6 @@ SN_MAX_SCALE = 4.0
 
 os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
-ensure_models_installed()
 
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -76,6 +82,22 @@ def append_debug(line: str) -> None:
             f.write(line + "\n")
     except Exception:
         pass
+
+
+def _mask_sensitive_text(value: str) -> str:
+    def repl(match):
+        text = match.group(0)
+        if len(text) <= 8:
+            return "*" * len(text)
+        return text[:4] + ("*" * (len(text) - 8)) + text[-4:]
+
+    return re.sub(r"[0-9A-Za-z]{8,}", repl, value)
+
+
+def append_sensitive_debug(line: str) -> None:
+    if LOG_LEVEL != "debug":
+        return
+    append_debug(line)
 
 
 def start_debug_run():
@@ -410,7 +432,7 @@ def decode_sn_with_dbr(sn_img_bgr, sn_name=""):
 
 def try_sn_from_barcode(img_path: str) -> tuple[str, str]:
     lines = read_barcodes(img_path)
-    append_debug(f"[SN][BARCODE] {os.path.basename(img_path)} | {lines}")
+    append_sensitive_debug(f"[SN][BARCODE] {os.path.basename(img_path)} | {lines}")
     if not lines:
         return "", ""
 
@@ -429,7 +451,7 @@ def extract_model_from_barcode_candidate(text: str) -> str:
 
 def try_model_from_barcode(img_path: str) -> tuple[str, str]:
     lines = read_barcodes(img_path)
-    append_debug(f"[MODEL][BARCODE] {os.path.basename(img_path)} | {lines}")
+    append_sensitive_debug(f"[MODEL][BARCODE] {os.path.basename(img_path)} | {lines}")
     if not lines:
         return "", ""
 
@@ -452,8 +474,8 @@ def recognize_model(model_path: str, label_id: str = ""):
     color_img = load_for_ocr_color(model_path)
     if color_img is not None:
         text, concat, texts = ocr_text_with_details(color_img)
-        append_debug(f"[MODEL][OCR_COLOR] {tag}{os.path.basename(model_path)} | {text!r}")
-        append_debug(
+        append_sensitive_debug(f"[MODEL][OCR_COLOR] {tag}{os.path.basename(model_path)} | {text!r}")
+        append_sensitive_debug(
             f"[MODEL][OCR_COLOR][TEXTS] {tag}{os.path.basename(model_path)} | "
             f"{json.dumps(texts, ensure_ascii=False)}"
         )
@@ -463,8 +485,8 @@ def recognize_model(model_path: str, label_id: str = ""):
 
     img = load_and_preprocess(model_path, roi_bottom=False)
     text, concat, texts = ocr_text_with_details(img)
-    append_debug(f"[MODEL][OCR_BIN] {tag}{os.path.basename(model_path)} | {text!r}")
-    append_debug(
+    append_sensitive_debug(f"[MODEL][OCR_BIN] {tag}{os.path.basename(model_path)} | {text!r}")
+    append_sensitive_debug(
         f"[MODEL][OCR_BIN][TEXTS] {tag}{os.path.basename(model_path)} | "
         f"{json.dumps(texts, ensure_ascii=False)}"
     )
@@ -485,7 +507,7 @@ def recognize_sn(sn_path: str, label_id: str = ""):
     tag = f"{label_id} " if label_id else ""
     append_debug(f"[SN] {tag}{os.path.basename(sn_path)}")
     codes = read_barcodes(sn_path)
-    append_debug(f"[SN][BARCODE] {tag}{os.path.basename(sn_path)} | {codes}")
+    append_sensitive_debug(f"[SN][BARCODE] {tag}{os.path.basename(sn_path)} | {codes}")
     meta = {"barcode_found": bool(codes), "ocr_text_found": False}
 
     candidate_lines = filter_sn_lines(codes) or codes
@@ -506,8 +528,8 @@ def recognize_sn(sn_path: str, label_id: str = ""):
         return "", "", "none", meta
 
     text, concat, texts = ocr_text_with_details(color_img)
-    append_debug(f"[SN][OCR_COLOR] {tag}{os.path.basename(sn_path)} | text={text!r} concat={concat!r}")
-    append_debug(f"[SN][OCR_COLOR][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
+    append_sensitive_debug(f"[SN][OCR_COLOR] {tag}{os.path.basename(sn_path)} | text={text!r} concat={concat!r}")
+    append_sensitive_debug(f"[SN][OCR_COLOR][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
     if text or concat:
         meta["ocr_text_found"] = True
     sn = extract_sn_from_text(concat or text)
@@ -516,8 +538,8 @@ def recognize_sn(sn_path: str, label_id: str = ""):
 
     img = load_and_preprocess(sn_path, roi_bottom=True)
     text, concat, texts = ocr_text_with_details(img)
-    append_debug(f"[SN][OCR_BIN] {tag}{os.path.basename(sn_path)} | text={text!r} concat={concat!r}")
-    append_debug(f"[SN][OCR_BIN][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
+    append_sensitive_debug(f"[SN][OCR_BIN] {tag}{os.path.basename(sn_path)} | text={text!r} concat={concat!r}")
+    append_sensitive_debug(f"[SN][OCR_BIN][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
     if text or concat:
         meta["ocr_text_found"] = True
     sn = extract_sn_from_text(concat or text)
@@ -525,7 +547,7 @@ def recognize_sn(sn_path: str, label_id: str = ""):
         return sn, text, "ocr_bin", meta
 
     top_text, top_concat = ocr_sn_top_text(sn_path)
-    append_debug(f"[SN][OCR_TOP] {tag}{os.path.basename(sn_path)} | text={top_text!r} concat={top_concat!r}")
+    append_sensitive_debug(f"[SN][OCR_TOP] {tag}{os.path.basename(sn_path)} | text={top_text!r} concat={top_concat!r}")
     if top_text or top_concat:
         meta["ocr_text_found"] = True
     sn = extract_sn_from_text(top_concat or top_text)
@@ -541,8 +563,53 @@ def recognize_sn(sn_path: str, label_id: str = ""):
 
 
 def label_key(name: str) -> str:
-    parts = name.split("__")
-    return "__".join(parts[:2]) if len(parts) >= 2 else os.path.splitext(name)[0]
+    stem = os.path.splitext(os.path.basename(name))[0]
+    for suffix in ("__model", "__sn", "__FAILED"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
+def _stage2_root():
+    model_parent = os.path.dirname(os.path.abspath(MODEL_CROP_DIR))
+    sn_parent = os.path.dirname(os.path.abspath(SN_CROP_DIR))
+    if model_parent == sn_parent:
+        return model_parent
+    return os.path.commonpath([model_parent, sn_parent])
+
+
+def _manifest_path():
+    return os.path.join(_stage2_root(), "manifest.jsonl")
+
+
+def _load_manifest_records():
+    records = {}
+    path = _manifest_path()
+    if not os.path.isfile(path):
+        return records
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            label_id = item.get("label_id")
+            if not label_id and item.get("label_crop"):
+                label_id = label_key(item["label_crop"])
+            if not label_id:
+                continue
+            record = records.setdefault(label_id, {})
+            if item.get("label_crop"):
+                record["label_crop"] = item["label_crop"]
+            if item.get("model_path") and os.path.isfile(item["model_path"]):
+                record["model_path"] = item["model_path"]
+            if item.get("sn_path") and os.path.isfile(item["sn_path"]):
+                record["sn_path"] = item["sn_path"]
+    return records
 
 
 # ===================== MAIN =====================
@@ -555,8 +622,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         out_jsonl=out_jsonl,
         debug_log=debug_log,
     )
+    os.makedirs(os.path.dirname(os.path.abspath(OUT_JSONL)) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(DEBUG_LOG_PATH)) or ".", exist_ok=True)
     start_debug_run()
-    records = {}
+    records = _load_manifest_records()
     model_files = []
     sn_files = []
     stats = {
@@ -568,21 +637,23 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         "ocr_fail": 0,
     }
 
-    for fname in os.listdir(MODEL_CROP_DIR):
-        ext = os.path.splitext(fname)[1].lower()
-        if ext not in EXTS:
-            continue
-        model_files.append(fname)
-        key = label_key(fname)
-        records.setdefault(key, {})["model_path"] = os.path.join(MODEL_CROP_DIR, fname)
+    if os.path.isdir(MODEL_CROP_DIR):
+        for fname in os.listdir(MODEL_CROP_DIR):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in EXTS:
+                continue
+            model_files.append(fname)
+            key = label_key(fname)
+            records.setdefault(key, {})["model_path"] = os.path.join(MODEL_CROP_DIR, fname)
 
-    for fname in os.listdir(SN_CROP_DIR):
-        ext = os.path.splitext(fname)[1].lower()
-        if ext not in EXTS:
-            continue
-        sn_files.append(fname)
-        key = label_key(fname)
-        records.setdefault(key, {})["sn_path"] = os.path.join(SN_CROP_DIR, fname)
+    if os.path.isdir(SN_CROP_DIR):
+        for fname in os.listdir(SN_CROP_DIR):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in EXTS:
+                continue
+            sn_files.append(fname)
+            key = label_key(fname)
+            records.setdefault(key, {})["sn_path"] = os.path.join(SN_CROP_DIR, fname)
 
     append_debug(f"[SCAN2] model_files={len(model_files)} sn_files={len(sn_files)} keys={len(records)}")
     append_debug(f"[SCAN2] model_names={sorted(model_files)}")
@@ -613,7 +684,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 model_src = f"{model_src}+sn_hint" if model_src else "sn_hint"
 
             if model_code == "S380-S8P2T" and sn_code and not sn_code.startswith("4E25A017"):
-                append_debug(f"[WARN] {key} model= S380-S8P2T but sn={sn_code}")
+                append_sensitive_debug(f"[WARN] {key} model= S380-S8P2T but sn={sn_code}")
 
             out = {
                 "label_id": key,
@@ -625,10 +696,12 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "sn_src": sn_src,
             }
 
+            log_model = model_code if LOG_LEVEL == "debug" else _mask_sensitive_text(model_code)
+            log_sn = sn_code if LOG_LEVEL == "debug" else _mask_sensitive_text(sn_code)
             _log(
                 f"[{key}] "
-                f"MODEL={model_code} (M_SRC={model_src}) | "
-                f"SN={sn_code} (SN_SRC={sn_src})",
+                f"MODEL={log_model} (M_SRC={model_src}) | "
+                f"SN={log_sn} (SN_SRC={sn_src})",
                 "info",
             )
 
