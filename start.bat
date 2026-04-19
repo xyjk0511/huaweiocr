@@ -13,5 +13,14 @@ if "%API_KEY%"=="" (
   exit /b 1
 )
 
-python run_all.py --pause
+if not exist new_images mkdir new_images
+
+dir /b new_images\*.jpg new_images\*.jpeg new_images\*.png new_images\*.bmp new_images\*.webp >nul 2>nul
+if errorlevel 1 (
+  echo Put image files into the new_images folder, then run start.bat again.
+  pause
+  exit /b 2
+)
+
+python run_all.py --input new_images --out runs --pause
 pause

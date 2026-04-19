@@ -3,7 +3,10 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 
 datas = [
     ('bundle\\models', 'models'),
-    ('bundle\\BarcodeReaderCLI', 'BarcodeReaderCLI'),
+    ('bundle\\BarcodeReaderCLI\\bin\\BarcodeReaderCLI.exe', 'BarcodeReaderCLI\\bin'),
+    ('bundle\\BarcodeReaderCLI\\bin\\curl.exe', 'BarcodeReaderCLI\\bin'),
+    ('bundle\\BarcodeReaderCLI\\bin\\curl-ca-bundle.crt', 'BarcodeReaderCLI\\bin'),
+    ('bundle\\BarcodeReaderCLI\\bin\\inlite-barcode-reader-license-agreement.pdf', 'BarcodeReaderCLI\\bin'),
 ]
 datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
 datas += copy_metadata('opencv-contrib-python')

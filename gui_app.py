@@ -6,6 +6,7 @@ import time
 import datetime
 import json
 import csv
+import re
 import warnings
 import openpyxl
 import tkinter as tk
@@ -34,6 +35,14 @@ except ImportError:
     TkinterDnD = None
 # 支持的图片后缀
 SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+def _mask_path_text(text: str) -> str:
+    text = "" if text is None else str(text)
+    text = re.sub(r"(?i)[a-z]:[\\/][^\r\n\t|,;]+", "[path]", text)
+    return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\r\n\t|,;]+", "[path]", text)
+
+
 def _self_check():
     if getattr(sys, "frozen", False):
         base_dir = os.path.dirname(sys.executable)
@@ -98,7 +107,7 @@ def _self_check():
         lines.append(f"pyzbar_import=fail err={exc!r}")
     try:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write("\n".join(_mask_path_text(line) for line in lines) + "\n")
     except Exception:
         pass
 # ============== GUI 主窗体 ==============
@@ -112,6 +121,8 @@ class App(BaseTk):
         self.image_paths = []
         self._crop_module = None
         self._scan2_module = None
+        self._is_running = False
+        self.result_rows = []
         # ============ 顶部：拖拽区域 ============
         top_frame = tk.Frame(self)
         top_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -212,6 +223,7 @@ class App(BaseTk):
     # ========== 工具函数 ==========
     def write_log(self, text: str):
         """线程安全地往日志窗口里写一行"""
+        text = _mask_path_text(text)
         def _append():
             self.log.configure(state="normal")
             self.log.insert(tk.END, text + "\n")
@@ -303,6 +315,7 @@ class App(BaseTk):
     def clear_table(self):
         """清空识别结果表"""
         self.table.delete(*self.table.get_children())
+        self.result_rows = []
         self.write_log("已清空表格内容。")
     def _format_issue_summary(self) -> str:
         """汇总未识别项，便于一眼查看问题样本。"""
@@ -361,10 +374,13 @@ class App(BaseTk):
             ws = wb.active
             ws.title = "results"
             ws.append(list(headers))
-            for item in self.table.get_children():
-                ws.append(list(self.table.item(item, "values")))
+            if self.result_rows:
+                for row in self.result_rows:
+                    ws.append([row.get(name, "") for name in headers])
+            else:
+                for item in self.table.get_children():
+                    ws.append(list(self.table.item(item, "values")))
             wb.save(path)
-            self.write_log(f"结果文件：{path}")
             self.write_log(f"结果文件：{path}")
             self.write_log(self._format_issue_summary())
         except Exception as e:
@@ -372,10 +388,14 @@ class App(BaseTk):
     def start_run(self):
 
         """点击“开始识别”按钮"""
+        if self._is_running:
+            messagebox.showwarning("正在运行", "当前识别任务还未完成，请等待本次运行结束。")
+            return
         if not self.image_paths:
             messagebox.showwarning("没有图片", "请先拖拽或选择至少一张图片。")
             return
         # 禁用按钮，防止重复点击
+        self._is_running = True
         self.btn_start.config(state="disabled")
         self.write_log("开始执行完整流水线……")
         t = threading.Thread(target=self.run_pipeline, daemon=True)
@@ -386,8 +406,9 @@ class App(BaseTk):
             try:
                 crop_module, scan2_module = load_pipeline_modules()
             except Exception as exc:
-                self.write_log(f"❌ 加载 OCR 依赖失败：{exc}")
-                self.after(0, lambda: messagebox.showerror("加载依赖失败", str(exc)))
+                msg = _mask_path_text(str(exc))
+                self.write_log(f"❌ 加载 OCR 依赖失败：{msg}")
+                self.after(0, lambda msg=msg: messagebox.showerror("加载依赖失败", msg))
                 return
 
             self._crop_module = crop_module
@@ -395,8 +416,8 @@ class App(BaseTk):
             input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
             input_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
 
-            self.write_log(f"[1/4] 准备输入目录：{input_dir}")
-            self.write_log(f"已拷贝 {len(copied_records)} 个图片到 {input_dir}")
+            self.write_log("[1/4] 准备输入目录")
+            self.write_log(f"已拷贝 {len(copied_records)} 个图片。")
 
             old_crop_sink = getattr(crop_module, "LOG_SINK", None)
             old_scan_sink = getattr(scan2_module, "LOG_SINK", None)
@@ -404,9 +425,20 @@ class App(BaseTk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log("[2/4] 运行 crop_labels.main()：大图 → label → model/sn 小图")
-                crop_module.main(input_dir=input_dir)
+                crop_stats = crop_module.main(input_dir=input_dir)
+                if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
+                    raise RuntimeError("未生成任何 label 裁剪图，已停止 OCR。")
+                if crop_stats.get("manifest_rows", 0) <= 0:
+                    raise RuntimeError("未生成 manifest 记录，已停止 OCR。")
                 self.write_log("[3/4] 运行 scan2.main()：识别 MODEL / SN")
-                scan2_module.main(model_dir=crop_module.OUT_MODEL_DIR, sn_dir=crop_module.OUT_SN_DIR)
+                result_jsonl = os.path.join(crop_module.STAGE2_DIR, "model_sn_ocr.jsonl")
+                debug_log = os.path.join(crop_module.STAGE2_DIR, "debug_ocr_barcode.log")
+                scan2_module.main(
+                    model_dir=crop_module.OUT_MODEL_DIR,
+                    sn_dir=crop_module.OUT_SN_DIR,
+                    out_jsonl=result_jsonl,
+                    debug_log=debug_log,
+                )
                 self.after(0, self.load_results_into_table)
             finally:
                 crop_module.set_log_sink(old_crop_sink)
@@ -417,9 +449,15 @@ class App(BaseTk):
             self.write_log(f"裁剪文件夹：{crop_module.STAGE1_DIR}/，{crop_module.OUT_MODEL_DIR}/，{crop_module.OUT_SN_DIR}/")
             self.after(0, lambda: self.write_log(self._format_issue_summary()))
         except Exception as e:
+            detail = _mask_path_text(traceback.format_exc())
             self.write_log(f"❌ 出错：{e}")
+            self.write_log(detail)
+            self.after(0, lambda msg=_mask_path_text(str(e)): messagebox.showerror("识别失败", msg))
         finally:
-            self.after(0, lambda: self.btn_start.config(state="normal"))
+            def _finish():
+                self._is_running = False
+                self.btn_start.config(state="normal")
+            self.after(0, _finish)
     def load_results_into_table(self):
         """读取 scan2 输出 JSONL 并追加到表格"""
         scan2_module = self._scan2_module
@@ -444,7 +482,9 @@ class App(BaseTk):
         except Exception as e:
             self.write_log(f"⚠️ 读取结果失败：{e}")
             return
+        self.result_rows = rows
         def _append():
+            self.table.delete(*self.table.get_children())
             for r in rows:
                 values = (
                     r.get("label_id", ""),

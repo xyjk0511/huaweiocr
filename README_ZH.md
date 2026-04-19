@@ -1,110 +1,99 @@
 # HuaweiOCR
 
-[English](README.md) | [中文](README_ZH.md)
+面向 Windows 的设备标签批量 OCR 流水线。
 
-## 一句话定义
-面向设备标签图片的自动化识别工具：裁剪字段 -> 条码识别 -> OCR -> 结构化导出（JSONL），提供 Windows 一键运行。
+## 做什么
 
-## 项目简介
-这是一个面向设备标签/条码图片的本地批处理工具，结合目标检测（Roboflow 推理）、条码识别与 OCR，自动提取设备型号（Model）与序列号（SN）。项目核心思路是“先定位，再识别”：
+流程会检测标签区域，裁剪 model/SN 字段，优先识别 SN 条码，再用 OCR 兜底，最后输出结构化 JSONL。
 
-- 使用 Roboflow 模型检测整张图片中的标签区域。
-- 对标签区域进行二次裁剪，分别提取 model/sn 的小块图像。
-- 对小块图像执行条码识别与 OCR，提取最终的型号/序列号。
-- 输出结构化结果（JSONL）与调试日志，便于回溯与优化。
+Roboflow 检测步骤需要有效 `API_KEY`。PaddleOCR 模型和条码 CLI 可以随包携带，但检测步骤不是完全离线。
 
+## 环境
 
-## Pipeline
-```
-Input -> crop -> barcode -> ocr -> postprocess -> output
-```
-
-## 功能亮点
-- 端到端批量处理：从原图到结果一键完成。
-- 多阶段裁剪与过滤：提升定位精度与识别成功率。
-- 条码+OCR 双通道：条码优先，OCR 兜底。
-- 调试产物留存：失败样本与日志方便复盘。
-- 本地离线依赖：包含模型与辅助工具，尽量减少外部依赖。
-
-## 目录结构（核心）
-- `crop.py`：阶段 1/2 裁剪逻辑（Roboflow 检测 + 裁剪）
-- `scan2.py`：OCR/条码识别与结构化输出
-- `barcode.py`：条码识别增强逻辑
-- `run_all.py`：一键流水线入口
-- `start.bat`：Windows 一键运行脚本
-
-## 运行环境
 - Windows
-- Python 3.10+（建议）
-- 需要有效的 Roboflow API Key
+- 推荐 Python 3.12
+- `requirements.txt` 已锁定依赖版本
+- `.env` 中配置 Roboflow API key
 
-## 快速开始（Windows）
-1) 在项目根目录创建 `.env` 文件（不要提交到 Git）：
+安装依赖：
+
+```bash
+python -m pip install -r requirements.txt
 ```
+
+创建 `.env`：
+
+```text
 API_KEY=your_api_key_here
 ```
 
-2) 双击 `start.bat` 启动流程。
+## Windows 一键启动
 
-## CLI（命令行接口）
-```
-python run_all.py --input ./images --out ./out --format jsonl --log-level info --device cpu
+双击 `start.bat`。
+
+脚本会自动创建 `new_images`。如果目录里没有支持的图片，会直接提示放入图片，不会继续跑空流水线。
+
+结果写到 `runs/` 下。如果输出目录已存在，程序会自动创建本次运行专用目录，避免覆盖旧结果。
+
+## 命令行
+
+```bash
+python run_all.py --input new_images --out runs --format jsonl --log-level info --device cpu
 ```
 
 查看完整参数：
-```
+
+```bash
 python run_all.py --help
 ```
 
-## 处理流程概览
-1) 读取 `new_images/` 中的原始图片。
-2) 阶段 1：检测并裁剪标签区域，保存到 `stage1_labels/`。
-3) 阶段 2：从标签区域裁剪 model/sn，小块保存到 `stage2_fields/`。
-4) `scan2.py` 对裁剪结果执行条码识别和 OCR。
-5) 生成最终结果文件 `model_sn_ocr.jsonl` 和调试日志 `debug_ocr_barcode.log`。
+## 输出
 
-## 输出说明
-- `stage1_labels/`：标签裁剪结果
-- `stage2_fields/model/`：型号裁剪结果
-- `stage2_fields/sn/`：序列号裁剪结果
-- `model_sn_ocr.jsonl`：最终识别结果（每行一个 JSON）
-- `debug_ocr_barcode.log`：识别过程日志
-默认输出在项目根目录；使用 `--out` 可指定输出根目录。
+常见输出：
 
-## 量化统计
-CLI 会打印统计信息（示例字段）：
-- 处理总量 N、总耗时、平均单张耗时
-- SN 提取成功率
-- 正则校验通过率
-- 错误类型分布（barcode_fail / ocr_fail / regex_fail）
+- `stage1_labels/` 或 `stage1_labels_run_*`
+- `stage2_fields/model/`
+- `stage2_fields/sn/`
+- `stage2_fields/manifest.jsonl`
+- `stage2_fields/model_sn_ocr.jsonl`
+- `stage2_fields/debug_ocr_barcode.log`，只在 `--log-level debug` 时写入
 
-## Roadmap
-- CSV 导出与可配置字段映射
-- 更细的错误分类与可视化报告
-- CLI 增量处理与断点续跑
-- 轻量化发布（可选 LFS 或模型下载脚本）
+默认会对 `model_raw` 和 `sn_raw` 脱敏，降低结果文件中的原始 OCR/条码文本泄露风险。只有受控本地调试才建议在代码层显式使用 `unsafe_raw=True`。
 
+JSONL 示例：
 
-## 输出格式示例
-下面是一个简化的 JSONL 示例（单行）：
-```
-{"label_id":"img_001__label_1","model":"S380-S8P2T","sn":"4E25XXXXXXXX","model_src":"barcode","sn_src":"ocr","model_raw":"...","sn_raw":"..."}
+```json
+{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"********","sn_raw":"4E25********0000","model_src":"ocr_color","sn_src":"barcode"}
 ```
 
-## 鲁棒性策略
-- 多尺度放大：对小条码做放大后再识别。
-- ROI 截取：只处理标签关键区域，减少干扰。
-- 旋转尝试：0/90/180/270 方向轮询。
-- 正则校验：对 SN/Model 做规则过滤。
-- 失败样本归档：失败图片会落盘，方便复盘。
+## GUI
 
-## 常见问题
-- 没有识别结果：请检查图片清晰度、角度、光照；或调大裁剪尺寸/阈值。
-- 报 API_KEY 缺失：确认 `.env` 存在且格式正确。
-- 识别不稳定：可调整 `crop.py` / `scan2.py` 中阈值参数。
+运行：
+
+```bash
+python gui_app.py
+```
+
+或英文界面：
+
+```bash
+python gui_app_en.py
+```
+
+GUI 会把选择的图片复制到本次运行专用输入目录，阻止重复并发运行，并从原始 JSONL 行导出 Excel。英文界面表格展示可以脱敏，但导出的 `model` 和 `sn` 保留识别值。
+
+## 测试
+
+```bash
+python -m unittest discover -v
+```
+
+测试覆盖输出目录隔离、manifest 解析、条码 CLI 调用预算、debug 日志脱敏、GUI 输入暂存、模型安装锁恢复等回归场景。
 
 ## 安全说明
-- GitHub 仓库不包含 `.env`，API Key 不会暴露。
-- 需要共享给别人使用时，私下发送 `.env` 文件即可。
-- 不建议将 API Key 写进代码或公开仓库。
-- 轮换 Key：替换 `.env` 中的 `API_KEY` 即可，无需改代码。
+
+- 不要提交 `.env`。
+- 不要把 API key 写死在代码里。
+- debug 日志默认关闭，只在 `--log-level debug` 时写入。
+- GUI 日志和 self-check 日志会脱敏本机路径。
+- PyInstaller 打包只包含条码 CLI 运行所需文件，不包含 vendor examples/configs。

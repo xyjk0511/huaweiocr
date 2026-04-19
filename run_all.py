@@ -101,16 +101,25 @@ def main() -> int:
 
         print("===== [1/2] Crop labels & model/sn fields =====")
         t0 = time.perf_counter()
-        crop.main(input_dir=args.input, out_dir=out_dir, log_level=args.log_level, clean=args.clean)
+        crop_stats = crop.main(input_dir=args.input, out_dir=out_dir, log_level=args.log_level, clean=args.clean)
         t1 = time.perf_counter()
+
+        if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
+            print("No label crops were generated; stopping before OCR.", file=sys.stderr)
+            return 1
+        if crop_stats.get("manifest_rows", 0) <= 0:
+            print("No manifest rows were generated; stopping before OCR.", file=sys.stderr)
+            return 1
 
         print("\n===== [2/2] Barcode + OCR for MODEL/SN =====")
         t2 = time.perf_counter()
+        result_jsonl = os.path.join(crop.STAGE2_DIR, "model_sn_ocr.jsonl")
+        debug_log = os.path.join(crop.STAGE2_DIR, "debug_ocr_barcode.log")
         stats = scan2.main(
             model_dir=crop.OUT_MODEL_DIR,
             sn_dir=crop.OUT_SN_DIR,
-            out_jsonl=os.path.join(out_dir, "model_sn_ocr.jsonl"),
-            debug_log=os.path.join(out_dir, "debug_ocr_barcode.log"),
+            out_jsonl=result_jsonl,
+            debug_log=debug_log,
             log_level=args.log_level,
         )
         t3 = time.perf_counter()
@@ -119,7 +128,7 @@ def main() -> int:
         print(f"  - {crop.STAGE1_DIR}")
         print(f"  - {crop.OUT_MODEL_DIR}")
         print(f"  - {crop.OUT_SN_DIR}")
-        print(f"  - {os.path.join(out_dir, 'model_sn_ocr.jsonl')}")
+        print(f"  - {result_jsonl}")
         total_time = (t3 - t0)
         if total_images > 0:
             avg_time = total_time / total_images

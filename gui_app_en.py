@@ -6,6 +6,7 @@ import time
 import datetime
 import json
 import csv
+import re
 import warnings
 import openpyxl
 import tkinter as tk
@@ -38,6 +39,13 @@ except ImportError:
 
 # 支持的图片后缀
 SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+def _mask_path_text(text: str) -> str:
+    text = "" if text is None else str(text)
+    text = re.sub(r"(?i)[a-z]:[\\/][^\r\n\t|,;]+", "[path]", text)
+    return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\r\n\t|,;]+", "[path]", text)
+
 
 def _self_check():
     if getattr(sys, "frozen", False):
@@ -110,7 +118,7 @@ def _self_check():
 
     try:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write("\n".join(_mask_path_text(line) for line in lines) + "\n")
     except Exception:
         pass
 
@@ -130,6 +138,8 @@ class App(BaseTk):
         self.image_paths = []
         self._crop_module = None
         self._scan2_module = None
+        self._is_running = False
+        self.result_rows = []
 
         # ============ 顶部：拖拽区域 ============
         top_frame = tk.Frame(self)
@@ -271,6 +281,7 @@ class App(BaseTk):
 
     def write_log(self, text: str):
         """线程安全地往日志窗口里写一行"""
+        text = _mask_path_text(text)
         def _append():
             self.log.configure(state="normal")
             self.log.insert(tk.END, text + "\n")
@@ -377,6 +388,7 @@ class App(BaseTk):
     def clear_table(self):
         """Clear results table."""
         self.table.delete(*self.table.get_children())
+        self.result_rows = []
         self.write_log("Cleared table.")
 
     def export_table(self):
@@ -402,8 +414,12 @@ class App(BaseTk):
             ws = wb.active
             ws.title = "results"
             ws.append(list(headers))
-            for item in self.table.get_children():
-                ws.append(list(self.table.item(item, "values")))
+            if self.result_rows:
+                for row in self.result_rows:
+                    ws.append([row.get(name, "") for name in headers])
+            else:
+                for item in self.table.get_children():
+                    ws.append(list(self.table.item(item, "values")))
             wb.save(path)
             self.write_log(f"Exported results to {path}")
         except Exception as e:
@@ -412,11 +428,15 @@ class App(BaseTk):
 
     def start_run(self):
         """Run recognition."""
+        if self._is_running:
+            messagebox.showwarning("Running", "A recognition task is already running.")
+            return
         if not self.image_paths:
             messagebox.showwarning("No Images", "Please add at least one image.")
             return
 
         # 禁用按钮，防止重复点击
+        self._is_running = True
         self.btn_start.config(state="disabled")
         self.write_log("Running full pipeline...")
 
@@ -429,8 +449,9 @@ class App(BaseTk):
             try:
                 crop_module, scan2_module = load_pipeline_modules()
             except Exception as exc:
-                self.write_log(f"ERROR: Failed to load OCR dependencies: {exc}")
-                self.after(0, lambda: messagebox.showerror("Dependency Load Failed", str(exc)))
+                msg = _mask_path_text(str(exc))
+                self.write_log(f"ERROR: Failed to load OCR dependencies: {msg}")
+                self.after(0, lambda msg=msg: messagebox.showerror("Dependency Load Failed", msg))
                 return
 
             self._crop_module = crop_module
@@ -438,8 +459,8 @@ class App(BaseTk):
             input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
             input_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
 
-            self.write_log(f"[1/4] Preparing input directory: {input_dir}")
-            self.write_log(f"Copied {len(copied_records)} image(s) to {input_dir}")
+            self.write_log("[1/4] Preparing input directory")
+            self.write_log(f"Copied {len(copied_records)} image(s).")
 
             old_crop_sink = getattr(crop_module, "LOG_SINK", None)
             old_scan_sink = getattr(scan2_module, "LOG_SINK", None)
@@ -447,9 +468,20 @@ class App(BaseTk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log("[2/4] Running crop.main(): full image -> label -> model/sn crops")
-                crop_module.main(input_dir=input_dir)
+                crop_stats = crop_module.main(input_dir=input_dir)
+                if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
+                    raise RuntimeError("No label crops were generated; OCR was stopped.")
+                if crop_stats.get("manifest_rows", 0) <= 0:
+                    raise RuntimeError("No manifest rows were generated; OCR was stopped.")
                 self.write_log("[3/4] Running scan2.main(): read MODEL / SN")
-                scan2_module.main(model_dir=crop_module.OUT_MODEL_DIR, sn_dir=crop_module.OUT_SN_DIR)
+                result_jsonl = os.path.join(crop_module.STAGE2_DIR, "model_sn_ocr.jsonl")
+                debug_log = os.path.join(crop_module.STAGE2_DIR, "debug_ocr_barcode.log")
+                scan2_module.main(
+                    model_dir=crop_module.OUT_MODEL_DIR,
+                    sn_dir=crop_module.OUT_SN_DIR,
+                    out_jsonl=result_jsonl,
+                    debug_log=debug_log,
+                )
                 self.after(0, self.load_results_into_table)
             finally:
                 crop_module.set_log_sink(old_crop_sink)
@@ -460,10 +492,16 @@ class App(BaseTk):
             self.write_log(f"Output folders: {crop_module.STAGE1_DIR}/, {crop_module.OUT_MODEL_DIR}/, {crop_module.OUT_SN_DIR}/")
 
         except Exception as e:
+            detail = _mask_path_text(traceback.format_exc())
             self.write_log(f"ERROR: {e}")
+            self.write_log(detail)
+            self.after(0, lambda msg=_mask_path_text(str(e)): messagebox.showerror("Recognition Failed", msg))
 
         finally:
-            self.after(0, lambda: self.btn_start.config(state="normal"))
+            def _finish():
+                self._is_running = False
+                self.btn_start.config(state="normal")
+            self.after(0, _finish)
 
 
     def load_results_into_table(self):
@@ -492,7 +530,9 @@ class App(BaseTk):
             self.write_log(f"WARN: Failed to read results: {e}")
             return
 
+        self.result_rows = rows
         def _append():
+            self.table.delete(*self.table.get_children())
             for r in rows:
                 values = (
                     r.get("label_id", ""),

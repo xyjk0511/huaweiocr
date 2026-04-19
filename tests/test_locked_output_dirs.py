@@ -168,9 +168,10 @@ class RunAllPathPropagationTest(unittest.TestCase):
             crop = types.ModuleType("crop")
             crop.OUT_MODEL_DIR = os.path.join(out_dir, "stage2_fields_run_x", "model")
             crop.OUT_SN_DIR = os.path.join(out_dir, "stage2_fields_run_x", "sn")
+            crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields_run_x")
             crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels_run_x")
             crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: None
+            crop.main = lambda **kwargs: {"label_count": 1, "manifest_rows": 1}
 
             calls = {}
             scan2 = types.ModuleType("scan2")
@@ -197,8 +198,33 @@ class RunAllPathPropagationTest(unittest.TestCase):
             self.assertEqual(calls["sn_dir"], crop.OUT_SN_DIR)
             self.assertEqual(
                 calls["out_jsonl"],
-                os.path.join(out_dir, "model_sn_ocr.jsonl"),
+                os.path.join(crop.STAGE2_DIR, "model_sn_ocr.jsonl"),
             )
+
+    def test_zero_label_crop_returns_nonzero_without_scanning(self):
+        import run_all
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "out")
+            os.makedirs(input_dir)
+            with open(os.path.join(input_dir, "sample.png"), "wb") as image:
+                image.write(b"not-a-real-image")
+
+            crop = types.ModuleType("crop")
+            crop.set_log_level = lambda level: None
+            crop.main = mock.Mock(return_value={"label_count": 0, "manifest_rows": 0})
+
+            scan2 = types.ModuleType("scan2")
+            scan2.set_log_level = lambda level: None
+            scan2.main = mock.Mock()
+
+            argv = ["run_all.py", "--input", input_dir, "--out", out_dir]
+            with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
+                with mock.patch.object(sys, "argv", argv):
+                    self.assertEqual(run_all.main(), 1)
+
+            scan2.main.assert_not_called()
 
     def test_empty_input_returns_nonzero_without_running_pipeline(self):
         import run_all
@@ -259,8 +285,116 @@ class Scan2ManifestTest(unittest.TestCase):
             self.assertEqual(rows[1]["sn_src"], "missing")
             self.assertEqual(stats["sn_total"], 0)
 
+    def test_manifest_bad_json_fails_fast(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            os.makedirs(os.path.join(stage2, "model"))
+            os.makedirs(os.path.join(stage2, "sn"))
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write("{bad json}\n")
+
+            with self.assertRaisesRegex(ValueError, "Invalid manifest JSON"):
+                scan2.main(
+                    model_dir=os.path.join(stage2, "model"),
+                    sn_dir=os.path.join(stage2, "sn"),
+                    out_jsonl=os.path.join(root, "out.jsonl"),
+                    debug_log=os.path.join(root, "debug.log"),
+                )
+
+    def test_manifest_missing_label_id_fails_fast(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            os.makedirs(os.path.join(stage2, "model"))
+            os.makedirs(os.path.join(stage2, "sn"))
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"model_path": None}) + "\n")
+
+            with self.assertRaisesRegex(ValueError, "missing label_id"):
+                scan2.main(
+                    model_dir=os.path.join(stage2, "model"),
+                    sn_dir=os.path.join(stage2, "sn"),
+                    out_jsonl=os.path.join(root, "out.jsonl"),
+                    debug_log=os.path.join(root, "debug.log"),
+                )
+
+    def test_raw_fields_are_masked_by_default(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            open(model_path, "wb").close()
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
+                with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
+                    scan2.main(model_dir=model_dir, sn_dir=sn_dir, out_jsonl=out_jsonl, debug_log=os.path.join(root, "debug.log"))
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+            self.assertEqual(row["model"], "MODEL1")
+            self.assertEqual(row["sn"], "SN1")
+            self.assertNotIn("RAW_MODEL_SECRET_123456", row["model_raw"])
+            self.assertNotIn("RAW_SN_SECRET_123456", row["sn_raw"])
+
+    def test_model_recognition_skips_barcode_cli_by_default(self):
+        scan2 = _import_scan2()
+        fake_img = object()
+
+        with mock.patch.object(scan2, "try_model_from_barcode") as barcode_mock:
+            with mock.patch.object(scan2, "load_for_ocr_color", return_value=None):
+                with mock.patch.object(scan2, "load_and_preprocess", return_value=fake_img):
+                    with mock.patch.object(scan2, "ocr_text_with_details", return_value=("", "", [])):
+                        model, _raw, source = scan2.recognize_model("model.png")
+
+        self.assertEqual(model, "")
+        self.assertEqual(source, "none")
+        barcode_mock.assert_not_called()
+
 
 class CropTempFileTest(unittest.TestCase):
+    def test_stage1_uses_extension_in_label_name_to_avoid_same_stem_collision(self):
+        crop = _import_crop()
+        fake_img = types.SimpleNamespace(shape=(100, 100, 3), size=1)
+        pred = {"x": 50, "y": 50, "width": 20, "height": 20, "class": crop.MODEL1_LABEL_CLASS}
+
+        with tempfile.TemporaryDirectory() as root:
+            crop.configure_paths(input_dir=os.path.join(root, "input"), out_dir=root)
+            os.makedirs(crop.INPUT_DIR)
+            path_png = os.path.join(root, "a", "same.png")
+            path_jpg = os.path.join(root, "b", "same.jpg")
+
+            with mock.patch.object(crop, "read_image", return_value=fake_img):
+                with mock.patch.object(crop, "infer_with_resize", return_value=[pred]):
+                    with mock.patch.object(crop, "crop_from_pred", return_value=fake_img):
+                        with mock.patch.object(crop, "save_png_required", side_effect=lambda path, _img, _ctx: path):
+                            out_png = crop.stage1_crop_labels(path_png)
+                            out_jpg = crop.stage1_crop_labels(path_jpg)
+
+            self.assertEqual(os.path.basename(out_png[0]), "same.png__label_1.png")
+            self.assertEqual(os.path.basename(out_jpg[0]), "same.jpg__label_1.png")
+            self.assertNotEqual(os.path.basename(out_png[0]), os.path.basename(out_jpg[0]))
+
+    def test_save_png_required_raises_when_write_fails(self):
+        crop = _import_crop()
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "out.png")
+            with mock.patch.object(crop, "save_png", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "Failed to write test crop"):
+                    crop.save_png_required(target, object(), "test crop")
+
     def test_infer_with_resize_uses_unique_temp_file_and_cleans_it(self):
         crop = _import_crop()
 
@@ -409,8 +543,8 @@ class AppPathsInstallTest(unittest.TestCase):
             with open(os.path.join(source_model, "weights.bin"), "wb") as f:
                 f.write(b"complete")
 
-            home = os.path.join(root, "home")
-            target = os.path.join(home, ".paddlex", "official_models", "model_a")
+            data_dir = os.path.join(root, "data")
+            target = os.path.join(data_dir, "models", "official_models", "model_a")
             os.makedirs(target)
             with open(os.path.join(target, "partial.bin"), "wb") as f:
                 f.write(b"partial")
@@ -419,7 +553,7 @@ class AppPathsInstallTest(unittest.TestCase):
                 return os.path.join(root, "bundled", *parts)
 
             with mock.patch.object(app_paths, "get_resource_path", side_effect=fake_resource_path):
-                with mock.patch.object(app_paths.os.path, "expanduser", return_value=home):
+                with mock.patch.dict(os.environ, {"HUAWEIOCR_DATA_DIR": data_dir, "HUAWEIOCR_MODEL_DIR": ""}, clear=False):
                     app_paths.ensure_models_installed()
 
             self.assertTrue(os.path.exists(os.path.join(target, "weights.bin")))
@@ -436,8 +570,8 @@ class AppPathsInstallTest(unittest.TestCase):
             with open(os.path.join(source_model, "weights.bin"), "wb") as f:
                 f.write(b"complete")
 
-            home = os.path.join(root, "home")
-            target_root = os.path.join(home, ".paddlex", "official_models")
+            data_dir = os.path.join(root, "data")
+            target_root = os.path.join(data_dir, "models", "official_models")
             os.makedirs(target_root)
             lock_path = os.path.join(target_root, ".huaweiocr_install.lock")
             with open(lock_path, "w", encoding="utf-8") as f:
@@ -449,7 +583,7 @@ class AppPathsInstallTest(unittest.TestCase):
                 return os.path.join(root, "bundled", *parts)
 
             with mock.patch.object(app_paths, "get_resource_path", side_effect=fake_resource_path):
-                with mock.patch.object(app_paths.os.path, "expanduser", return_value=home):
+                with mock.patch.dict(os.environ, {"HUAWEIOCR_DATA_DIR": data_dir, "HUAWEIOCR_MODEL_DIR": ""}, clear=False):
                     app_paths.ensure_models_installed()
 
             target = os.path.join(target_root, "model_a")

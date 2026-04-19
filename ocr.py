@@ -3,6 +3,7 @@ import json
 import re
 import sys
 import warnings
+import inspect
 
 import paddle
 from paddleocr import PaddleOCR
@@ -10,10 +11,10 @@ from app_paths import ensure_models_installed
 
 # ================== 配置区 ==================
 # 你的 sn 小图目录
-IMG_DIR = r"C:\Users\55093\PycharmProjects\PythonProject24\stage2_fields\sn"
+IMG_DIR = os.environ.get("OCR_IMG_DIR", os.path.join("stage2_fields", "sn"))
 
 # 输出 JSONL 文件（每行一张图片的结果）
-OUT_JSONL = os.path.join(IMG_DIR, "sn_ocr_results.jsonl")
+OUT_JSONL = os.environ.get("OCR_OUT_JSONL", os.path.join(IMG_DIR, "sn_ocr_results.jsonl"))
 
 # 置信度阈值（低于这个就当成噪声丢掉）
 MIN_SCORE = 0.5
@@ -91,12 +92,41 @@ def list_image_files(img_dir):
     return files
 
 
+def _first_existing_model_dir(root, names):
+    if not root:
+        return None
+    for name in names:
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            return path
+    return None
+
+
+def _paddleocr_model_kwargs(model_root):
+    det_dir = _first_existing_model_dir(model_root, ["PP-OCRv5_server_det"])
+    rec_dir = _first_existing_model_dir(model_root, ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_server_rec"])
+    cls_dir = _first_existing_model_dir(model_root, ["PP-LCNet_x1_0_textline_ori"])
+    desired = {
+        "det_model_dir": det_dir,
+        "rec_model_dir": rec_dir,
+        "cls_model_dir": cls_dir,
+        "text_detection_model_dir": det_dir,
+        "text_recognition_model_dir": rec_dir,
+        "textline_orientation_model_dir": cls_dir,
+    }
+    try:
+        params = inspect.signature(PaddleOCR).parameters
+    except Exception:
+        return {}
+    return {name: value for name, value in desired.items() if value and name in params}
+
+
 def init_ocr():
     """初始化 PaddleOCR 引擎（只初始化一次）"""
     # 可选：关掉一些没必要的 warning
     warnings.filterwarnings("ignore")
 
-    ensure_models_installed()
+    model_root = ensure_models_installed()
     patch_paddlex_dep_checks()
 
     # 你之前日志里用过这个环境变量，这里顺便设一下
@@ -111,6 +141,7 @@ def init_ocr():
     ocr = PaddleOCR(
         use_angle_cls=True,   # 自动判断文字方向
         lang=OCR_LANG,
+        **_paddleocr_model_kwargs(model_root),
     )
     print("✅ OCR 引擎初始化完成")
     return ocr

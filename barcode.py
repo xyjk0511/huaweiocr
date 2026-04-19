@@ -44,7 +44,9 @@ DEFAULT_DIRS = [
 BARCODE_CLI_PATH = get_barcode_cli_path() if get_barcode_cli_path else ""
 CLI_SCALE_FACTORS = [1.0, 1.5, 2.0, 2.5]
 CLI_MAX_PIXELS = 50_000_000
-CLI_MAX_CALLS_PER_PATCH = 8
+CLI_MAX_CALLS_PER_PATCH = int(os.environ.get("BARCODE_CLI_MAX_CALLS_PER_PATCH", "4"))
+CLI_TIMEOUT_SECONDS = float(os.environ.get("BARCODE_CLI_TIMEOUT_SECONDS", "2"))
+_CLI_UNAVAILABLE = False
 
 PAD_X = 30
 PAD_Y = 16
@@ -237,7 +239,11 @@ def decode_with_transforms(gray_or_bin: np.ndarray,
 # ===================== BarcodeReaderCLI =====================
 
 def read_barcodes_cli(img_path: str) -> List[str]:
+    global _CLI_UNAVAILABLE
+    if _CLI_UNAVAILABLE:
+        return []
     if not BARCODE_CLI_PATH or not os.path.exists(BARCODE_CLI_PATH):
+        _CLI_UNAVAILABLE = True
         return []
 
     cmd = [
@@ -258,7 +264,7 @@ def read_barcodes_cli(img_path: str) -> List[str]:
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=5,
+            timeout=CLI_TIMEOUT_SECONDS,
         )
     except Exception:
         return []

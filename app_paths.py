@@ -6,6 +6,7 @@ import time
 import ctypes
 
 MODEL_INSTALL_MARKER = ".huaweiocr_complete"
+MODEL_ROOT_MARKER = ".huaweiocr_models_root"
 MODEL_INSTALL_LOCK_MALFORMED_GRACE_SECONDS = 1
 
 
@@ -107,13 +108,37 @@ def get_resource_path(*parts):
     return os.path.join(get_base_dir(), *parts)
 
 
+def get_user_data_dir():
+    override = os.environ.get("HUAWEIOCR_DATA_DIR")
+    if override:
+        return os.path.abspath(override)
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "HuaweiOCR")
+
+
+def get_model_install_root():
+    override = os.environ.get("HUAWEIOCR_MODEL_DIR")
+    if override:
+        return os.path.abspath(override)
+    return os.path.join(get_user_data_dir(), "models", "official_models")
+
+
 def ensure_models_installed():
     bundled = get_resource_path("models", "official_models")
     if not os.path.isdir(bundled):
-        return
+        return None
 
-    target_root = os.path.join(os.path.expanduser("~"), ".paddlex", "official_models")
+    target_root = get_model_install_root()
     os.makedirs(target_root, exist_ok=True)
+    root_marker = os.path.join(target_root, MODEL_ROOT_MARKER)
+    with open(root_marker, "a", encoding="utf-8"):
+        pass
+
+    os.environ["HUAWEIOCR_INSTALLED_MODEL_DIR"] = target_root
+    os.environ["PADDLE_PDX_OFFICIAL_MODEL_DIR"] = target_root
     lock_path = os.path.join(target_root, ".huaweiocr_install.lock")
     lock_fd = None
     deadline = time.time() + 30
@@ -138,6 +163,8 @@ def ensure_models_installed():
             if os.path.isdir(dst) and os.path.isfile(marker):
                 continue
             if os.path.exists(dst):
+                if not os.path.isfile(root_marker):
+                    raise RuntimeError(f"Refusing to modify unmanaged model directory: {dst}")
                 shutil.rmtree(dst)
             tmp = tempfile.mkdtemp(prefix=f".{name}.", dir=target_root)
             try:
@@ -155,6 +182,7 @@ def ensure_models_installed():
             os.remove(lock_path)
         except FileNotFoundError:
             pass
+    return target_root
 
 
 def get_barcode_cli_path():

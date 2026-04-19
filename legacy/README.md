@@ -1,8 +1,8 @@
 # Legacy Scripts
 
-These scripts are preserved for reference only. They predate the current
-`run_all.py` / `crop.py` / `scan2.py` pipeline and may contain local paths,
-manual debug assumptions, and import-time side effects.
+These modules are disabled stubs for old experiments. The original prototypes
+were removed from runnable source because they used local machine paths and
+performed setup work at import time.
 
 Supported entry points are:
 
@@ -10,5 +10,4 @@ Supported entry points are:
 - `gui_app.py`
 - `gui_app_en.py`
 
-Do not use files in this folder as production entry points without first
-converting paths to `app_paths.py` and moving setup work into `main()`.
+Do not use files in this folder as production entry points.

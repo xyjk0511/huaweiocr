@@ -187,10 +187,28 @@ def read_image(path):
 def save_png(path, bgr):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     ok, buf = cv2.imencode(".png", bgr)
-    if ok:
-        buf.tofile(path)
-        return True
-    return False
+    if not ok:
+        return False
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".png", dir=os.path.dirname(path))
+    os.close(fd)
+    try:
+        buf.tofile(tmp_path)
+        os.replace(tmp_path, path)
+        return os.path.isfile(path)
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def save_png_required(path, bgr, context):
+    if not save_png(path, bgr):
+        raise RuntimeError(f"Failed to write {context}: {path}")
+    return path
 
 def pred_class(p):
     return p.get("class") or p.get("class_name") or ""
@@ -245,8 +263,15 @@ def nms(preds, min_conf, nms_thresh):
 
 def list_images(folder):
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-    return [os.path.join(folder, f) for f in os.listdir(folder)
-            if os.path.splitext(f)[1].lower() in exts]
+    return sorted(
+        os.path.join(folder, f)
+        for f in os.listdir(folder)
+        if os.path.splitext(f)[1].lower() in exts
+    )
+
+
+def input_label_base(img_path):
+    return os.path.basename(img_path)
 
 # ==================== Roboflow Client ====================
 client = None
@@ -373,7 +398,7 @@ def stage1_crop_labels(img_path):
     # 不再做尺寸过滤 / 置信度过滤 / NMS
     final_preds = preds
 
-    base = os.path.splitext(os.path.basename(img_path))[0]
+    base = input_label_base(img_path)
     out_paths = []
 
     for i, p in enumerate(final_preds, 1):
@@ -382,8 +407,7 @@ def stage1_crop_labels(img_path):
             continue
         out_name = f"{base}__label_{i}.png"
         out_path = os.path.join(STAGE1_DIR, out_name)
-        save_png(out_path, crop)
-        out_paths.append(out_path)
+        out_paths.append(save_png_required(out_path, crop, "stage1 label crop"))
 
     _log(f"Stage1: {os.path.basename(img_path)} -> {len(out_paths)} label crops", "info")
     return out_paths
@@ -448,7 +472,7 @@ def stage2_crop_fields(label_img_path):
         crop_m = crop_from_pred(img, best_model_pred, PADDING_2_MODEL)
         if crop_m is not None:
             mp = os.path.join(OUT_MODEL_DIR, f"{base}__model.png")
-            save_png(mp, crop_m)
+            save_png_required(mp, crop_m, "model crop")
             out["model_path"] = mp
             out["model_conf"] = float(best_model_pred.get("confidence", 0))
 
@@ -457,14 +481,14 @@ def stage2_crop_fields(label_img_path):
         crop_s = crop_from_pred(img, best_sn_pred, PADDING_2_SN)
         if crop_s is not None:
             sp = os.path.join(OUT_SN_DIR, f"{base}__sn.png")
-            save_png(sp, crop_s)
+            save_png_required(sp, crop_s, "sn crop")
             out["sn_path"] = sp
             out["sn_conf"] = float(best_sn_pred.get("confidence", 0))
 
     # 如果 model/sn 都没出来，把原小图复制到 failed 方便回看
     if not out["model_path"] and not out["sn_path"]:
         fail_path = os.path.join(FAILED_DIR, f"{base}__FAILED.png")
-        save_png(fail_path, img)
+        save_png_required(fail_path, img, "failed label crop")
 
     return out
 
@@ -483,8 +507,17 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
 
     imgs = list_images(INPUT_DIR)
     if not imgs:
-        _log(f"⚠️ {INPUT_DIR} 没有图片，把原始大图放进去再跑", "warn")
-        return
+        _log(f"WARN: no supported images found in input folder: {INPUT_DIR}", "warn")
+        return {
+            "input_images": 0,
+            "label_count": 0,
+            "manifest_rows": 0,
+            "ok_any": 0,
+            "ok_both": 0,
+            "stage1_dir": STAGE1_DIR,
+            "stage2_dir": STAGE2_DIR,
+            "manifest_path": MANIFEST_PATH,
+        }
 
     # 清空 manifest（每次跑重新生成）
     with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
@@ -494,16 +527,20 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     all_label_crops = []
     for p in imgs:
         all_label_crops.extend(stage1_crop_labels(p))
+    if not all_label_crops:
+        raise RuntimeError(f"No label crops generated from {len(imgs)} input image(s).")
 
     # Stage2：全部小图 -> model/sn
     ok_any = 0
     ok_both = 0
+    manifest_rows = 0
     with open(MANIFEST_PATH, "a", encoding="utf-8") as f:
         for lp in all_label_crops:
             r = stage2_crop_fields(lp)
             if not r:
                 continue
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            manifest_rows += 1
             
             has_model = bool(r.get("model_path"))
             has_sn = bool(r.get("sn_path"))
@@ -525,6 +562,16 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     _log(f"Stats: at least one field {ok_any}; both fields {ok_both}", "info")
     _log(f"Manifest: {MANIFEST_PATH}", "info")
     _log(f"Failed categories: {MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
+    return {
+        "input_images": len(imgs),
+        "label_count": len(all_label_crops),
+        "manifest_rows": manifest_rows,
+        "ok_any": ok_any,
+        "ok_both": ok_both,
+        "stage1_dir": STAGE1_DIR,
+        "stage2_dir": STAGE2_DIR,
+        "manifest_path": MANIFEST_PATH,
+    }
 
 if __name__ == "__main__":
     main()

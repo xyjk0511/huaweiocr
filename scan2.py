@@ -96,6 +96,7 @@ def _mask_sensitive_text(value: str) -> str:
     masked = re.sub(r"(?i)([a-z]:\\|/)[^\s|,\]\)]+", "[path]", value)
     masked = re.sub(r"(?i)[^\\/\s|,\[\]'\"]+\.(jpg|jpeg|png|bmp|webp)", "[file]", masked)
     masked = re.sub(r"(?i)(label[_-]?id=)[^\s|,]+", r"\1[masked]", masked)
+    masked = re.sub(r"[0-9A-Za-z_:-]{8,}", repl, masked)
     return re.sub(r"[0-9A-Za-z]{8,}", repl, masked)
 
 
@@ -467,12 +468,13 @@ def try_model_from_barcode(img_path: str) -> tuple[str, str]:
     return "", "; ".join(lines)
 
 
-def recognize_model(model_path: str, label_id: str = ""):
+def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = False):
     tag = f"{label_id} " if label_id else ""
     append_debug(f"[MODEL] {tag}{os.path.basename(model_path)}")
-    m_from_bc, bc_raw = try_model_from_barcode(model_path)
-    if m_from_bc:
-        return m_from_bc, f"[BARCODE] {bc_raw}", "barcode"
+    if use_barcode:
+        m_from_bc, bc_raw = try_model_from_barcode(model_path)
+        if m_from_bc:
+            return m_from_bc, f"[BARCODE] {bc_raw}", "barcode"
 
     color_img = load_for_ocr_color(model_path)
     if color_img is not None:
@@ -592,31 +594,46 @@ def _load_manifest_records():
         return records
 
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_no, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             try:
                 item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid manifest JSON at {path}:{line_no}: {exc}") from exc
+            if not isinstance(item, dict):
+                raise ValueError(f"Invalid manifest row at {path}:{line_no}: expected object")
             label_id = item.get("label_id")
-            if not label_id and item.get("label_crop"):
-                label_id = label_key(item["label_crop"])
             if not label_id:
-                continue
+                raise ValueError(f"Manifest row missing label_id at {path}:{line_no}")
             record = records.setdefault(label_id, {})
             if item.get("label_crop"):
+                if not os.path.isfile(item["label_crop"]):
+                    raise FileNotFoundError(f"Manifest label_crop is missing at {path}:{line_no}: {item['label_crop']}")
                 record["label_crop"] = item["label_crop"]
-            if item.get("model_path") and os.path.isfile(item["model_path"]):
+            if item.get("model_path"):
+                if not os.path.isfile(item["model_path"]):
+                    raise FileNotFoundError(f"Manifest model_path is missing at {path}:{line_no}: {item['model_path']}")
                 record["model_path"] = item["model_path"]
-            if item.get("sn_path") and os.path.isfile(item["sn_path"]):
+            if item.get("sn_path"):
+                if not os.path.isfile(item["sn_path"]):
+                    raise FileNotFoundError(f"Manifest sn_path is missing at {path}:{line_no}: {item['sn_path']}")
                 record["sn_path"] = item["sn_path"]
     return records
 
 
 # ===================== MAIN =====================
-def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level="info"):
+def main(
+    out_dir=None,
+    model_dir=None,
+    sn_dir=None,
+    out_jsonl=None,
+    debug_log=None,
+    log_level="info",
+    unsafe_raw=False,
+    model_barcode=False,
+):
     set_log_level(log_level)
     configure_paths(
         out_dir=out_dir,
@@ -632,6 +649,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     model_files = []
     sn_files = []
     stats = {
+        "records": 0,
         "sn_total": 0,
         "sn_attempted": 0,
         "sn_success": 0,
@@ -673,7 +691,11 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             sn_meta = {"barcode_found": False, "ocr_text_found": False}
 
             if "model_path" in item:
-                model_code, model_raw, model_src = recognize_model(item["model_path"], label_id=key)
+                model_code, model_raw, model_src = recognize_model(
+                    item["model_path"],
+                    label_id=key,
+                    use_barcode=model_barcode,
+                )
 
             if "sn_path" in item:
                 sn_code, sn_raw, sn_src, sn_meta = recognize_sn(item["sn_path"], label_id=key)
@@ -693,14 +715,14 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "label_id": key,
                 "model": model_code,
                 "sn": sn_code,
-                "model_raw": model_raw,
-                "sn_raw": sn_raw,
+                "model_raw": model_raw if unsafe_raw else _mask_sensitive_text(model_raw),
+                "sn_raw": sn_raw if unsafe_raw else _mask_sensitive_text(sn_raw),
                 "model_src": model_src,
                 "sn_src": sn_src,
             }
 
-            log_model = model_code if LOG_LEVEL == "debug" else _mask_sensitive_text(model_code)
-            log_sn = sn_code if LOG_LEVEL == "debug" else _mask_sensitive_text(sn_code)
+            log_model = _mask_sensitive_text(model_code)
+            log_sn = _mask_sensitive_text(sn_code)
             _log(
                 f"[{key}] "
                 f"MODEL={log_model} (M_SRC={model_src}) | "
@@ -709,6 +731,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             )
 
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
+            stats["records"] += 1
 
             if "sn_path" in item:
                 stats["sn_total"] += 1
