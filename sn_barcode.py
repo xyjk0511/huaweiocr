@@ -155,11 +155,11 @@ def _source_rank(source_region: str) -> int:
     value = (source_region or "").lower()
     if value.startswith("sn"):
         return 0
-    if ".region." in value or value.startswith("barcode-region"):
-        return 1
     if value.startswith("label"):
-        return 2
+        return 1
     if value.startswith("original"):
+        return 2
+    if value.startswith("barcode-region") or ".region." in value:
         return 3
     return 9
 

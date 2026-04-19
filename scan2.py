@@ -795,6 +795,11 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     sn_files = []
     stats = {
         "records": 0,
+        "model_total": 0,
+        "model_success": 0,
+        "model_barcode_hits": 0,
+        "model_barcode_hit_rate": 0.0,
+        "model_ocr_recoveries": 0,
         "sn_total": 0,
         "sn_attempted": 0,
         "sn_success": 0,
@@ -855,6 +860,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     label_id=key,
                     use_barcode=model_barcode,
                 )
+                stats["model_total"] += 1
+                if model_code:
+                    stats["model_success"] += 1
+                if model_src == "barcode":
+                    stats["model_barcode_hits"] += 1
+                elif model_src.startswith("ocr"):
+                    stats["model_ocr_recoveries"] += 1
 
             sn_input_available = bool(item.get("sn_path") or item.get("label_crop"))
             if sn_input_available:
@@ -940,6 +952,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
     if stats["sn_total"]:
         stats["sn_barcode_hit_rate"] = stats["sn_barcode_hits"] / float(stats["sn_total"])
+    if stats["model_total"]:
+        stats["model_barcode_hit_rate"] = stats["model_barcode_hits"] / float(stats["model_total"])
 
     return stats
 

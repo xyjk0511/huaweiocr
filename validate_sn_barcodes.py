@@ -26,6 +26,7 @@ class ValidationSummary:
     min_accepted: int
     total_rows: int = 0
     accepted_quality_rows: int = 0
+    accepted_barcode_rows: int = 0
     barcode_present_rows: int = 0
     denominator: int = 0
     exact_hits: int = 0
@@ -50,6 +51,7 @@ class ValidationSummary:
             "min_accepted": self.min_accepted,
             "total_rows": self.total_rows,
             "accepted_quality_rows": self.accepted_quality_rows,
+            "accepted_barcode_rows": self.accepted_barcode_rows,
             "barcode_present_rows": self.barcode_present_rows,
             "denominator": self.denominator,
             "exact_hits": self.exact_hits,
@@ -274,6 +276,8 @@ def evaluate_manifest(
             summary.failure_counts["not_barcode_present"] += 1
         if accepted_quality:
             summary.accepted_quality_rows += 1
+        if accepted_quality and barcode_present and expected_sn:
+            summary.accepted_barcode_rows += 1
 
         row_result = {
             "label_id": row.get("label_id", ""),
@@ -325,9 +329,9 @@ def evaluate_manifest(
 
     if summary.denominator:
         summary.hit_rate = summary.exact_hits / float(summary.denominator)
-    if summary.accepted_quality_rows < min_accepted:
+    if summary.accepted_barcode_rows < min_accepted:
         summary.errors.append(
-            f"accepted-quality barcode sample count {summary.accepted_quality_rows} is below required minimum {min_accepted}"
+            f"accepted-quality barcode sample count {summary.accepted_barcode_rows} is below required minimum {min_accepted}"
         )
     if summary.hit_rate < threshold:
         summary.errors.append(

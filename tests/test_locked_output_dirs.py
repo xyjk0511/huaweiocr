@@ -447,9 +447,9 @@ class Scan2ManifestTest(unittest.TestCase):
             with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
                 manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path}) + "\n")
 
-            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "test")) as recognize_model:
+            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "barcode")) as recognize_model:
                 with mock.patch.dict(os.environ, {}, clear=True):
-                    scan2.main(
+                    stats = scan2.main(
                         model_dir=model_dir,
                         sn_dir=sn_dir,
                         out_jsonl=os.path.join(root, "out.jsonl"),
@@ -457,6 +457,10 @@ class Scan2ManifestTest(unittest.TestCase):
                     )
 
             self.assertTrue(recognize_model.call_args.kwargs["use_barcode"])
+            self.assertEqual(stats["model_total"], 1)
+            self.assertEqual(stats["model_success"], 1)
+            self.assertEqual(stats["model_barcode_hits"], 1)
+            self.assertEqual(stats["model_barcode_hit_rate"], 1.0)
 
     def test_model_barcode_can_be_disabled_with_env_flag(self):
         scan2 = _import_scan2()

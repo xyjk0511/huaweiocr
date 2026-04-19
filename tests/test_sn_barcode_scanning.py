@@ -67,6 +67,28 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(report.sn, "21500872884ERA005572")
         self.assertEqual(report.source_region, "sn")
 
+    def test_label_source_wins_over_original_region_conflicts(self):
+        report = sn_barcode.select_sn_from_decoder_results(
+            [
+                sn_barcode.DecoderResult(
+                    "fake",
+                    "SN:21500872884ERA005572",
+                    "label",
+                    "label.rot0.full",
+                ),
+                sn_barcode.DecoderResult(
+                    "fake",
+                    "SN:21500872884ERA005405",
+                    "original",
+                    "original.rot0.region.1",
+                ),
+            ]
+        )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "21500872884ERA005572")
+        self.assertEqual(report.source_region, "label.rot0.full")
+
     def test_attempt_budget_is_isolated_per_source(self):
         candidates_by_source = {
             "sn": [sn_barcode.CandidateImage(object(), "sn", "sn", "raw")],
@@ -246,6 +268,51 @@ class ValidationCommandTest(unittest.TestCase):
         self.assertFalse(summary.passed)
         self.assertEqual(summary.exact_hits, 1)
         self.assertIn("below required minimum 50", "\n".join(summary.errors))
+
+    def test_validation_minimum_counts_only_accepted_barcode_rows(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest_path = os.path.join(root, "manifest.jsonl")
+            with open(manifest_path, "w", encoding="utf-8") as manifest:
+                for index in range(49):
+                    image_path = os.path.join(root, f"label_{index}.png")
+                    open(image_path, "wb").close()
+                    manifest.write(json.dumps({
+                        "image_path": image_path,
+                        "label_id": f"a__label_{index}",
+                        "expected_sn": "4E25A0170000",
+                        "barcode_present": True,
+                        "accepted_quality": True,
+                        "notes": "unit test",
+                    }) + "\n")
+                non_barcode_path = os.path.join(root, "non_barcode.png")
+                open(non_barcode_path, "wb").close()
+                manifest.write(json.dumps({
+                    "image_path": non_barcode_path,
+                    "label_id": "non_barcode",
+                    "expected_sn": "",
+                    "barcode_present": False,
+                    "accepted_quality": True,
+                    "notes": "unit test",
+                }) + "\n")
+
+            fake_report = sn_barcode.SnBarcodeReport(
+                status="hit",
+                sn="4E25A0170000",
+                raw_text="SN:4E25A0170000",
+                source="label",
+                source_region="label",
+                decoder_name="fake",
+                attempts=1,
+                decoded_count=1,
+            )
+            with mock.patch.object(validate_sn_barcodes, "scan_sn_barcodes", return_value=fake_report):
+                summary = validate_sn_barcodes.evaluate_manifest(manifest_path, min_accepted=50)
+
+        self.assertFalse(summary.passed)
+        self.assertEqual(summary.accepted_quality_rows, 50)
+        self.assertEqual(summary.accepted_barcode_rows, 49)
+        self.assertEqual(summary.denominator, 49)
+        self.assertIn("accepted-quality barcode sample count 49", "\n".join(summary.errors))
 
     def test_validation_reports_below_threshold_failures(self):
         with tempfile.TemporaryDirectory() as root:
