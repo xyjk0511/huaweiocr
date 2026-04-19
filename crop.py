@@ -273,6 +273,14 @@ def list_images(folder):
 def input_label_base(img_path):
     return os.path.basename(img_path)
 
+
+def original_path_for_label_id(label_id):
+    original_name = str(label_id or "").split("__label_", 1)[0]
+    if not original_name:
+        return ""
+    candidate = os.path.join(INPUT_DIR, original_name)
+    return candidate if os.path.isfile(candidate) else ""
+
 # ==================== Roboflow Client ====================
 client = None
 
@@ -461,6 +469,7 @@ def stage2_crop_fields(label_img_path):
     out = {
         "label_id": base,
         "label_crop": label_img_path,
+        "original_image_path": original_path_for_label_id(base),
         "model_path": None,
         "sn_path": None,
         "model_conf": None,

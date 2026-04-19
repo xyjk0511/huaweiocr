@@ -249,7 +249,7 @@ def read_barcodes_cli(img_path: str) -> List[str]:
     cmd = [
         BARCODE_CLI_PATH,
         "-silent",
-        "-type=code128",
+        "-type=code128,ucc128,code39,code93",
         "-max-bc=8",
         "-format=text",
         "-output-text={text}",

@@ -474,6 +474,22 @@ class Scan2ManifestTest(unittest.TestCase):
 
 
 class CropTempFileTest(unittest.TestCase):
+    def test_original_path_for_label_id_resolves_current_input_dir(self):
+        crop = _import_crop()
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            os.makedirs(input_dir)
+            original = os.path.join(input_dir, "image_01.jpg")
+            with open(original, "wb") as f:
+                f.write(b"image")
+
+            crop.configure_paths(input_dir=input_dir, out_dir=root)
+
+            self.assertEqual(
+                crop.original_path_for_label_id("image_01.jpg__label_3"),
+                original,
+            )
+
     def test_stage1_uses_extension_in_label_name_to_avoid_same_stem_collision(self):
         crop = _import_crop()
         fake_img = types.SimpleNamespace(shape=(100, 100, 3), size=1)

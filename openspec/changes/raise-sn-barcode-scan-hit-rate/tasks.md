@@ -16,7 +16,7 @@
 
 - [x] 3.1 Introduce a local decoder adapter result schema with decoder name, raw text, source region, rotation, and confidence when available.
 - [x] 3.2 Update `pyzbar` and `BarcodeReaderCLI` calls to use the shared adapter schema and scan Code128/UCC128-oriented candidates.
-- [x] 3.3 Add a second local decoder adapter only if the validation report remains below 90% after candidate-generation tuning. No extra adapter added yet: validation is currently blocked by missing accepted-quality ground truth, not by a post-tuning decoder ceiling.
+- [x] 3.3 Add a second local decoder adapter only if the validation report remains below 90% after candidate-generation tuning. Added optional local `zxing-cpp` adapter plus expanded BarcodeReaderCLI type coverage; current uploaded photos still produce 0 barcode SN hits and are reported as quality rejects.
 - [x] 3.4 Keep decoder errors isolated so one decoder failure does not block the remaining barcode attempts.
 
 ## 4. SN Selection And Pipeline Output
@@ -32,4 +32,4 @@
 - [x] 5.1 Add unit tests for source priority, OCR fallback accounting, non-SN barcode rejection, and ambiguous barcode rejection.
 - [x] 5.2 Add integration tests for manifest rows with missing SN crop but present label crop.
 - [x] 5.3 Run the validation command and make it fail when exact barcode-derived SN hit rate is below 90%.
-- [ ] 5.4 Run `python -m unittest discover -v` and the SN barcode validation command before marking the change complete. `python -m unittest discover -v` passes with 33 tests; final validation is intentionally still failing until 1.3 supplies enough accepted-quality ground truth.
+- [ ] 5.4 Run `python -m unittest discover -v` and the SN barcode validation command before marking the change complete. `python -m unittest discover -v` passes with 34 tests; final validation is intentionally still failing until 1.3 supplies enough accepted-quality ground truth.

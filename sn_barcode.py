@@ -24,11 +24,12 @@ NON_SN_PREFIX_RE = re.compile(
     r"^(SF|MAC|EAN|UPC|QR|HTTP|HTTPS|PART|PN|MODEL|DESC|ROUTE|WAYBILL|SNMP|IMEI)"
 )
 
-DEFAULT_MAX_CANDIDATES = 32
-DEFAULT_MAX_DECODER_ATTEMPTS = 64
+DEFAULT_MAX_CANDIDATES = 96
+DEFAULT_MAX_DECODER_ATTEMPTS = 96
 DEFAULT_MIN_BARCODE_WIDTH = 120
 DEFAULT_MIN_BARCODE_HEIGHT = 22
 DEFAULT_BLUR_VARIANCE = 18.0
+DEFAULT_DESKEW_ANGLES = (0, -4, 4, -8, 8)
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class CandidateImage:
     source_region: str
     variant: str
     rotation: int = 0
+    deskew_angle: int = 0
     rect: tuple[int, int, int, int] | None = None
 
 
@@ -306,6 +308,33 @@ def _resize(image: Any, scale: float) -> Any:
         return image
 
 
+def _deskew(image: Any, angle: int) -> Any:
+    if cv2 is None or image is None or angle == 0:
+        return image
+    h, w = _shape(image)
+    if not h or not w:
+        return image
+    try:
+        center = (w / 2.0, h / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        cos = abs(matrix[0, 0])
+        sin = abs(matrix[0, 1])
+        new_w = int((h * sin) + (w * cos))
+        new_h = int((h * cos) + (w * sin))
+        matrix[0, 2] += (new_w / 2.0) - center[0]
+        matrix[1, 2] += (new_h / 2.0) - center[1]
+        return cv2.warpAffine(
+            image,
+            matrix,
+            (new_w, new_h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255),
+        )
+    except Exception:
+        return image
+
+
 def pad_quiet_zone(image: Any, pad_x: int = 40, pad_y: int = 20) -> Any:
     if cv2 is None or image is None:
         return image
@@ -393,6 +422,94 @@ def detect_barcode_regions(image: Any, max_regions: int = 8) -> list[tuple[int, 
     return regions[:max_regions]
 
 
+def _grid_barcode_regions(image: Any, max_regions: int = 8) -> list[tuple[int, int, int, int]]:
+    h, w = _shape(image)
+    if not h or not w:
+        return []
+
+    y_bands = [
+        (0.00, 0.35),
+        (0.25, 0.60),
+        (0.50, 0.85),
+        (0.65, 1.00),
+    ]
+    x_bands = [
+        (0.00, 1.00),
+        (0.00, 0.55),
+        (0.45, 1.00),
+        (0.20, 0.80),
+    ]
+
+    regions: list[tuple[int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for y1f, y2f in y_bands:
+        for x1f, x2f in x_bands:
+            x1 = int(round(w * x1f))
+            x2 = int(round(w * x2f))
+            y1 = int(round(h * y1f))
+            y2 = int(round(h * y2f))
+            rect = (x1, y1, max(0, x2 - x1), max(0, y2 - y1))
+            if rect[2] < 50 or rect[3] < 14:
+                continue
+            if rect in seen:
+                continue
+            seen.add(rect)
+            regions.append(rect)
+            if len(regions) >= max_regions:
+                return regions
+    return regions
+
+
+def _candidate_scales(image: Any) -> list[float]:
+    h, w = _shape(image)
+    longest = max(h, w)
+    if longest <= 180:
+        return [1.0, 3.0, 6.0, 10.0, 14.0]
+    if longest <= 360:
+        return [1.0, 2.5, 5.0, 8.0, 12.0]
+    if longest <= 720:
+        return [1.0, 2.0, 4.0, 6.0]
+    return [1.0, 1.5, 2.5]
+
+
+def _base_candidate_images(
+    image: Any,
+    source: str,
+    max_bases: int = 14,
+) -> list[tuple[str, Any, int, tuple[int, int, int, int] | None]]:
+    bases: list[tuple[str, Any, int, tuple[int, int, int, int] | None]] = []
+    seen: set[tuple[str, int, int, int, int]] = set()
+    h, w = _shape(image)
+    rotations = (90, 270, 0, 180) if h > w else (0, 180, 90, 270)
+
+    for base_rotation in rotations:
+        oriented = _rotate(image, base_rotation)
+        bases.append((f"{source}.rot{base_rotation}.full", oriented, base_rotation, None))
+        if len(bases) >= max_bases:
+            return bases
+        region_index = 1
+        regions = detect_barcode_regions(oriented, max_regions=4) + _grid_barcode_regions(oriented, max_regions=8)
+        for rect in regions:
+            x, y, w, h = rect
+            key = (str(base_rotation), x, y, w, h)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                crop = oriented[y:y + h, x:x + w]
+            except Exception:
+                continue
+            if crop is None or not _shape(crop)[0]:
+                continue
+            region = f"{source}.rot{base_rotation}.region.{region_index}"
+            bases.append((region, crop, base_rotation, rect))
+            if len(bases) >= max_bases:
+                return bases
+            region_index += 1
+
+    return bases
+
+
 def diagnose_quality(image: Any) -> list[str]:
     issues: list[str] = []
     h, w = _shape(image)
@@ -432,18 +549,8 @@ def generate_candidate_images(
     if image is None:
         return []
 
-    bases: list[tuple[str, Any, tuple[int, int, int, int] | None]] = [(source, image, None)]
-    for index, rect in enumerate(detect_barcode_regions(image), 1):
-        x, y, w, h = rect
-        try:
-            crop = image[y:y + h, x:x + w]
-        except Exception:
-            continue
-        bases.append((f"{source}.region.{index}", crop, rect))
-
     candidates: list[CandidateImage] = []
-    rotations = [0, 90, 180, 270]
-    scales = [1.0, 1.8, 2.6]
+    bases = _base_candidate_images(image, source)
     variants = [
         ("raw", lambda img: img),
         ("quiet", pad_quiet_zone),
@@ -451,25 +558,48 @@ def generate_candidate_images(
         ("threshold", _threshold),
     ]
 
-    for source_region, base_img, rect in bases:
-        for rotation in rotations:
-            rotated = _rotate(base_img, rotation)
-            for scale in scales:
-                scaled = _resize(rotated, scale)
-                for variant_name, variant_fn in variants:
-                    variant_img = variant_fn(scaled)
-                    candidates.append(
-                        CandidateImage(
-                            image=variant_img,
-                            source=source,
-                            source_region=source_region,
-                            variant=variant_name,
-                            rotation=rotation,
-                            rect=rect,
-                        )
-                    )
-                    if len(candidates) >= max_candidates:
-                        return candidates
+    combo_specs = [
+        (0, 0, "raw"),
+        (1, 0, "raw"),
+        (2, 0, "raw"),
+        (2, -4, "raw"),
+        (2, 4, "raw"),
+        (3, 0, "raw"),
+        (3, -4, "raw"),
+        (3, 4, "raw"),
+        (2, 0, "enhanced"),
+        (3, 0, "enhanced"),
+        (2, 0, "threshold"),
+        (3, 0, "threshold"),
+        (4, 0, "raw"),
+        (4, -8, "raw"),
+        (4, 8, "raw"),
+        (3, 0, "quiet"),
+    ]
+    variant_map = {name: fn for name, fn in variants}
+    for scale_index, angle, variant_name in combo_specs:
+        variant_fn = variant_map[variant_name]
+        for source_region, base_img, base_rotation, rect in bases:
+            scales = _candidate_scales(base_img)
+            if scale_index >= len(scales):
+                continue
+            scale = scales[scale_index]
+            deskewed = _deskew(base_img, angle)
+            scaled = _resize(deskewed, scale)
+            variant_img = variant_fn(scaled)
+            candidates.append(
+                CandidateImage(
+                    image=variant_img,
+                    source=source,
+                    source_region=source_region,
+                    variant=variant_name,
+                    rotation=base_rotation,
+                    deskew_angle=angle,
+                    rect=rect,
+                )
+            )
+            if len(candidates) >= max_candidates:
+                return candidates
     return candidates
 
 
@@ -536,7 +666,12 @@ def _decode_cli(candidate: CandidateImage) -> tuple[list[DecoderResult], list[st
 
     raw_results: list[dict[str, Any]] = []
     try:
-        if hasattr(barcode_module, "decode_cli_multi"):
+        if hasattr(barcode_module, "decode_with_cli"):
+            raw_results = barcode_module.decode_with_cli(
+                candidate.image,
+                f"{candidate.source_region}:{candidate.variant}",
+            )
+        if not raw_results and hasattr(barcode_module, "decode_cli_multi"):
             raw_results = barcode_module.decode_cli_multi(
                 candidate.image,
                 f"{candidate.source_region}:{candidate.variant}",
@@ -563,6 +698,51 @@ def _decode_cli(candidate: CandidateImage) -> tuple[list[DecoderResult], list[st
                 rotation=(candidate.rotation + rotation) % 360,
                 rect=tuple(item["rect"]) if isinstance(item, dict) and item.get("rect") else None,
                 barcode_type=item.get("type", "CLI") if isinstance(item, dict) else "CLI",
+            )
+        )
+    return results, []
+
+
+def _decode_zxingcpp(candidate: CandidateImage) -> tuple[list[DecoderResult], list[str]]:
+    try:
+        import zxingcpp
+    except Exception as exc:
+        return [], [f"zxingcpp_unavailable:{exc.__class__.__name__}"]
+
+    try:
+        formats = (
+            zxingcpp.BarcodeFormat.Code128
+            | zxingcpp.BarcodeFormat.Code39
+            | zxingcpp.BarcodeFormat.Code93
+            | zxingcpp.BarcodeFormat.ITF
+            | zxingcpp.BarcodeFormat.EAN13
+            | zxingcpp.BarcodeFormat.QRCode
+            | zxingcpp.BarcodeFormat.DataMatrix
+        )
+        decoded = zxingcpp.read_barcodes(
+            candidate.image,
+            formats=formats,
+            try_rotate=True,
+            try_downscale=False,
+            try_invert=True,
+            return_errors=False,
+        )
+    except Exception as exc:
+        return [], [f"zxingcpp_error:{exc.__class__.__name__}"]
+
+    results: list[DecoderResult] = []
+    for item in decoded:
+        raw = getattr(item, "text", "") or ""
+        if not raw:
+            continue
+        results.append(
+            DecoderResult(
+                decoder_name="zxingcpp",
+                raw_text=raw,
+                source=candidate.source,
+                source_region=candidate.source_region,
+                rotation=candidate.rotation,
+                barcode_type=str(getattr(item, "format", "")),
             )
         )
     return results, []
@@ -639,7 +819,7 @@ def scan_sn_barcodes(
                     }
                 )
 
-            for decoder in (_decode_pyzbar, _decode_cli):
+            for decoder in (_decode_pyzbar, _decode_zxingcpp, _decode_cli):
                 if attempts >= max_decoder_attempts:
                     break
                 attempts += 1
