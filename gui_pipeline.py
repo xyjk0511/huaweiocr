@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -22,22 +23,19 @@ def copy_images_to_unique_run_dir(image_paths, root_dir, run_prefix="gui_run"):
     used_names = set()
     records = []
     for index, source in enumerate(image_paths, 1):
-        base_name = os.path.basename(source)
-        stem, ext = os.path.splitext(base_name)
-        target_name = base_name
-        if target_name.lower() in used_names:
-            target_name = f"{stem}__gui_{index:04d}{ext}"
+        _, ext = os.path.splitext(source)
+        target_name = f"input_{index:04d}{ext.lower()}"
         while target_name.lower() in used_names:
-            target_name = f"{stem}__gui_{index:04d}_{len(used_names)}{ext}"
+            target_name = f"input_{index:04d}_{len(used_names)}{ext.lower()}"
         used_names.add(target_name.lower())
 
         target = os.path.join(run_dir, target_name)
         shutil.copy2(source, target)
         records.append(
             {
-                "source_path": os.path.abspath(source),
-                "input_path": target,
+                "source_index": index,
                 "input_name": target_name,
+                "sha256": _sha256_file(target),
             }
         )
 
@@ -47,3 +45,11 @@ def copy_images_to_unique_run_dir(image_paths, root_dir, run_prefix="gui_run"):
             manifest.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     return run_dir, records
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

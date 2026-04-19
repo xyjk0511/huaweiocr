@@ -53,3 +53,10 @@
 - `python -m unittest discover -s tests -v`
 - `python -m py_compile app_paths.py barcode.py crop.py debug.py gui_app.py gui_app_en.py gui_pipeline.py legacy\roboflow_legacy.py legacy\barcode_debug_legacy.py ocr.py run_all.py scan2.py tests\test_locked_output_dirs.py`
 - `git diff --check`
+
+## Subagent Review Closure
+
+- Subagent review found two remaining blockers after `b9dbb23`: stale model install locks were not recoverable, and GUI `source_manifest.jsonl` stored absolute source/input paths by default.
+- `app_paths.py` now writes lock metadata, reclaims stale/malformed locks, and keeps the temporary-copy plus completion-marker install flow.
+- `gui_pipeline.py` now stages files as `input_0001.ext` style names and writes only `source_index`, `input_name`, and content `sha256`; absolute paths are no longer persisted in the default GUI manifest.
+- Regression coverage now includes stale lock recovery and asserts GUI staging manifest rows do not contain absolute paths.

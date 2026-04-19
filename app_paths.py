@@ -3,8 +3,63 @@ import sys
 import shutil
 import tempfile
 import time
+import ctypes
 
 MODEL_INSTALL_MARKER = ".huaweiocr_complete"
+MODEL_INSTALL_LOCK_MALFORMED_GRACE_SECONDS = 1
+
+
+def _pid_is_running(pid):
+    if not pid or pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _read_lock_metadata(lock_path):
+    try:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f.readlines()]
+        return int(lines[0]), float(lines[1])
+    except Exception:
+        return None, None
+
+
+def _lock_is_stale(lock_path):
+    now = time.time()
+    pid, created = _read_lock_metadata(lock_path)
+    if pid is not None and created is not None:
+        return not _pid_is_running(pid)
+    try:
+        age = now - os.path.getmtime(lock_path)
+    except OSError:
+        return True
+    return age > MODEL_INSTALL_LOCK_MALFORMED_GRACE_SECONDS
+
+
+def _write_lock_metadata(lock_fd):
+    payload = f"{os.getpid()}\n{time.time()}\n".encode("ascii")
+    os.write(lock_fd, payload)
+    os.fsync(lock_fd)
 
 
 def get_base_dir():
@@ -34,7 +89,16 @@ def ensure_models_installed():
     while lock_fd is None:
         try:
             lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            _write_lock_metadata(lock_fd)
         except FileExistsError:
+            if _lock_is_stale(lock_path):
+                try:
+                    os.remove(lock_path)
+                    continue
+                except FileNotFoundError:
+                    continue
+                except PermissionError:
+                    pass
             if time.time() >= deadline:
                 raise TimeoutError(f"Timed out waiting for model install lock: {lock_path}")
             time.sleep(0.2)

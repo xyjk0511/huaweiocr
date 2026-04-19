@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -316,11 +317,18 @@ class GuiPipelineTest(unittest.TestCase):
             names = [record["input_name"] for record in records]
             self.assertEqual(len(names), 2)
             self.assertEqual(len(set(names)), 2)
+            self.assertEqual(names, ["input_0001.png", "input_0002.png"])
             self.assertTrue(os.path.exists(os.path.join(run_dir, names[0])))
             self.assertTrue(os.path.exists(os.path.join(run_dir, names[1])))
             with open(os.path.join(run_dir, "source_manifest.jsonl"), "r", encoding="utf-8") as f:
                 manifest_rows = [json.loads(line) for line in f]
-            self.assertEqual([row["source_path"] for row in manifest_rows], [os.path.abspath(path_a), os.path.abspath(path_b)])
+            manifest_text = json.dumps(manifest_rows, ensure_ascii=False)
+            self.assertNotIn("source_path", manifest_text)
+            self.assertNotIn("input_path", manifest_text)
+            self.assertNotIn(os.path.abspath(root), manifest_text)
+            self.assertEqual([row["source_index"] for row in manifest_rows], [1, 2])
+            self.assertEqual([row["input_name"] for row in manifest_rows], names)
+            self.assertTrue(all(len(row["sha256"]) == 64 for row in manifest_rows))
 
     def test_gui_import_does_not_import_pipeline_modules(self):
         sys.modules.pop("gui_app", None)
@@ -414,6 +422,37 @@ class AppPathsInstallTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(target, "weights.bin")))
             self.assertTrue(os.path.exists(os.path.join(target, app_paths.MODEL_INSTALL_MARKER)))
             self.assertFalse(os.path.exists(os.path.join(target, "partial.bin")))
+
+    def test_stale_model_install_lock_is_recovered(self):
+        import app_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            bundled = os.path.join(root, "bundled", "models", "official_models")
+            source_model = os.path.join(bundled, "model_a")
+            os.makedirs(source_model)
+            with open(os.path.join(source_model, "weights.bin"), "wb") as f:
+                f.write(b"complete")
+
+            home = os.path.join(root, "home")
+            target_root = os.path.join(home, ".paddlex", "official_models")
+            os.makedirs(target_root)
+            lock_path = os.path.join(target_root, ".huaweiocr_install.lock")
+            with open(lock_path, "w", encoding="utf-8") as f:
+                f.write("")
+            old = time.time() - 10
+            os.utime(lock_path, (old, old))
+
+            def fake_resource_path(*parts):
+                return os.path.join(root, "bundled", *parts)
+
+            with mock.patch.object(app_paths, "get_resource_path", side_effect=fake_resource_path):
+                with mock.patch.object(app_paths.os.path, "expanduser", return_value=home):
+                    app_paths.ensure_models_installed()
+
+            target = os.path.join(target_root, "model_a")
+            self.assertTrue(os.path.exists(os.path.join(target, "weights.bin")))
+            self.assertTrue(os.path.exists(os.path.join(target, app_paths.MODEL_INSTALL_MARKER)))
+            self.assertFalse(os.path.exists(lock_path))
 
 
 if __name__ == "__main__":
