@@ -416,7 +416,7 @@ class App(BaseTk):
                 crop.main()
                 # 4) 运行 scan2（条码 + OCR 提取 MODEL / SN）
                 self.write_log("[3/4] 运行 scan2.main()：识别 MODEL / SN")
-                scan2.main()
+                scan2.main(model_dir=crop.OUT_MODEL_DIR, sn_dir=crop.OUT_SN_DIR)
                 self.load_results_into_table()
             finally:
                 # 恢复原来的 print

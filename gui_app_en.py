@@ -471,7 +471,7 @@ class App(BaseTk):
 
                 # 4) 运行 scan2（条码 + OCR 提取 MODEL / SN）
                 self.write_log("[3/4] Running scan2.main(): read MODEL / SN")
-                scan2.main()
+                scan2.main(model_dir=crop.OUT_MODEL_DIR, sn_dir=crop.OUT_SN_DIR)
                 self.load_results_into_table()
 
             finally:
@@ -481,7 +481,7 @@ class App(BaseTk):
             # 结束提示
             self.write_log("[4/4] Pipeline complete.")
             self.write_log(f"Results file: {os.path.abspath(scan2.OUT_JSONL)}")
-            self.write_log("Output folders: stage1_labels/, stage2_fields/model/, stage2_fields/sn/")
+            self.write_log(f"Output folders: {crop.STAGE1_DIR}/, {crop.OUT_MODEL_DIR}/, {crop.OUT_SN_DIR}/")
 
         except Exception as e:
             self.write_log(f"ERROR: {e}")

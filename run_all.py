@@ -89,13 +89,19 @@ def main() -> int:
 
         print("\n===== [2/2] Barcode + OCR for MODEL/SN =====")
         t2 = time.perf_counter()
-        stats = scan2.main(out_dir=out_dir, log_level=args.log_level)
+        stats = scan2.main(
+            model_dir=crop.OUT_MODEL_DIR,
+            sn_dir=crop.OUT_SN_DIR,
+            out_jsonl=os.path.join(out_dir, "model_sn_ocr.jsonl"),
+            debug_log=os.path.join(out_dir, "debug_ocr_barcode.log"),
+            log_level=args.log_level,
+        )
         t3 = time.perf_counter()
 
         print("\nDone. Outputs:")
-        print(f"  - {os.path.join(out_dir, 'stage1_labels')}")
-        print(f"  - {os.path.join(out_dir, 'stage2_fields', 'model')}")
-        print(f"  - {os.path.join(out_dir, 'stage2_fields', 'sn')}")
+        print(f"  - {crop.STAGE1_DIR}")
+        print(f"  - {crop.OUT_MODEL_DIR}")
+        print(f"  - {crop.OUT_SN_DIR}")
         print(f"  - {os.path.join(out_dir, 'model_sn_ocr.jsonl')}")
         total_time = (t3 - t0)
         if total_images > 0:

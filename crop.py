@@ -3,6 +3,7 @@ import sys
 import json
 import cv2
 import shutil
+import time
 import numpy as np
 from inference_sdk import InferenceHTTPClient
 
@@ -59,20 +60,28 @@ OUT_MODEL_DIR = os.path.join(STAGE2_DIR, "model")
 OUT_SN_DIR = os.path.join(STAGE2_DIR, "sn")
 MANIFEST_PATH = os.path.join(STAGE2_DIR, "manifest.jsonl")
 FAILED_DIR = os.path.join(STAGE2_DIR, "failed")
+DEFAULT_INPUT_DIR = INPUT_DIR
+DEFAULT_STAGE1_DIR = STAGE1_DIR
+DEFAULT_STAGE2_DIR = STAGE2_DIR
 
-def configure_paths(input_dir=None, out_dir=None):
-    global INPUT_DIR, STAGE1_DIR, STAGE2_DIR
+def _refresh_output_paths():
     global OUT_MODEL_DIR, OUT_SN_DIR, MANIFEST_PATH, FAILED_DIR, TMP_DIR
-    if input_dir:
-        INPUT_DIR = input_dir
-    if out_dir:
-        STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
-        STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
     OUT_MODEL_DIR = os.path.join(STAGE2_DIR, "model")
     OUT_SN_DIR = os.path.join(STAGE2_DIR, "sn")
     MANIFEST_PATH = os.path.join(STAGE2_DIR, "manifest.jsonl")
     FAILED_DIR = os.path.join(STAGE2_DIR, "failed")
     TMP_DIR = os.path.join(STAGE1_DIR, "_tmp_infer")
+
+def configure_paths(input_dir=None, out_dir=None):
+    global INPUT_DIR, STAGE1_DIR, STAGE2_DIR
+    INPUT_DIR = input_dir or DEFAULT_INPUT_DIR
+    if out_dir:
+        STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
+        STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
+    else:
+        STAGE1_DIR = DEFAULT_STAGE1_DIR
+        STAGE2_DIR = DEFAULT_STAGE2_DIR
+    _refresh_output_paths()
 
 # 裁剪/过滤参数（按需微调）
 MIN_CONF_1 = 0.50
@@ -101,12 +110,51 @@ try:
 except Exception:
     pass
 
+def _is_file_busy_error(exc):
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+
+def _run_sibling_dir(path):
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    base = os.path.basename(os.path.normpath(path))
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    for index in range(100):
+        suffix = f"{stamp}_{os.getpid()}"
+        if index:
+            suffix = f"{suffix}_{index}"
+        candidate = os.path.join(parent, f"{base}_run_{suffix}")
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"Could not allocate a clean output directory near {path}")
+
+def _prepare_clean_output_dir(path, label):
+    if not os.path.exists(path):
+        return path
+
+    last_error = None
+    for _ in range(3):
+        try:
+            shutil.rmtree(path)
+            return path
+        except OSError as exc:
+            if not _is_file_busy_error(exc):
+                raise
+            last_error = exc
+            time.sleep(0.2)
+
+    fallback = _run_sibling_dir(path)
+    _log(
+        f"WARN: {label} output folder is busy and cannot be cleared: {path}. "
+        f"Using {fallback} for this run. Original error: {last_error}",
+        "warn",
+    )
+    return fallback
+
 def ensure_dirs():
     # 每次启动时清空目录
-    if os.path.exists(STAGE1_DIR):
-        shutil.rmtree(STAGE1_DIR)
-    if os.path.exists(STAGE2_DIR):
-        shutil.rmtree(STAGE2_DIR)
+    global STAGE1_DIR, STAGE2_DIR
+    STAGE1_DIR = _prepare_clean_output_dir(STAGE1_DIR, "stage1")
+    STAGE2_DIR = _prepare_clean_output_dir(STAGE2_DIR, "stage2")
+    _refresh_output_paths()
 
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(STAGE1_DIR, exist_ok=True)
