@@ -438,19 +438,79 @@ def decode_sn_with_dbr(sn_img_bgr, sn_name=""):
     return codes
 
 
+def _scan_barcode_sources(sources: list[tuple[str, str]], label_id: str = "", field: str = "SN") -> list[dict]:
+    entries = []
+    seen = set()
+    tag = f"{label_id} " if label_id else ""
+    for source, img_path in sources:
+        if not img_path:
+            continue
+        lines = read_barcodes(img_path)
+        append_sensitive_debug(
+            f"[{field}][BARCODE][{source}] {tag}{os.path.basename(img_path)} | {lines}"
+        )
+        for line in lines:
+            if not line:
+                continue
+            key = (source, line)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({"source": source, "data": line})
+    return entries
+
+
+def _format_barcode_entries(entries: list[dict]) -> str:
+    parts = []
+    for entry in entries:
+        source = entry.get("source", "unknown")
+        data = entry.get("data", "")
+        if data:
+            parts.append(f"{source}:{data}")
+    return "; ".join(parts)
+
+
+def _select_sn_from_barcode_entries(entries: list[dict]) -> tuple[str, str, str]:
+    candidates = []
+    seen = set()
+    for entry in entries:
+        data = entry.get("data", "")
+        sn = extract_sn_from_barcode_candidate(data)
+        if not sn:
+            continue
+        key = (sn, entry.get("source", "unknown"))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((sn, data, entry.get("source", "unknown")))
+
+    unique_sns = sorted({sn for sn, _, _ in candidates})
+    if len(unique_sns) == 1:
+        for sn, raw, source in candidates:
+            if sn == unique_sns[0]:
+                return sn, raw, source
+
+    for preferred_source in ("sn", "label"):
+        preferred = [(sn, raw, source) for sn, raw, source in candidates if source == preferred_source]
+        preferred_unique = sorted({sn for sn, _, _ in preferred})
+        if len(preferred_unique) == 1:
+            for sn, raw, source in preferred:
+                if sn == preferred_unique[0]:
+                    return sn, raw, source
+
+    return "", "", ""
+
+
 def try_sn_from_barcode(img_path: str) -> tuple[str, str]:
-    lines = read_barcodes(img_path)
-    append_sensitive_debug(f"[SN][BARCODE] {os.path.basename(img_path)} | {lines}")
-    if not lines:
+    entries = _scan_barcode_sources([("sn", img_path)], field="SN")
+    if not entries:
         return "", ""
 
-    use_lines = filter_sn_lines(lines) or lines
-    for ln in use_lines:
-        sn = extract_sn_from_barcode_candidate(ln)
-        if sn:
-            return sn, ln
+    sn, raw, _source = _select_sn_from_barcode_entries(entries)
+    if sn:
+        return sn, raw
 
-    return "", "; ".join(lines)
+    return "", _format_barcode_entries(entries)
 
 
 def extract_model_from_barcode_candidate(text: str) -> str:
@@ -458,18 +518,18 @@ def extract_model_from_barcode_candidate(text: str) -> str:
 
 
 def try_model_from_barcode(img_path: str) -> tuple[str, str]:
-    lines = read_barcodes(img_path)
-    append_sensitive_debug(f"[MODEL][BARCODE] {os.path.basename(img_path)} | {lines}")
-    if not lines:
+    entries = _scan_barcode_sources([("model", img_path)], field="MODEL")
+    if not entries:
         return "", ""
 
+    lines = [entry["data"] for entry in entries]
     use_lines = filter_model_lines(lines) or lines
     for ln in use_lines:
         model = extract_model_from_barcode_candidate(ln)
         if model:
             return model, ln
 
-    return "", "; ".join(lines)
+    return "", _format_barcode_entries(entries)
 
 
 def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = False):
@@ -512,28 +572,38 @@ def preprocess_sn_image(path: str):
         return None
 
 
-def recognize_sn(sn_path: str, label_id: str = ""):
+def recognize_sn(sn_path: str = "", label_id: str = "", label_path: str = ""):
     tag = f"{label_id} " if label_id else ""
-    append_debug(f"[SN] {tag}{os.path.basename(sn_path)}")
-    codes = read_barcodes(sn_path)
-    append_sensitive_debug(f"[SN][BARCODE] {tag}{os.path.basename(sn_path)} | {codes}")
-    meta = {"barcode_found": bool(codes), "ocr_text_found": False}
+    append_debug(
+        f"[SN] {tag}sn={os.path.basename(sn_path) if sn_path else '[missing]'} "
+        f"label={os.path.basename(label_path) if label_path else '[missing]'}"
+    )
+    sources = []
+    if sn_path:
+        sources.append(("sn", sn_path))
+    if label_path and label_path != sn_path:
+        sources.append(("label", label_path))
 
-    candidate_lines = filter_sn_lines(codes) or codes
-    candidate_sns = []
-    for c in candidate_lines:
-        sn = extract_sn_from_barcode_candidate(c)
-        if sn:
-            candidate_sns.append(sn)
-    candidate_sns = list(dict.fromkeys(candidate_sns))
+    barcode_entries = _scan_barcode_sources(sources, label_id=label_id, field="SN")
+    meta = {
+        "barcode_found": bool(barcode_entries),
+        "ocr_text_found": False,
+        "barcode_sources": sorted({entry.get("source", "unknown") for entry in barcode_entries}),
+    }
+    barcode_raw = _format_barcode_entries(barcode_entries)
+    sn_from_barcode, barcode_line, barcode_source = _select_sn_from_barcode_entries(barcode_entries)
+    if sn_from_barcode:
+        return sn_from_barcode, f"[BARCODE:{barcode_source}] {barcode_line}", "barcode", meta
 
-    if len(candidate_sns) == 1:
-        return candidate_sns[0], f"[BARCODE] {'; '.join(codes)}", "barcode", meta
+    if not sn_path:
+        if barcode_entries:
+            return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
+        return "", "", "none", meta
 
     color_img = load_for_ocr_color(sn_path)
     if color_img is None:
-        if codes:
-            return "", f"[BARCODE] {'; '.join(codes)}", "barcode_no_match", meta
+        if barcode_entries:
+            return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
         return "", "", "none", meta
 
     text, concat, texts = ocr_text_with_details(color_img)
@@ -563,8 +633,8 @@ def recognize_sn(sn_path: str, label_id: str = ""):
     if sn:
         return sn, top_text, "ocr_top", meta
 
-    if codes:
-        return "", f"[BARCODE] {'; '.join(codes)}", "barcode_no_match", meta
+    if barcode_entries:
+        return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
 
     if meta["ocr_text_found"]:
         return "", top_text or text, "ocr_no_match", meta
@@ -694,8 +764,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     use_barcode=model_barcode,
                 )
 
-            if "sn_path" in item:
-                sn_code, sn_raw, sn_src, sn_meta = recognize_sn(item["sn_path"], label_id=key)
+            sn_input_available = bool(item.get("sn_path") or item.get("label_crop"))
+            if sn_input_available:
+                sn_code, sn_raw, sn_src, sn_meta = recognize_sn(
+                    item.get("sn_path", ""),
+                    label_id=key,
+                    label_path=item.get("label_crop", ""),
+                )
 
             if sn_code.startswith("4E25A017") and model_code in {"", "S380-S8P", "S380", "S380-", "S380-S"}:
                 model_code = "S380-S8P2T"
@@ -730,7 +805,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
             stats["records"] += 1
 
-            if "sn_path" in item:
+            if sn_input_available:
                 stats["sn_total"] += 1
                 if sn_meta.get("barcode_found") or sn_meta.get("ocr_text_found"):
                     stats["sn_attempted"] += 1

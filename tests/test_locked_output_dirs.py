@@ -401,6 +401,38 @@ class Scan2ManifestTest(unittest.TestCase):
             self.assertEqual(row["model_raw"], "RAW_MODEL_SECRET_123456")
             self.assertEqual(row["sn_raw"], "RAW_SN_SECRET_123456")
 
+    def test_label_crop_barcode_is_used_when_sn_crop_is_missing(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            label_path = os.path.join(root, "label.png")
+            open(label_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "label_crop": label_path}) + "\n")
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.object(scan2, "read_barcodes", return_value=["SN:4E25A0170000"]):
+                with mock.patch.object(scan2, "load_for_ocr_color") as load_ocr:
+                    stats = scan2.main(
+                        model_dir=model_dir,
+                        sn_dir=sn_dir,
+                        out_jsonl=out_jsonl,
+                        debug_log=os.path.join(root, "debug.log"),
+                    )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+            self.assertEqual(row["sn"], "4E25A0170000")
+            self.assertEqual(row["sn_src"], "barcode")
+            self.assertEqual(stats["sn_total"], 1)
+            self.assertEqual(stats["sn_success"], 1)
+            load_ocr.assert_not_called()
+
     def test_model_barcode_fallback_can_be_enabled_with_env_flag(self):
         scan2 = _import_scan2()
 
