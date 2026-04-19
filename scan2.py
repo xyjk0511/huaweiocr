@@ -109,6 +109,10 @@ def start_debug_run():
     append_debug("[RUN] scan2 started")
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ===================== UTILS =====================
 def _read_image(path, flags=cv2.IMREAD_COLOR):
     img = cv2.imread(path, flags)
@@ -624,17 +628,10 @@ def _load_manifest_records():
 
 
 # ===================== MAIN =====================
-def main(
-    out_dir=None,
-    model_dir=None,
-    sn_dir=None,
-    out_jsonl=None,
-    debug_log=None,
-    log_level="info",
-    unsafe_raw=False,
-    model_barcode=False,
-):
+def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level="info"):
     set_log_level(log_level)
+    unsafe_raw = _env_flag("SCAN2_UNSAFE_RAW")
+    model_barcode = _env_flag("SCAN2_MODEL_BARCODE")
     configure_paths(
         out_dir=out_dir,
         model_dir=model_dir,

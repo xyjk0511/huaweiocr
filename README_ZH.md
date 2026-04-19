@@ -58,7 +58,8 @@ python run_all.py --help
 - `stage2_fields/model_sn_ocr.jsonl`
 - `stage2_fields/debug_ocr_barcode.log`，只在 `--log-level debug` 时写入
 
-默认会对 `model_raw` 和 `sn_raw` 脱敏，降低结果文件中的原始 OCR/条码文本泄露风险。只有受控本地调试才建议在代码层显式使用 `unsafe_raw=True`。
+默认会对 `model_raw` 和 `sn_raw` 脱敏，降低结果文件中的原始 OCR/条码文本泄露风险。只有受控本地调试才建议设置 `SCAN2_UNSAFE_RAW=1`。
+model 字段条码兜底默认关闭；只有明确需要对 model 裁剪图尝试条码识别时才设置 `SCAN2_MODEL_BARCODE=1`。
 
 JSONL 示例：
 

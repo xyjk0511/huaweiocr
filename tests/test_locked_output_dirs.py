@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import json
 import os
 import sys
@@ -250,6 +251,19 @@ class RunAllPathPropagationTest(unittest.TestCase):
 
 
 class Scan2ManifestTest(unittest.TestCase):
+    def test_main_signature_keeps_legacy_arguments(self):
+        scan2 = _import_scan2()
+
+        signature = inspect.signature(scan2.main)
+        self.assertEqual(
+            list(signature.parameters),
+            ["out_dir", "model_dir", "sn_dir", "out_jsonl", "debug_log", "log_level"],
+        )
+        self.assertEqual(
+            str(signature),
+            "(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level='info')",
+        )
+
     def test_manifest_keeps_labels_without_model_or_sn_crops(self):
         scan2 = _import_scan2()
 
@@ -340,7 +354,13 @@ class Scan2ManifestTest(unittest.TestCase):
             out_jsonl = os.path.join(root, "out.jsonl")
             with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
                 with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
-                    scan2.main(model_dir=model_dir, sn_dir=sn_dir, out_jsonl=out_jsonl, debug_log=os.path.join(root, "debug.log"))
+                    with mock.patch.dict(os.environ, {"SCAN2_UNSAFE_RAW": ""}, clear=False):
+                        scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=out_jsonl,
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
 
             with open(out_jsonl, "r", encoding="utf-8") as f:
                 row = json.loads(f.readline())
@@ -348,6 +368,63 @@ class Scan2ManifestTest(unittest.TestCase):
             self.assertEqual(row["sn"], "SN1")
             self.assertNotIn("RAW_MODEL_SECRET_123456", row["model_raw"])
             self.assertNotIn("RAW_SN_SECRET_123456", row["sn_raw"])
+
+    def test_raw_fields_can_be_enabled_with_env_flag(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            open(model_path, "wb").close()
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
+                with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
+                    with mock.patch.dict(os.environ, {"SCAN2_UNSAFE_RAW": "1"}, clear=False):
+                        scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=out_jsonl,
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+            self.assertEqual(row["model_raw"], "RAW_MODEL_SECRET_123456")
+            self.assertEqual(row["sn_raw"], "RAW_SN_SECRET_123456")
+
+    def test_model_barcode_fallback_can_be_enabled_with_env_flag(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            open(model_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path}) + "\n")
+
+            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "test")) as recognize_model:
+                with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "1"}, clear=False):
+                    scan2.main(
+                        model_dir=model_dir,
+                        sn_dir=sn_dir,
+                        out_jsonl=os.path.join(root, "out.jsonl"),
+                        debug_log=os.path.join(root, "debug.log"),
+                    )
+
+            self.assertTrue(recognize_model.call_args.kwargs["use_barcode"])
 
     def test_model_recognition_skips_barcode_cli_by_default(self):
         scan2 = _import_scan2()
