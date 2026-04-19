@@ -2,7 +2,7 @@
 
 - [x] 1.1 Define the SN barcode validation manifest schema with image path, label id, expected SN, barcode-present flag, accepted-quality flag, and notes.
 - [x] 1.2 Add a deterministic validation command that runs SN barcode extraction without counting OCR fallback as success.
-- [ ] 1.3 Build or import a ground-truth validation set with enough accepted-quality SN barcode samples to justify the 90% gate. Blocked: the repository currently has 0 accepted-quality ground-truth rows in `validation/sn_barcode_manifest.jsonl`.
+- [ ] 1.3 Build or import a ground-truth validation set with enough accepted-quality SN barcode samples to justify the 90% gate. Blocked: the repository currently has 0 accepted-quality ground-truth rows in `validation/sn_barcode_manifest.jsonl`; `validate_sn_barcodes.py --init-template-from-stage2 ...` can generate a manual-review candidate manifest, but candidate rows are not release evidence until a reviewer fills verified `expected_sn`, `barcode_present`, and `accepted_quality`.
 - [x] 1.4 Add quality diagnostics for too-small, clipped, blurred, or quiet-zone-missing SN barcodes.
 
 ## 2. Barcode Candidate Generation
@@ -32,4 +32,4 @@
 - [x] 5.1 Add unit tests for source priority, OCR fallback accounting, non-SN barcode rejection, and ambiguous barcode rejection.
 - [x] 5.2 Add integration tests for manifest rows with missing SN crop but present label crop.
 - [x] 5.3 Run the validation command and make it fail when exact barcode-derived SN hit rate is below 90%.
-- [ ] 5.4 Run `python -m unittest discover -v` and the SN barcode validation command before marking the change complete. Unit tests pass; final validation is intentionally still failing until 1.3 supplies enough accepted-quality ground truth.
+- [ ] 5.4 Run `python -m unittest discover -v` and the SN barcode validation command before marking the change complete. `python -m unittest discover -v` passes with 33 tests; final validation is intentionally still failing until 1.3 supplies enough accepted-quality ground truth.

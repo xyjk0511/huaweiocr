@@ -115,6 +115,61 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
 
 
 class ValidationCommandTest(unittest.TestCase):
+    def test_template_builder_creates_manual_review_rows_without_accepting_them(self):
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            label_dir = os.path.join(root, "stage1_labels")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(label_dir)
+            os.makedirs(sn_dir)
+            label_path = os.path.join(label_dir, "a__label_1.png")
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            label_path_2 = os.path.join(label_dir, "a__label_2.png")
+            open(label_path, "wb").close()
+            open(sn_path, "wb").close()
+            open(label_path_2, "wb").close()
+
+            stage2_manifest = os.path.join(stage2, "manifest.jsonl")
+            with open(stage2_manifest, "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({
+                    "label_id": "a__label_1",
+                    "label_crop": label_path,
+                    "sn_path": sn_path,
+                    "sn_conf": 0.91,
+                }) + "\n")
+                manifest.write(json.dumps({
+                    "label_id": "a__label_2",
+                    "label_crop": label_path_2,
+                    "sn_path": None,
+                }) + "\n")
+
+            recognized_jsonl = os.path.join(stage2, "recognized.jsonl")
+            with open(recognized_jsonl, "w", encoding="utf-8") as recognized:
+                recognized.write(json.dumps({
+                    "label_id": "a__label_1",
+                    "sn": "SN:4E25A0170000",
+                    "sn_src": "ocr",
+                }) + "\n")
+
+            output_path = os.path.join(root, "validation", "candidates.jsonl")
+            summary = validate_sn_barcodes.build_manifest_template_from_stage2(
+                stage2_manifest,
+                output_path,
+                recognized_jsonl=recognized_jsonl,
+            )
+
+            with open(output_path, "r", encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(summary["rows_written"], 2)
+        self.assertEqual(rows[0]["label_id"], "a__label_1")
+        self.assertEqual(rows[0]["expected_sn"], "")
+        self.assertFalse(rows[0]["barcode_present"])
+        self.assertFalse(rows[0]["accepted_quality"])
+        self.assertEqual(rows[0]["pipeline_candidate_sn"], "4E25A0170000")
+        self.assertIn("not ground truth", rows[0]["notes"])
+        self.assertNotIn("sn_path", rows[1])
+
     def test_validation_fails_when_accepted_sample_count_is_too_small(self):
         with tempfile.TemporaryDirectory() as root:
             image_path = os.path.join(root, "label.png")

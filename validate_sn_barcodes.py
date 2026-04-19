@@ -13,6 +13,10 @@ from sn_barcode import extract_sn_from_payload, scan_sn_barcodes
 DEFAULT_MANIFEST = os.path.join("validation", "sn_barcode_manifest.jsonl")
 DEFAULT_THRESHOLD = 0.90
 DEFAULT_MIN_ACCEPTED = 50
+DEFAULT_TEMPLATE_NOTE = (
+    "TODO manually verify expected_sn, barcode_present, and accepted_quality; "
+    "pipeline/OCR candidates are hints only and are not ground truth."
+)
 
 
 @dataclass
@@ -65,6 +69,34 @@ def _resolve_path(base_dir: str, value: str) -> str:
     return os.path.normpath(os.path.join(base_dir, value))
 
 
+def _resolve_existing_path(primary_base: str, value: str) -> str:
+    value = str(value).strip()
+    if not value:
+        return ""
+    if value.lower() in {"none", "null"}:
+        return ""
+    if os.path.isabs(value):
+        return os.path.normpath(value)
+
+    candidates = [
+        os.path.abspath(value),
+        os.path.abspath(os.path.join(primary_base, value)),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return os.path.normpath(candidate)
+    return os.path.normpath(candidates[0])
+
+
+def _manifest_relative_path(output_dir: str, value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return os.path.normpath(os.path.relpath(value, output_dir))
+    except ValueError:
+        return os.path.normpath(value)
+
+
 def _load_manifest(path: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
@@ -81,6 +113,18 @@ def _load_manifest(path: str) -> list[dict[str, Any]]:
             item["_line_no"] = line_no
             rows.append(item)
     return rows
+
+
+def _load_rows_by_label(path: str) -> dict[str, dict[str, Any]]:
+    if not path:
+        return {}
+    rows = _load_manifest(path)
+    by_label: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        label_id = str(row.get("label_id", "")).strip()
+        if label_id and label_id not in by_label:
+            by_label[label_id] = row
+    return by_label
 
 
 def _validate_schema(row: dict[str, Any], manifest_dir: str) -> list[str]:
@@ -118,6 +162,75 @@ def _sources_for_row(row: dict[str, Any], manifest_dir: str) -> list[tuple[str, 
         if resolved not in {path for _, path in sources}:
             sources.append(("original", resolved))
     return sources
+
+
+def build_manifest_template_from_stage2(
+    stage2_manifest_path: str,
+    output_path: str,
+    *,
+    recognized_jsonl: str = "",
+) -> dict[str, Any]:
+    stage2_manifest_path = os.path.abspath(stage2_manifest_path)
+    output_path = os.path.abspath(output_path)
+    stage2_dir = os.path.dirname(stage2_manifest_path)
+    output_dir = os.path.dirname(output_path) or "."
+
+    rows = _load_manifest(stage2_manifest_path)
+    recognized_by_label = _load_rows_by_label(recognized_jsonl) if recognized_jsonl else {}
+
+    os.makedirs(output_dir, exist_ok=True)
+    written = 0
+    with open(output_path, "w", encoding="utf-8", newline="\n") as out:
+        for row in rows:
+            label_id = str(row.get("label_id", "")).strip()
+            if not label_id:
+                raise ValueError(f"{stage2_manifest_path}:{row.get('_line_no', '?')}: missing label_id")
+
+            label_crop = _resolve_existing_path(stage2_dir, str(row.get("label_crop", "")))
+            sn_path = _resolve_existing_path(stage2_dir, str(row.get("sn_path", "")))
+            original_image = _resolve_existing_path(stage2_dir, str(row.get("original_image_path", "")))
+            image_path = _resolve_existing_path(
+                stage2_dir,
+                str(row.get("image_path") or row.get("original_image_path") or row.get("label_crop") or row.get("sn_path") or ""),
+            )
+
+            template_row: dict[str, Any] = {
+                "image_path": _manifest_relative_path(output_dir, image_path),
+                "label_id": label_id,
+                "expected_sn": "",
+                "barcode_present": False,
+                "accepted_quality": False,
+                "notes": DEFAULT_TEMPLATE_NOTE,
+            }
+            if label_crop:
+                template_row["label_crop"] = _manifest_relative_path(output_dir, label_crop)
+            if sn_path:
+                template_row["sn_path"] = _manifest_relative_path(output_dir, sn_path)
+            if original_image:
+                template_row["original_image_path"] = _manifest_relative_path(output_dir, original_image)
+            if row.get("model_conf") is not None:
+                template_row["model_conf"] = row.get("model_conf")
+            if row.get("sn_conf") is not None:
+                template_row["sn_conf"] = row.get("sn_conf")
+
+            recognized = recognized_by_label.get(label_id)
+            if recognized:
+                candidate_sn = extract_sn_from_payload(str(recognized.get("sn", "")))
+                if candidate_sn:
+                    template_row["pipeline_candidate_sn"] = candidate_sn
+                    template_row["pipeline_candidate_source"] = str(recognized.get("sn_src", ""))
+
+            out.write(json.dumps(template_row, ensure_ascii=False) + "\n")
+            written += 1
+
+    return {
+        "stage2_manifest_path": stage2_manifest_path,
+        "output_path": output_path,
+        "rows_written": written,
+        "recognized_rows_loaded": len(recognized_by_label),
+        "accepted_quality_rows": 0,
+        "release_gate_ready": False,
+    }
 
 
 def evaluate_manifest(
@@ -233,11 +346,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-accepted", type=int, default=DEFAULT_MIN_ACCEPTED)
     parser.add_argument("--json-out", default="")
     parser.add_argument("--debug-candidates-dir", default="")
+    parser.add_argument("--init-template-from-stage2", default="")
+    parser.add_argument("--template-out", default="")
+    parser.add_argument("--recognized-jsonl", default="")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.init_template_from_stage2:
+        if not args.template_out:
+            parser.error("--template-out is required with --init-template-from-stage2")
+        data = build_manifest_template_from_stage2(
+            args.init_template_from_stage2,
+            args.template_out,
+            recognized_jsonl=args.recognized_jsonl,
+        )
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
     summary = evaluate_manifest(
         args.manifest,
         threshold=args.threshold,
