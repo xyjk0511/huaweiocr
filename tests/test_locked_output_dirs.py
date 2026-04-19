@@ -78,6 +78,50 @@ def _import_scan2():
     return importlib.import_module("scan2")
 
 
+def _install_barcode_import_fakes():
+    cv2 = types.ModuleType("cv2")
+    cv2.COLOR_BGR2GRAY = 1
+    cv2.COLOR_GRAY2BGR = 2
+    cv2.BORDER_CONSTANT = 0
+    cv2.INTER_CUBIC = 0
+    cv2.ADAPTIVE_THRESH_GAUSSIAN_C = 0
+    cv2.THRESH_BINARY = 0
+    cv2.MORPH_RECT = 0
+    cv2.MORPH_CLOSE = 0
+    cv2.ROTATE_90_CLOCKWISE = 0
+    cv2.cvtColor = lambda img, *args, **kwargs: img
+    cv2.resize = lambda img, *args, **kwargs: img
+    cv2.bitwise_not = lambda img: img
+    cv2.copyMakeBorder = lambda img, *args, **kwargs: img
+    cv2.createCLAHE = lambda *args, **kwargs: types.SimpleNamespace(apply=lambda img: img)
+    cv2.GaussianBlur = lambda img, *args, **kwargs: img
+    cv2.addWeighted = lambda img, *args, **kwargs: img
+    cv2.adaptiveThreshold = lambda img, *args, **kwargs: img
+    cv2.getStructuringElement = lambda *args, **kwargs: object()
+    cv2.morphologyEx = lambda img, *args, **kwargs: img
+    cv2.imwrite = lambda *args, **kwargs: True
+    sys.modules["cv2"] = cv2
+
+    numpy = types.ModuleType("numpy")
+    numpy.ndarray = object
+    numpy.rot90 = lambda img, k: img
+    sys.modules["numpy"] = numpy
+
+    pyzbar_pkg = types.ModuleType("pyzbar")
+    pyzbar_mod = types.ModuleType("pyzbar.pyzbar")
+    pyzbar_mod.ZBarSymbol = types.SimpleNamespace(CODE128=object())
+    pyzbar_mod.decode = lambda *args, **kwargs: []
+    pyzbar_pkg.pyzbar = pyzbar_mod
+    sys.modules["pyzbar"] = pyzbar_pkg
+    sys.modules["pyzbar.pyzbar"] = pyzbar_mod
+
+
+def _import_barcode():
+    sys.modules.pop("barcode", None)
+    _install_barcode_import_fakes()
+    return importlib.import_module("barcode")
+
+
 @unittest.skipUnless(os.name == "nt", "Windows file locking behavior only")
 class LockedOutputDirsTest(unittest.TestCase):
     def test_locked_manifest_switches_stage2_to_run_directory(self):
@@ -246,6 +290,130 @@ class CropTempFileTest(unittest.TestCase):
             self.assertNotEqual(calls[0], calls[1])
             self.assertFalse(os.path.exists(calls[0]))
             self.assertFalse(os.path.exists(calls[1]))
+
+
+class GuiPipelineTest(unittest.TestCase):
+    def test_same_basename_sources_are_staged_with_unique_names(self):
+        import gui_pipeline
+
+        with tempfile.TemporaryDirectory() as root:
+            source_a = os.path.join(root, "a")
+            source_b = os.path.join(root, "b")
+            os.makedirs(source_a)
+            os.makedirs(source_b)
+            path_a = os.path.join(source_a, "same.png")
+            path_b = os.path.join(source_b, "same.png")
+            with open(path_a, "wb") as f:
+                f.write(b"a")
+            with open(path_b, "wb") as f:
+                f.write(b"b")
+
+            run_dir, records = gui_pipeline.copy_images_to_unique_run_dir(
+                [path_a, path_b],
+                os.path.join(root, "new_images"),
+            )
+
+            names = [record["input_name"] for record in records]
+            self.assertEqual(len(names), 2)
+            self.assertEqual(len(set(names)), 2)
+            self.assertTrue(os.path.exists(os.path.join(run_dir, names[0])))
+            self.assertTrue(os.path.exists(os.path.join(run_dir, names[1])))
+            with open(os.path.join(run_dir, "source_manifest.jsonl"), "r", encoding="utf-8") as f:
+                manifest_rows = [json.loads(line) for line in f]
+            self.assertEqual([row["source_path"] for row in manifest_rows], [os.path.abspath(path_a), os.path.abspath(path_b)])
+
+    def test_gui_import_does_not_import_pipeline_modules(self):
+        sys.modules.pop("gui_app", None)
+        sys.modules.pop("crop", None)
+        sys.modules.pop("scan2", None)
+        sys.modules.pop("barcode", None)
+        sys.modules.pop("cv2", None)
+        sys.modules.pop("numpy", None)
+        sys.modules.pop("pyzbar", None)
+        sys.modules.pop("pyzbar.pyzbar", None)
+
+        importlib.import_module("gui_app")
+
+        self.assertNotIn("crop", sys.modules)
+        self.assertNotIn("scan2", sys.modules)
+
+
+class BarcodeCliBudgetTest(unittest.TestCase):
+    def test_decode_small_patch_caps_cli_attempts(self):
+        barcode = _import_barcode()
+        fake_img = types.SimpleNamespace(shape=(10, 10))
+        calls = []
+
+        def fake_cli(_img, _tag):
+            calls.append(_tag)
+            return []
+
+        with mock.patch.object(barcode, "decode_with_transforms", return_value=[]):
+            with mock.patch.object(barcode, "crop_bar_band", return_value=fake_img):
+                with mock.patch.object(barcode, "enhance_band", return_value=(fake_img, fake_img)):
+                    with mock.patch.object(barcode, "_rotate90", side_effect=lambda img, _k: img):
+                        with mock.patch.object(barcode, "decode_with_cli", side_effect=fake_cli):
+                            barcode.decode_small_patch(fake_img)
+
+        self.assertEqual(len(calls), barcode.CLI_MAX_CALLS_PER_PATCH)
+
+
+class Scan2DebugLogTest(unittest.TestCase):
+    def test_info_mode_does_not_create_debug_log(self):
+        scan2 = _import_scan2()
+        with tempfile.TemporaryDirectory() as root:
+            log_path = os.path.join(root, "debug.log")
+            scan2.DEBUG_LOG_PATH = log_path
+            scan2.set_log_level("info")
+
+            scan2.append_debug("MODEL path C:/secret/customer_4E25A017ABCDEFG")
+
+            self.assertFalse(os.path.exists(log_path))
+
+    def test_debug_log_masks_sensitive_text(self):
+        scan2 = _import_scan2()
+        with tempfile.TemporaryDirectory() as root:
+            log_path = os.path.join(root, "debug.log")
+            scan2.DEBUG_LOG_PATH = log_path
+            scan2.set_log_level("debug")
+
+            scan2.append_sensitive_debug(r"SN C:\customer\asset_4E25A017ABCDEFG.png | 4E25A017ABCDEFG")
+
+            with open(log_path, "r", encoding="utf-8") as f:
+                data = f.read()
+            self.assertNotIn("4E25A017ABCDEFG", data)
+            self.assertNotIn("customer", data)
+            self.assertNotIn("asset_4E25A017ABCDEFG.png", data)
+            self.assertIn("4E25", data)
+
+
+class AppPathsInstallTest(unittest.TestCase):
+    def test_incomplete_model_dir_is_replaced(self):
+        import app_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            bundled = os.path.join(root, "bundled", "models", "official_models")
+            source_model = os.path.join(bundled, "model_a")
+            os.makedirs(source_model)
+            with open(os.path.join(source_model, "weights.bin"), "wb") as f:
+                f.write(b"complete")
+
+            home = os.path.join(root, "home")
+            target = os.path.join(home, ".paddlex", "official_models", "model_a")
+            os.makedirs(target)
+            with open(os.path.join(target, "partial.bin"), "wb") as f:
+                f.write(b"partial")
+
+            def fake_resource_path(*parts):
+                return os.path.join(root, "bundled", *parts)
+
+            with mock.patch.object(app_paths, "get_resource_path", side_effect=fake_resource_path):
+                with mock.patch.object(app_paths.os.path, "expanduser", return_value=home):
+                    app_paths.ensure_models_installed()
+
+            self.assertTrue(os.path.exists(os.path.join(target, "weights.bin")))
+            self.assertTrue(os.path.exists(os.path.join(target, app_paths.MODEL_INSTALL_MARKER)))
+            self.assertFalse(os.path.exists(os.path.join(target, "partial.bin")))
 
 
 if __name__ == "__main__":

@@ -14,12 +14,8 @@ import platform
 import traceback
 import ctypes
 import subprocess
-# 你的两个脚本模块名，保持和文件名一致
-from app_paths import ensure_paddle_libs_on_path
 from app_paths import get_resource_path, get_barcode_cli_path
-ensure_paddle_libs_on_path()
-import crop
-import scan2
+from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules
 # 粘贴图片支持（可选）
 try:
     from PIL import ImageGrab, Image
@@ -114,6 +110,8 @@ class App(BaseTk):
         self.geometry("900x700")
         # 已选择的图片路径列表
         self.image_paths = []
+        self._crop_module = None
+        self._scan2_module = None
         # ============ 顶部：拖拽区域 ============
         top_frame = tk.Frame(self)
         top_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -248,7 +246,7 @@ class App(BaseTk):
         """
         Ctrl+V 粘贴：
         - 如果剪贴板是文件列表：直接加入
-        - 如果剪贴板是图片：保存为 PNG 到 crop.INPUT_DIR，再加入
+        - 如果剪贴板是图片：保存为 PNG 到独立缓存目录，再加入
         """
         # 粘贴图片先放到独立源目录，避免运行时清理输入目录删掉自己。
         input_dir = os.path.abspath("pasted_images")
@@ -384,60 +382,51 @@ class App(BaseTk):
         t.start()
     def run_pipeline(self):
         """在后台线程里跑完整 pipeline：拷贝图片 → crop_labels.main → scan2.main"""
-        # 把 crop_labels 的 INPUT_DIR 当作输入目录（你脚本里默认是 "test_images"）
-        input_dir = os.path.abspath(crop.INPUT_DIR)
         try:
-            selected_sources = {os.path.abspath(p) for p in self.image_paths}
-            # 1) 准备 INPUT_DIR：清空旧图片，拷贝新图片进去
-            self.write_log(f"[1/4] 准备输入目录：{input_dir}")
-            os.makedirs(input_dir, exist_ok=True)
-            # 清理旧的输入图片（只删图片类型）
-            for name in os.listdir(input_dir):
-                full = os.path.join(input_dir, name)
-                if os.path.abspath(full) in selected_sources:
-                    continue
-                if os.path.isfile(full) and os.path.splitext(full)[1].lower() in SUPPORTED_EXTS:
-                    try:
-                        os.remove(full)
-                    except Exception as e:
-                        self.write_log(f"⚠️ 删除旧文件失败 {full}: {e}")
-            # 拷贝新图片
-            copied = 0
-            for p in self.image_paths:
-                dst = os.path.join(input_dir, os.path.basename(p))
-                if os.path.abspath(p) == os.path.abspath(dst):
-                    continue
-                shutil.copy2(p, dst)
-                copied += 1
-            self.write_log(f"已拷贝 {copied} 个图片到 {input_dir}")
-            old_crop_sink = getattr(crop, "LOG_SINK", None)
-            old_scan_sink = getattr(scan2, "LOG_SINK", None)
-            crop.set_log_sink(self.write_log)
-            scan2.set_log_sink(self.write_log)
             try:
-                # 3) 运行 crop_labels（Stage1 + Stage2 裁剪）
+                crop_module, scan2_module = load_pipeline_modules()
+            except Exception as exc:
+                self.write_log(f"❌ 加载 OCR 依赖失败：{exc}")
+                self.after(0, lambda: messagebox.showerror("加载依赖失败", str(exc)))
+                return
+
+            self._crop_module = crop_module
+            self._scan2_module = scan2_module
+            input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
+            input_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
+
+            self.write_log(f"[1/4] 准备输入目录：{input_dir}")
+            self.write_log(f"已拷贝 {len(copied_records)} 个图片到 {input_dir}")
+
+            old_crop_sink = getattr(crop_module, "LOG_SINK", None)
+            old_scan_sink = getattr(scan2_module, "LOG_SINK", None)
+            crop_module.set_log_sink(self.write_log)
+            scan2_module.set_log_sink(self.write_log)
+            try:
                 self.write_log("[2/4] 运行 crop_labels.main()：大图 → label → model/sn 小图")
-                crop.main(input_dir=input_dir)
-                # 4) 运行 scan2（条码 + OCR 提取 MODEL / SN）
+                crop_module.main(input_dir=input_dir)
                 self.write_log("[3/4] 运行 scan2.main()：识别 MODEL / SN")
-                scan2.main(model_dir=crop.OUT_MODEL_DIR, sn_dir=crop.OUT_SN_DIR)
+                scan2_module.main(model_dir=crop_module.OUT_MODEL_DIR, sn_dir=crop_module.OUT_SN_DIR)
                 self.after(0, self.load_results_into_table)
             finally:
-                crop.set_log_sink(old_crop_sink)
-                scan2.set_log_sink(old_scan_sink)
-            # 结束提示
+                crop_module.set_log_sink(old_crop_sink)
+                scan2_module.set_log_sink(old_scan_sink)
+
             self.write_log("[4/4] 全部流程完成 ✅")
-            self.write_log(f"结果文件：{os.path.abspath(scan2.OUT_JSONL)}")
-            self.write_log("裁剪文件夹：stage1_labels/，stage2_fields/model/，stage2_fields/sn/")
+            self.write_log(f"结果文件：{os.path.abspath(scan2_module.OUT_JSONL)}")
+            self.write_log(f"裁剪文件夹：{crop_module.STAGE1_DIR}/，{crop_module.OUT_MODEL_DIR}/，{crop_module.OUT_SN_DIR}/")
             self.after(0, lambda: self.write_log(self._format_issue_summary()))
         except Exception as e:
             self.write_log(f"❌ 出错：{e}")
         finally:
-            # 重新启用按钮
             self.after(0, lambda: self.btn_start.config(state="normal"))
     def load_results_into_table(self):
         """读取 scan2 输出 JSONL 并追加到表格"""
-        out_path = os.path.abspath(scan2.OUT_JSONL)
+        scan2_module = self._scan2_module
+        if scan2_module is None:
+            self.write_log("⚠️ scan2 尚未加载。")
+            return
+        out_path = os.path.abspath(scan2_module.OUT_JSONL)
         if not os.path.isfile(out_path):
             self.write_log(f"⚠️ 未找到输出文件：{out_path}")
             return

@@ -44,6 +44,7 @@ DEFAULT_DIRS = [
 BARCODE_CLI_PATH = get_barcode_cli_path() if get_barcode_cli_path else ""
 CLI_SCALE_FACTORS = [1.0, 1.5, 2.0, 2.5]
 CLI_MAX_PIXELS = 50_000_000
+CLI_MAX_CALLS_PER_PATCH = 8
 
 PAD_X = 30
 PAD_Y = 16
@@ -300,9 +301,11 @@ def decode_with_cli(img_bgr: np.ndarray, tag: str) -> List[Dict]:
     return results
 
 
-def decode_cli_multi(img: np.ndarray, tag: str) -> List[Dict]:
+def decode_cli_multi(img: np.ndarray, tag: str, budget: Dict | None = None) -> List[Dict]:
     base = img
     rotations = [0, 1, 2, 3]
+    if budget is None:
+        budget = {"limit": CLI_MAX_CALLS_PER_PATCH, "calls": 0}
 
     results: List[Dict] = []
     seen = set()
@@ -323,6 +326,9 @@ def decode_cli_multi(img: np.ndarray, tag: str) -> List[Dict]:
                 candidates = [resized]
 
             for cand in candidates:
+                if budget["calls"] >= budget["limit"]:
+                    return results
+                budget["calls"] += 1
                 for r in decode_with_cli(cand, tag):
                     key = (r.get('data'), r.get('type'))
                     if key in seen:
@@ -347,6 +353,7 @@ def decode_small_patch(img_bgr: np.ndarray) -> Dict:
     """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     gray = auto_rotate_to_horizontal(gray)
+    cli_budget = {"limit": CLI_MAX_CALLS_PER_PATCH, "calls": 0}
 
     # ?????
     band = crop_bar_band(gray)
@@ -355,7 +362,7 @@ def decode_small_patch(img_bgr: np.ndarray) -> Dict:
     results: List[Dict] = decode_with_transforms(band, "band_raw")
 
     # BarcodeReaderCLI multi-pass on band (if available)
-    results += decode_cli_multi(band, "band_cli")
+    results += decode_cli_multi(band, "band_cli", cli_budget)
     if results:
         return {"results": results}
 
@@ -364,17 +371,17 @@ def decode_small_patch(img_bgr: np.ndarray) -> Dict:
 
     # ?????????
     results += decode_with_transforms(enh_gray, "band_enh_gray")
-    results += decode_cli_multi(enh_gray, "band_cli_enh_gray")
+    results += decode_cli_multi(enh_gray, "band_cli_enh_gray", cli_budget)
     if results:
         return {"results": results}
 
     # ?????????
     results += decode_with_transforms(bin_img, "band_enh_bin")
-    results += decode_cli_multi(bin_img, "band_cli_enh_bin")
+    results += decode_cli_multi(bin_img, "band_cli_enh_bin", cli_budget)
     if results:
         return {"results": results}
 
-    results += decode_cli_multi(gray, "full_cli")
+    results += decode_cli_multi(gray, "full_cli", cli_budget)
     return {"results": results}
 
 def process_path(path: str) -> None:

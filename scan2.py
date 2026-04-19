@@ -77,9 +77,11 @@ def get_ocr_engine():
 
 
 def append_debug(line: str) -> None:
+    if LOG_LEVEL != "debug":
+        return
     try:
         with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+            f.write(_mask_sensitive_text(line) + "\n")
     except Exception:
         pass
 
@@ -91,18 +93,19 @@ def _mask_sensitive_text(value: str) -> str:
             return "*" * len(text)
         return text[:4] + ("*" * (len(text) - 8)) + text[-4:]
 
-    return re.sub(r"[0-9A-Za-z]{8,}", repl, value)
+    masked = re.sub(r"(?i)([a-z]:\\|/)[^\s|,\]\)]+", "[path]", value)
+    masked = re.sub(r"(?i)[^\\/\s|,\[\]'\"]+\.(jpg|jpeg|png|bmp|webp)", "[file]", masked)
+    masked = re.sub(r"(?i)(label[_-]?id=)[^\s|,]+", r"\1[masked]", masked)
+    return re.sub(r"[0-9A-Za-z]{8,}", repl, masked)
 
 
 def append_sensitive_debug(line: str) -> None:
-    if LOG_LEVEL != "debug":
-        return
     append_debug(line)
 
 
 def start_debug_run():
     append_debug("=" * 72)
-    append_debug(f"[RUN] model_dir={MODEL_CROP_DIR} sn_dir={SN_CROP_DIR}")
+    append_debug("[RUN] scan2 started")
 
 
 # ===================== UTILS =====================

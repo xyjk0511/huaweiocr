@@ -38,3 +38,18 @@
 - `gui_app.py` and `gui_app_en.py` now store pasted images outside the pipeline input directory, skip self-deleting selected sources, use module log sinks instead of replacing `builtins.print`, and schedule Tk updates through `after`.
 - `barcode.py` now bounds CLI fallback scale/pixels and stops after the first CLI hit.
 - `HuaweiOCR.spec`, `requirements.txt`, `README.md`, and `.gitignore` now provide portable packaging/dependency metadata and ignore pasted image cache.
+
+## Follow-up Review Findings
+
+- GUI selected images with the same basename are now staged into a per-run input directory with unique target names and a `source_manifest.jsonl`.
+- `barcode.py` now enforces `CLI_MAX_CALLS_PER_PATCH` so one no-hit patch cannot fan out into unbounded external CLI launches.
+- `gui_app.py` and `gui_app_en.py` no longer import `crop`, `scan2`, OCR, barcode, Paddle, or pyzbar during window startup; pipeline modules are loaded only after the user clicks run, and load failures are shown in the GUI.
+- `scan2.py` no longer writes debug logs in normal info mode. Debug mode uses the existing masking path for sensitive OCR/barcode text.
+- Legacy local scripts were moved under `legacy/` and marked reference-only, with supported entrypoints documented in `legacy/README.md`.
+- `app_paths.ensure_models_installed()` now uses a lock file, copies bundled models into a temporary directory, writes a completion marker, and replaces incomplete installs on the next run.
+
+## Follow-up Verification
+
+- `python -m unittest discover -s tests -v`
+- `python -m py_compile app_paths.py barcode.py crop.py debug.py gui_app.py gui_app_en.py gui_pipeline.py legacy\roboflow_legacy.py legacy\barcode_debug_legacy.py ocr.py run_all.py scan2.py tests\test_locked_output_dirs.py`
+- `git diff --check`

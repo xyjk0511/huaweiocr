@@ -1,6 +1,10 @@
 import os
 import sys
 import shutil
+import tempfile
+import time
+
+MODEL_INSTALL_MARKER = ".huaweiocr_complete"
 
 
 def get_base_dir():
@@ -24,12 +28,44 @@ def ensure_models_installed():
 
     target_root = os.path.join(os.path.expanduser("~"), ".paddlex", "official_models")
     os.makedirs(target_root, exist_ok=True)
+    lock_path = os.path.join(target_root, ".huaweiocr_install.lock")
+    lock_fd = None
+    deadline = time.time() + 30
+    while lock_fd is None:
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            if time.time() >= deadline:
+                raise TimeoutError(f"Timed out waiting for model install lock: {lock_path}")
+            time.sleep(0.2)
 
-    for name in os.listdir(bundled):
-        src = os.path.join(bundled, name)
-        dst = os.path.join(target_root, name)
-        if os.path.isdir(src) and not os.path.exists(dst):
-            shutil.copytree(src, dst)
+    try:
+        for name in os.listdir(bundled):
+            src = os.path.join(bundled, name)
+            dst = os.path.join(target_root, name)
+            marker = os.path.join(dst, MODEL_INSTALL_MARKER)
+            if not os.path.isdir(src):
+                continue
+            if os.path.isdir(dst) and os.path.isfile(marker):
+                continue
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            tmp = tempfile.mkdtemp(prefix=f".{name}.", dir=target_root)
+            try:
+                shutil.copytree(src, tmp, dirs_exist_ok=True)
+                with open(os.path.join(tmp, MODEL_INSTALL_MARKER), "w", encoding="utf-8") as f:
+                    f.write("ok\n")
+                os.replace(tmp, dst)
+            finally:
+                if os.path.exists(tmp):
+                    shutil.rmtree(tmp, ignore_errors=True)
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
 
 
 def get_barcode_cli_path():
