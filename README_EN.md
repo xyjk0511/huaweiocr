@@ -59,7 +59,7 @@ Typical run outputs:
 - `stage2_fields/debug_ocr_barcode.log` only when `--log-level debug`
 
 `model_raw` and `sn_raw` are masked by default to reduce accidental leakage in result files. Use `SCAN2_UNSAFE_RAW=1` only for controlled local debugging.
-Model barcode fallback is off by default. Set `SCAN2_MODEL_BARCODE=1` only when you intentionally want to try barcode decoding on model crops.
+Model fields use barcode-first recognition by default. Set `SCAN2_MODEL_BARCODE=0` only when you need to temporarily disable barcode decoding on model crops.
 
 Example JSONL line:
 

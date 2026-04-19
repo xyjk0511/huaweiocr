@@ -433,7 +433,7 @@ class Scan2ManifestTest(unittest.TestCase):
             self.assertEqual(stats["sn_success"], 1)
             load_ocr.assert_not_called()
 
-    def test_model_barcode_fallback_can_be_enabled_with_env_flag(self):
+    def test_model_barcode_is_enabled_by_default(self):
         scan2 = _import_scan2()
 
         with tempfile.TemporaryDirectory() as root:
@@ -448,7 +448,7 @@ class Scan2ManifestTest(unittest.TestCase):
                 manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path}) + "\n")
 
             with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "test")) as recognize_model:
-                with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "1"}, clear=False):
+                with mock.patch.dict(os.environ, {}, clear=True):
                     scan2.main(
                         model_dir=model_dir,
                         sn_dir=sn_dir,
@@ -458,7 +458,32 @@ class Scan2ManifestTest(unittest.TestCase):
 
             self.assertTrue(recognize_model.call_args.kwargs["use_barcode"])
 
-    def test_model_recognition_skips_barcode_cli_by_default(self):
+    def test_model_barcode_can_be_disabled_with_env_flag(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            open(model_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path}) + "\n")
+
+            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "test")) as recognize_model:
+                with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "0"}, clear=True):
+                    scan2.main(
+                        model_dir=model_dir,
+                        sn_dir=sn_dir,
+                        out_jsonl=os.path.join(root, "out.jsonl"),
+                        debug_log=os.path.join(root, "debug.log"),
+                    )
+
+            self.assertFalse(recognize_model.call_args.kwargs["use_barcode"])
+
+    def test_model_recognition_skips_barcode_cli_when_disabled(self):
         scan2 = _import_scan2()
         fake_img = object()
 
@@ -466,7 +491,7 @@ class Scan2ManifestTest(unittest.TestCase):
             with mock.patch.object(scan2, "load_for_ocr_color", return_value=None):
                 with mock.patch.object(scan2, "load_and_preprocess", return_value=fake_img):
                     with mock.patch.object(scan2, "ocr_text_with_details", return_value=("", "", [])):
-                        model, _raw, source = scan2.recognize_model("model.png")
+                        model, _raw, source = scan2.recognize_model("model.png", use_barcode=False)
 
         self.assertEqual(model, "")
         self.assertEqual(source, "none")
