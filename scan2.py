@@ -316,9 +316,9 @@ def extract_model_from_text(text: str) -> str:
 
 
 def extract_model_from_ocr_result(text: str, concat: str) -> str:
-    # Prefer high-confidence OCR text, but keep the raw OCR text as a fallback
-    # because short model crops can be low-confidence even when readable.
-    return extract_model_from_text(concat) or extract_model_from_text(text)
+    # Keep OCR spacing for MODEL first; concat can merge trailing description
+    # text into the model token (for example "AP162E 9SC" -> "AP162E9SC").
+    return extract_model_from_text(text) or extract_model_from_text(concat)
 
 
 # ========= SN RULES =========

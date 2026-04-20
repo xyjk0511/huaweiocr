@@ -653,6 +653,16 @@ class Scan2ManifestTest(unittest.TestCase):
         color_mock.assert_not_called()
         bin_mock.assert_not_called()
 
+    def test_model_ocr_result_prefers_spaced_text_over_concat(self):
+        scan2 = _import_scan2()
+
+        model = scan2.extract_model_from_ocr_result(
+            "Model: AP162E 9SC:AD1625(1",
+            "Model: AP162E9SC:AD1625(1",
+        )
+
+        self.assertEqual(model, "AP162E")
+
     def test_s380_s8p2t_ocr_noise_is_normalized(self):
         scan2 = _import_scan2()
 
