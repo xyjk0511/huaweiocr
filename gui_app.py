@@ -15,6 +15,10 @@ import platform
 import traceback
 import ctypes
 import subprocess
+from win_subprocess import hide_subprocess_windows
+
+hide_subprocess_windows()
+
 from app_paths import get_resource_path, get_barcode_cli_path
 from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules
 # 粘贴图片支持（可选）

@@ -17,6 +17,10 @@ import cv2
 import numpy as np
 from pyzbar import pyzbar
 
+from win_subprocess import hide_subprocess_windows
+
+hide_subprocess_windows()
+
 try:
     from app_paths import get_barcode_cli_path
 except Exception:

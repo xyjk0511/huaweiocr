@@ -5,6 +5,10 @@ import sys
 import warnings
 import inspect
 
+from win_subprocess import hide_subprocess_windows
+
+hide_subprocess_windows()
+
 import paddle
 from paddleocr import PaddleOCR
 from app_paths import ensure_models_installed, get_resource_path

@@ -7,6 +7,7 @@ import tempfile
 import time
 import types
 import unittest
+import subprocess
 from unittest import mock
 
 
@@ -891,6 +892,33 @@ class GuiPipelineTest(unittest.TestCase):
 
 
 class BarcodeCliBudgetTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows process flags only")
+    def test_global_subprocess_patch_hides_check_output_children(self):
+        sys.modules.pop("win_subprocess", None)
+        import win_subprocess
+
+        original_popen = subprocess.Popen
+        try:
+            with mock.patch.object(subprocess, "Popen") as popen_mock:
+                process = mock.Mock()
+                process.communicate.return_value = (b"ok", b"")
+                process.poll.return_value = 0
+                process.returncode = 0
+                popen_mock.return_value.__enter__.return_value = process
+                if hasattr(subprocess, "_huaweiocr_hidden_windows"):
+                    delattr(subprocess, "_huaweiocr_hidden_windows")
+                win_subprocess.hide_subprocess_windows()
+                subprocess.check_output(["cmd.exe", "/c", "echo", "ok"])
+
+            kwargs = popen_mock.call_args.kwargs
+            self.assertTrue(kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
+            self.assertTrue(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
+            self.assertEqual(kwargs["startupinfo"].wShowWindow, subprocess.SW_HIDE)
+        finally:
+            subprocess.Popen = original_popen
+            if hasattr(subprocess, "_huaweiocr_hidden_windows"):
+                delattr(subprocess, "_huaweiocr_hidden_windows")
+
     @unittest.skipUnless(os.name == "nt", "Windows process flags only")
     def test_run_cli_uses_detached_hidden_process_flags(self):
         barcode = _import_barcode()
