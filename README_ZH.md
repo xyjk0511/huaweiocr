@@ -83,6 +83,8 @@ python gui_app_en.py
 
 GUI 会把选择的图片复制到本次运行专用输入目录，阻止重复并发运行，并从原始 JSONL 行导出 Excel。界面表格、运行日志和导出的 `model` / `sn` 都保留完整识别值。
 
+默认 OCR 配置偏向准确率：CPU 下优先使用 `PP-OCRv5_server_rec`。如果需要更快速度，可在 `.env` 中加入 `HUAWEIOCR_OCR_PROFILE=fast`，切回轻量识别模型。
+
 ## 测试
 
 ```bash

@@ -83,6 +83,8 @@ python gui_app_en.py
 
 The GUI copies selected images into a unique per-run input folder, prevents repeated concurrent runs, and exports Excel from the original JSONL rows. The table, run log, and exported `model` / `sn` values keep the complete recognized values.
 
+The default OCR profile favors accuracy on CPU by preferring `PP-OCRv5_server_rec`. For faster recognition, add `HUAWEIOCR_OCR_PROFILE=fast` to `.env` to switch back to the lightweight recognizer.
+
 ## Tests
 
 Run:

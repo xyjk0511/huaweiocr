@@ -244,6 +244,7 @@ MODEL_LINE_RE = re.compile(
     re.I,
 )
 S380_S8P2T_RE = re.compile(r"S380\W*S8P2T", re.I)
+S380_S8P2T_NOISY_RE = re.compile(r"\bM[O0]8S\W*[O0]8[O0]2\b", re.I)
 
 BAD_MODEL_WORDS = {
     "MODEL", "DESC", "DESCRIPTION", "QTY", "REV",
@@ -270,6 +271,8 @@ def normalize_model(code: str) -> str:
         c = "S380-" + c[len("S380"):]
     if c == "S8P27":
         c = "S380-S8P2T"
+    if re.match(r"^M[O0]8S-[O0]8[O0]2", c):
+        c = "S380-S8P2T"
     if c in {"S380-", "S380-S", "S380-S8P", "S380-S8P2"}:
         c = "S380-S8P2T"
 
@@ -286,6 +289,8 @@ def extract_model_from_text(text: str) -> str:
 
     t = text.upper()
     if S380_S8P2T_RE.search(t):
+        return "S380-S8P2T"
+    if S380_S8P2T_NOISY_RE.search(t):
         return "S380-S8P2T"
     m = MODEL_LINE_RE.search(t)
     if m:

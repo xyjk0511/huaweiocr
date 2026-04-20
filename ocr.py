@@ -26,6 +26,7 @@ OCR_LANG = "en"
 
 # 是否使用 GPU（你现在一般是 CPU，就 False）
 USE_GPU = False
+OCR_PROFILE = os.environ.get("HUAWEIOCR_OCR_PROFILE", "accurate").strip().lower()
 # ===========================================
 
 
@@ -102,9 +103,15 @@ def _first_existing_model_dir(root, names):
     return None
 
 
+def _recognition_model_candidates():
+    if OCR_PROFILE in {"fast", "mobile"}:
+        return ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec", "PP-OCRv5_server_rec"]
+    return ["PP-OCRv5_server_rec", "en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec"]
+
+
 def _paddleocr_model_kwargs(model_root):
     det_dir = _first_existing_model_dir(model_root, ["PP-OCRv5_server_det"])
-    rec_dir = _first_existing_model_dir(model_root, ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_server_rec"])
+    rec_dir = _first_existing_model_dir(model_root, _recognition_model_candidates())
     cls_dir = _first_existing_model_dir(model_root, ["PP-LCNet_x1_0_textline_ori"])
     rec_name = os.path.basename(rec_dir) if rec_dir else None
     desired = {

@@ -289,6 +289,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             models = os.path.join(root, "official_models")
             for name in (
                 "PP-OCRv5_server_det",
+                "PP-OCRv5_server_rec",
                 "en_PP-OCRv5_mobile_rec",
                 "PP-LCNet_x1_0_textline_ori",
             ):
@@ -297,14 +298,48 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             kwargs = ocr._paddleocr_model_kwargs(models)
 
         self.assertEqual(kwargs["text_detection_model_name"], "PP-OCRv5_server_det")
-        self.assertEqual(kwargs["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")
+        self.assertEqual(kwargs["text_recognition_model_name"], "PP-OCRv5_server_rec")
         self.assertEqual(kwargs["textline_orientation_model_name"], "PP-LCNet_x1_0_textline_ori")
         self.assertIs(kwargs["use_doc_orientation_classify"], False)
         self.assertIs(kwargs["use_doc_unwarping"], False)
         self.assertIs(kwargs["use_textline_orientation"], True)
         self.assertTrue(kwargs["text_detection_model_dir"].endswith("PP-OCRv5_server_det"))
-        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("en_PP-OCRv5_mobile_rec"))
+        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("PP-OCRv5_server_rec"))
         self.assertTrue(kwargs["textline_orientation_model_dir"].endswith("PP-LCNet_x1_0_textline_ori"))
+
+    def test_fast_profile_prefers_mobile_recognition_model(self):
+        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+            sys.modules.pop(name, None)
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+
+        class DummyPaddleOCR:
+            def __init__(self, text_recognition_model_name=None, text_recognition_model_dir=None):
+                pass
+
+        paddleocr.PaddleOCR = DummyPaddleOCR
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        sys.modules["app_paths"] = app_paths
+
+        with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_PROFILE": "fast"}, clear=False):
+            import ocr
+
+        with tempfile.TemporaryDirectory() as root:
+            models = os.path.join(root, "official_models")
+            for name in ("PP-OCRv5_server_rec", "en_PP-OCRv5_mobile_rec"):
+                os.makedirs(os.path.join(models, name))
+
+            kwargs = ocr._paddleocr_model_kwargs(models)
+
+        self.assertEqual(kwargs["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")
+        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("en_PP-OCRv5_mobile_rec"))
 
 
 class Scan2ManifestTest(unittest.TestCase):
@@ -594,6 +629,12 @@ class Scan2ManifestTest(unittest.TestCase):
         self.assertEqual(model, "")
         self.assertEqual(source, "none")
         barcode_mock.assert_not_called()
+
+    def test_s380_s8p2t_ocr_noise_is_normalized(self):
+        scan2 = _import_scan2()
+
+        self.assertEqual(scan2.extract_model_from_text("MO8S-0802 Wac"), "S380-S8P2T")
+        self.assertEqual(scan2.extract_model_from_text("M08S-0802 Wac"), "S380-S8P2T")
 
 
 class CropTempFileTest(unittest.TestCase):
