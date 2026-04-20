@@ -315,7 +315,6 @@ class App(BaseTk):
         """拖拽文件到 label 上的回调"""
         # event.data 是一个类似 '{C:/a.jpg} {C:/b.png}' 的字符串，用 tk 的 splitlist 解析
         raw = event.data
-        self.write_log(f"[DND] raw={raw!r}")
         files = self.tk.splitlist(raw)
         self.add_files(files)
 
