@@ -891,6 +891,18 @@ class GuiPipelineTest(unittest.TestCase):
 
 
 class BarcodeCliBudgetTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows process flags only")
+    def test_run_cli_uses_detached_hidden_process_flags(self):
+        barcode = _import_barcode()
+
+        with mock.patch.object(barcode.subprocess, "run") as run_mock:
+            barcode._run_cli(["BarcodeReaderCLI.exe", "--version"])
+
+        kwargs = run_mock.call_args.kwargs
+        self.assertTrue(kwargs["creationflags"] & barcode.subprocess.CREATE_NO_WINDOW)
+        self.assertTrue(kwargs["creationflags"] & barcode.subprocess.DETACHED_PROCESS)
+        self.assertEqual(kwargs["startupinfo"].wShowWindow, barcode.subprocess.SW_HIDE)
+
     def test_decode_small_patch_caps_cli_attempts(self):
         barcode = _import_barcode()
         fake_img = types.SimpleNamespace(shape=(10, 10))

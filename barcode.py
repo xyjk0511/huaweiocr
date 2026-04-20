@@ -57,7 +57,8 @@ def _run_cli(cmd, **kwargs):
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = subprocess.SW_HIDE
         kwargs.setdefault("startupinfo", startupinfo)
-        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+        hidden_flags = subprocess.CREATE_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0)
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | hidden_flags
     return subprocess.run(cmd, **kwargs)
 
 class _StderrSilencer:
