@@ -281,6 +281,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
 
         app_paths = types.ModuleType("app_paths")
         app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
         import ocr
@@ -298,13 +299,13 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             kwargs = ocr._paddleocr_model_kwargs(models)
 
         self.assertEqual(kwargs["text_detection_model_name"], "PP-OCRv5_server_det")
-        self.assertEqual(kwargs["text_recognition_model_name"], "PP-OCRv5_server_rec")
+        self.assertEqual(kwargs["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")
         self.assertEqual(kwargs["textline_orientation_model_name"], "PP-LCNet_x1_0_textline_ori")
         self.assertIs(kwargs["use_doc_orientation_classify"], False)
         self.assertIs(kwargs["use_doc_unwarping"], False)
         self.assertIs(kwargs["use_textline_orientation"], True)
         self.assertTrue(kwargs["text_detection_model_dir"].endswith("PP-OCRv5_server_det"))
-        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("PP-OCRv5_server_rec"))
+        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("en_PP-OCRv5_mobile_rec"))
         self.assertTrue(kwargs["textline_orientation_model_dir"].endswith("PP-LCNet_x1_0_textline_ori"))
 
     def test_fast_profile_prefers_mobile_recognition_model(self):
@@ -326,6 +327,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
 
         app_paths = types.ModuleType("app_paths")
         app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
         with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_PROFILE": "fast"}, clear=False):
@@ -340,6 +342,66 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
 
         self.assertEqual(kwargs["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")
         self.assertTrue(kwargs["text_recognition_model_dir"].endswith("en_PP-OCRv5_mobile_rec"))
+
+    def test_server_profile_prefers_server_recognition_model(self):
+        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+            sys.modules.pop(name, None)
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+
+        class DummyPaddleOCR:
+            def __init__(self, text_recognition_model_name=None, text_recognition_model_dir=None):
+                pass
+
+        paddleocr.PaddleOCR = DummyPaddleOCR
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
+        sys.modules["app_paths"] = app_paths
+
+        with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_PROFILE": "server"}, clear=False):
+            import ocr
+
+        with tempfile.TemporaryDirectory() as root:
+            models = os.path.join(root, "official_models")
+            for name in ("PP-OCRv5_server_rec", "en_PP-OCRv5_mobile_rec"):
+                os.makedirs(os.path.join(models, name))
+
+            kwargs = ocr._paddleocr_model_kwargs(models)
+
+        self.assertEqual(kwargs["text_recognition_model_name"], "PP-OCRv5_server_rec")
+        self.assertTrue(kwargs["text_recognition_model_dir"].endswith("PP-OCRv5_server_rec"))
+
+    def test_local_source_model_root_falls_back_to_bundle_models(self):
+        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+            sys.modules.pop(name, None)
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+        paddleocr.PaddleOCR = type("DummyPaddleOCR", (), {})
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
+        sys.modules["app_paths"] = app_paths
+
+        import ocr
+
+        with tempfile.TemporaryDirectory() as root:
+            bundle_root = os.path.join(root, "bundle", "models", "official_models")
+            os.makedirs(bundle_root)
+            with mock.patch.object(ocr, "get_resource_path", side_effect=lambda *parts: os.path.join(root, *parts)):
+                self.assertEqual(ocr._local_model_root_fallback(), bundle_root)
 
 
 class Scan2ManifestTest(unittest.TestCase):

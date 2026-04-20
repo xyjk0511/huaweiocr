@@ -7,7 +7,7 @@ import inspect
 
 import paddle
 from paddleocr import PaddleOCR
-from app_paths import ensure_models_installed
+from app_paths import ensure_models_installed, get_resource_path
 
 # ================== 配置区 ==================
 # 你的 sn 小图目录
@@ -26,7 +26,7 @@ OCR_LANG = "en"
 
 # 是否使用 GPU（你现在一般是 CPU，就 False）
 USE_GPU = False
-OCR_PROFILE = os.environ.get("HUAWEIOCR_OCR_PROFILE", "accurate").strip().lower()
+OCR_PROFILE = os.environ.get("HUAWEIOCR_OCR_PROFILE", "mobile").strip().lower()
 # ===========================================
 
 
@@ -104,9 +104,19 @@ def _first_existing_model_dir(root, names):
 
 
 def _recognition_model_candidates():
-    if OCR_PROFILE in {"fast", "mobile"}:
-        return ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec", "PP-OCRv5_server_rec"]
-    return ["PP-OCRv5_server_rec", "en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec"]
+    if OCR_PROFILE in {"accurate", "server"}:
+        return ["PP-OCRv5_server_rec", "en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec"]
+    return ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec", "PP-OCRv5_server_rec"]
+
+
+def _local_model_root_fallback():
+    for path in (
+        get_resource_path("models", "official_models"),
+        get_resource_path("bundle", "models", "official_models"),
+    ):
+        if os.path.isdir(path):
+            return path
+    return None
 
 
 def _paddleocr_model_kwargs(model_root):
@@ -141,7 +151,7 @@ def init_ocr():
     # 可选：关掉一些没必要的 warning
     warnings.filterwarnings("ignore")
 
-    model_root = ensure_models_installed()
+    model_root = ensure_models_installed() or _local_model_root_fallback()
     patch_paddlex_dep_checks()
 
     # 你之前日志里用过这个环境变量，这里顺便设一下
