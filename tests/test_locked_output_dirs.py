@@ -899,18 +899,47 @@ class BarcodeCliBudgetTest(unittest.TestCase):
 
         original_popen = subprocess.Popen
         try:
-            with mock.patch.object(subprocess, "Popen") as popen_mock:
-                process = mock.Mock()
-                process.communicate.return_value = (b"ok", b"")
-                process.poll.return_value = 0
-                process.returncode = 0
-                popen_mock.return_value.__enter__.return_value = process
-                if hasattr(subprocess, "_huaweiocr_hidden_windows"):
-                    delattr(subprocess, "_huaweiocr_hidden_windows")
-                win_subprocess.hide_subprocess_windows()
-                subprocess.check_output(["cmd.exe", "/c", "echo", "ok"])
+            class FakePopen:
+                calls = []
 
-            kwargs = popen_mock.call_args.kwargs
+                def __init__(self, *args, **kwargs):
+                    self.args = args
+                    self.kwargs = kwargs
+                    self.returncode = 0
+                    FakePopen.calls.append((args, kwargs))
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc_info):
+                    return False
+
+                def communicate(self, input=None, timeout=None):
+                    return b"ok", b""
+
+                def poll(self):
+                    return self.returncode
+
+                def kill(self):
+                    self.returncode = -1
+
+                def wait(self, timeout=None):
+                    return self.returncode
+
+            subprocess.Popen = FakePopen
+            if hasattr(subprocess, "_huaweiocr_hidden_windows"):
+                delattr(subprocess, "_huaweiocr_hidden_windows")
+            win_subprocess.hide_subprocess_windows()
+
+            self.assertTrue(issubclass(subprocess.Popen, FakePopen))
+
+            class LibraryPopenSubclass(subprocess.Popen):
+                pass
+
+            self.assertTrue(issubclass(LibraryPopenSubclass, FakePopen))
+            subprocess.check_output(["cmd.exe", "/c", "echo", "ok"])
+
+            kwargs = FakePopen.calls[-1][1]
             self.assertTrue(kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
             self.assertTrue(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
             self.assertEqual(kwargs["startupinfo"].wShowWindow, subprocess.SW_HIDE)
