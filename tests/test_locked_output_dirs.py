@@ -392,7 +392,7 @@ class Scan2ManifestTest(unittest.TestCase):
                     debug_log=os.path.join(root, "debug.log"),
                 )
 
-    def test_raw_fields_are_masked_by_default(self):
+    def test_raw_fields_keep_full_values_by_default(self):
         scan2 = _import_scan2()
 
         with tempfile.TemporaryDirectory() as root:
@@ -411,7 +411,7 @@ class Scan2ManifestTest(unittest.TestCase):
             out_jsonl = os.path.join(root, "out.jsonl")
             with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
                 with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
-                    with mock.patch.dict(os.environ, {"SCAN2_UNSAFE_RAW": ""}, clear=False):
+                    with mock.patch.dict(os.environ, {"SCAN2_MASK_RAW": "", "SCAN2_UNSAFE_RAW": ""}, clear=False):
                         scan2.main(
                             model_dir=model_dir,
                             sn_dir=sn_dir,
@@ -423,10 +423,10 @@ class Scan2ManifestTest(unittest.TestCase):
                 row = json.loads(f.readline())
             self.assertEqual(row["model"], "MODEL1")
             self.assertEqual(row["sn"], "SN1")
-            self.assertNotIn("RAW_MODEL_SECRET_123456", row["model_raw"])
-            self.assertNotIn("RAW_SN_SECRET_123456", row["sn_raw"])
+            self.assertEqual(row["model_raw"], "RAW_MODEL_SECRET_123456")
+            self.assertEqual(row["sn_raw"], "RAW_SN_SECRET_123456")
 
-    def test_raw_fields_can_be_enabled_with_env_flag(self):
+    def test_raw_fields_can_be_masked_with_env_flag(self):
         scan2 = _import_scan2()
 
         with tempfile.TemporaryDirectory() as root:
@@ -445,7 +445,7 @@ class Scan2ManifestTest(unittest.TestCase):
             out_jsonl = os.path.join(root, "out.jsonl")
             with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
                 with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
-                    with mock.patch.dict(os.environ, {"SCAN2_UNSAFE_RAW": "1"}, clear=False):
+                    with mock.patch.dict(os.environ, {"SCAN2_MASK_RAW": "1", "SCAN2_UNSAFE_RAW": ""}, clear=False):
                         scan2.main(
                             model_dir=model_dir,
                             sn_dir=sn_dir,
@@ -455,8 +455,45 @@ class Scan2ManifestTest(unittest.TestCase):
 
             with open(out_jsonl, "r", encoding="utf-8") as f:
                 row = json.loads(f.readline())
-            self.assertEqual(row["model_raw"], "RAW_MODEL_SECRET_123456")
-            self.assertEqual(row["sn_raw"], "RAW_SN_SECRET_123456")
+            self.assertNotIn("RAW_MODEL_SECRET_123456", row["model_raw"])
+            self.assertNotIn("RAW_SN_SECRET_123456", row["sn_raw"])
+
+    def test_info_log_keeps_full_model_and_sn_values(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            open(model_path, "wb").close()
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
+
+            logs = []
+            old_sink = scan2.LOG_SINK
+            scan2.set_log_sink(logs.append)
+            try:
+                with mock.patch.object(scan2, "recognize_model", return_value=("S380-S8P2T", "raw", "ocr_color")):
+                    with mock.patch.object(scan2, "recognize_sn", return_value=("4E25B0105849", "raw", "barcode", {})):
+                        scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=os.path.join(root, "out.jsonl"),
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
+            finally:
+                scan2.set_log_sink(old_sink)
+
+            joined = "\n".join(logs)
+            self.assertIn("MODEL=S380-S8P2T", joined)
+            self.assertIn("SN=4E25B0105849", joined)
+            self.assertNotIn("S380**8P2T", joined)
+            self.assertNotIn("4E25****5849", joined)
 
     def test_label_crop_barcode_is_used_when_sn_crop_is_missing(self):
         scan2 = _import_scan2()
@@ -707,6 +744,14 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertIn(os.path.join("stage2_fields", "manifest.jsonl"), masked)
         self.assertIn("source: [path]", masked)
         self.assertNotIn(external_path, masked)
+
+    def test_gui_run_pipeline_requests_clean_crop_outputs(self):
+        sys.modules.pop("gui_app", None)
+        import gui_app
+
+        source = inspect.getsource(gui_app.App.run_pipeline)
+
+        self.assertIn("crop_module.main(input_dir=input_dir, clean=True)", source)
 
 
 class BarcodeCliBudgetTest(unittest.TestCase):

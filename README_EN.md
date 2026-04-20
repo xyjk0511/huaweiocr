@@ -58,13 +58,13 @@ Typical run outputs:
 - `stage2_fields/model_sn_ocr.jsonl`
 - `stage2_fields/debug_ocr_barcode.log` only when `--log-level debug`
 
-`model_raw` and `sn_raw` are masked by default to reduce accidental leakage in result files. Use `SCAN2_UNSAFE_RAW=1` only for controlled local debugging.
+`model_raw` and `sn_raw` keep complete raw values by default for local review. Set `SCAN2_MASK_RAW=1` when you need a masked result file; if `SCAN2_UNSAFE_RAW=1` is also set, complete raw values are forced.
 Model fields use barcode-first recognition by default. Set `SCAN2_MODEL_BARCODE=0` only when you need to temporarily disable barcode decoding on model crops.
 
 Example JSONL line:
 
 ```json
-{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"********","sn_raw":"4E25********0000","model_src":"ocr_color","sn_src":"barcode"}
+{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"S380-S8P2T","sn_raw":"4E25A0170000","model_src":"ocr_color","sn_src":"barcode"}
 ```
 
 ## GUI
@@ -81,7 +81,7 @@ or:
 python gui_app_en.py
 ```
 
-The GUI copies selected images into a unique per-run input folder, prevents repeated concurrent runs, and exports Excel from the original JSONL rows. Displayed English GUI values may be masked, but export keeps the recognized `model` and `sn` values.
+The GUI copies selected images into a unique per-run input folder, prevents repeated concurrent runs, and exports Excel from the original JSONL rows. The table, run log, and exported `model` / `sn` values keep the complete recognized values.
 
 ## Tests
 

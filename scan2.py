@@ -778,7 +778,7 @@ def _load_manifest_records():
 # ===================== MAIN =====================
 def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level="info"):
     set_log_level(log_level)
-    unsafe_raw = _env_flag("SCAN2_UNSAFE_RAW")
+    mask_raw = _env_flag("SCAN2_MASK_RAW") and not _env_flag("SCAN2_UNSAFE_RAW")
     model_barcode = _env_flag_default("SCAN2_MODEL_BARCODE", True)
     configure_paths(
         out_dir=out_dir,
@@ -892,8 +892,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "label_id": key,
                 "model": model_code,
                 "sn": sn_code,
-                "model_raw": model_raw if unsafe_raw else _mask_sensitive_text(model_raw),
-                "sn_raw": sn_raw if unsafe_raw else _mask_sensitive_text(sn_raw),
+                "model_raw": _mask_sensitive_text(model_raw) if mask_raw else model_raw,
+                "sn_raw": _mask_sensitive_text(sn_raw) if mask_raw else sn_raw,
                 "model_src": model_src,
                 "sn_src": sn_src,
                 "sn_barcode_status": sn_meta.get("barcode_status", "not_attempted"),
@@ -905,12 +905,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "sn_barcode_ambiguous_sns": sn_meta.get("barcode_ambiguous_sns", []),
             }
 
-            log_model = _mask_sensitive_text(model_code)
-            log_sn = _mask_sensitive_text(sn_code)
             _log(
                 f"[{key}] "
-                f"MODEL={log_model} (M_SRC={model_src}) | "
-                f"SN={log_sn} (SN_SRC={sn_src})",
+                f"MODEL={model_code} (M_SRC={model_src}) | "
+                f"SN={sn_code} (SN_SRC={sn_src})",
                 "info",
             )
 

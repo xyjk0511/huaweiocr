@@ -278,22 +278,6 @@ class App(BaseTk):
         else:
             self.write_log("Note: pillow is not installed. Ctrl+V can only paste file paths; to paste images run: pip install pillow")
 
-    def _mask_sn(self, sn: str) -> str:
-        s = str(sn or "")
-        if len(s) <= 4:
-            return s
-        if len(s) <= 8:
-            return s[:4] + ("*" * (len(s) - 4))
-        return s[:4] + ("*" * (len(s) - 8)) + s[-4:]
-
-    def _mask_model(self, model: str) -> str:
-        s = str(model or "")
-        if len(s) <= 2:
-            return s
-        if len(s) <= 3:
-            return s[:2] + ("*" * (len(s) - 2))
-        return s[:2] + ("*" * (len(s) - 3)) + s[-1:]
-
     # ========== 工具函数 ==========
 
     def write_log(self, text: str):
@@ -485,7 +469,7 @@ class App(BaseTk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log("[2/4] Running crop.main(): full image -> label -> model/sn crops")
-                crop_stats = crop_module.main(input_dir=input_dir)
+                crop_stats = crop_module.main(input_dir=input_dir, clean=True)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
                     raise RuntimeError("No label crops were generated; OCR was stopped.")
                 if crop_stats.get("manifest_rows", 0) <= 0:
@@ -553,8 +537,8 @@ class App(BaseTk):
             for r in rows:
                 values = (
                     r.get("label_id", ""),
-                    self._mask_model(r.get("model", "")),
-                    self._mask_sn(r.get("sn", "")),
+                    r.get("model", ""),
+                    r.get("sn", ""),
                     r.get("model_src", ""),
                     _display_sn_src(r.get("sn_src", "")),
                 )

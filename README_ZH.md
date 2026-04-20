@@ -58,13 +58,13 @@ python run_all.py --help
 - `stage2_fields/model_sn_ocr.jsonl`
 - `stage2_fields/debug_ocr_barcode.log`，只在 `--log-level debug` 时写入
 
-默认会对 `model_raw` 和 `sn_raw` 脱敏，降低结果文件中的原始 OCR/条码文本泄露风险。只有受控本地调试才建议设置 `SCAN2_UNSAFE_RAW=1`。
+默认保留 `model_raw` 和 `sn_raw` 的完整原始值，方便本地核对。需要生成脱敏结果文件时可设置 `SCAN2_MASK_RAW=1`；如同时设置 `SCAN2_UNSAFE_RAW=1`，则强制保留完整原始值。
 model 字段默认按 barcode-first 处理；如需临时禁用 model 裁剪图条码识别，可设置 `SCAN2_MODEL_BARCODE=0`。
 
 JSONL 示例：
 
 ```json
-{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"********","sn_raw":"4E25********0000","model_src":"ocr_color","sn_src":"barcode"}
+{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"S380-S8P2T","sn_raw":"4E25A0170000","model_src":"ocr_color","sn_src":"barcode"}
 ```
 
 ## GUI
@@ -81,7 +81,7 @@ python gui_app.py
 python gui_app_en.py
 ```
 
-GUI 会把选择的图片复制到本次运行专用输入目录，阻止重复并发运行，并从原始 JSONL 行导出 Excel。英文界面表格展示可以脱敏，但导出的 `model` 和 `sn` 保留识别值。
+GUI 会把选择的图片复制到本次运行专用输入目录，阻止重复并发运行，并从原始 JSONL 行导出 Excel。界面表格、运行日志和导出的 `model` / `sn` 都保留完整识别值。
 
 ## 测试
 

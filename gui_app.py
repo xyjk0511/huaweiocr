@@ -468,7 +468,7 @@ class App(BaseTk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log("[2/4] 运行 crop_labels.main()：大图 → label → model/sn 小图")
-                crop_stats = crop_module.main(input_dir=input_dir)
+                crop_stats = crop_module.main(input_dir=input_dir, clean=True)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
                     raise RuntimeError("未生成任何 label 裁剪图，已停止 OCR。")
                 if crop_stats.get("manifest_rows", 0) <= 0:
