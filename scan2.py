@@ -315,6 +315,12 @@ def extract_model_from_text(text: str) -> str:
     return normalize_model(best)
 
 
+def extract_model_from_ocr_result(text: str, concat: str) -> str:
+    # Prefer high-confidence OCR text, but keep the raw OCR text as a fallback
+    # because short model crops can be low-confidence even when readable.
+    return extract_model_from_text(concat) or extract_model_from_text(text)
+
+
 # ========= SN RULES =========
 
 SN20_RE = re.compile(
@@ -588,6 +594,16 @@ def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = Fal
         if m_from_bc:
             return m_from_bc, f"[BARCODE] {bc_raw}", "barcode"
 
+    text, concat, texts = ocr_text_with_details(model_path)
+    append_sensitive_debug(f"[MODEL][OCR_FILE] {tag}{os.path.basename(model_path)} | {text!r}")
+    append_sensitive_debug(
+        f"[MODEL][OCR_FILE][TEXTS] {tag}{os.path.basename(model_path)} | "
+        f"{json.dumps(texts, ensure_ascii=False)}"
+    )
+    model_code = extract_model_from_ocr_result(text, concat)
+    if model_code:
+        return model_code, text or concat, "ocr_file"
+
     color_img = load_for_ocr_color(model_path)
     if color_img is not None:
         text, concat, texts = ocr_text_with_details(color_img)
@@ -596,7 +612,7 @@ def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = Fal
             f"[MODEL][OCR_COLOR][TEXTS] {tag}{os.path.basename(model_path)} | "
             f"{json.dumps(texts, ensure_ascii=False)}"
         )
-        model_code = extract_model_from_text(text)
+        model_code = extract_model_from_ocr_result(text, concat)
         if model_code:
             return model_code, text, "ocr_color"
 
@@ -607,7 +623,7 @@ def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = Fal
         f"[MODEL][OCR_BIN][TEXTS] {tag}{os.path.basename(model_path)} | "
         f"{json.dumps(texts, ensure_ascii=False)}"
     )
-    model_code = extract_model_from_text(text)
+    model_code = extract_model_from_ocr_result(text, concat)
     if model_code:
         return model_code, text, "ocr_bin"
     return "", text, "none"

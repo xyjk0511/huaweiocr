@@ -630,6 +630,29 @@ class Scan2ManifestTest(unittest.TestCase):
         self.assertEqual(source, "none")
         barcode_mock.assert_not_called()
 
+    def test_model_recognition_prefers_file_path_ocr(self):
+        scan2 = _import_scan2()
+
+        with mock.patch.object(
+            scan2,
+            "ocr_text_with_details",
+            return_value=(
+                "Model: S380-S8P2T",
+                "Model:S380-S8P2T",
+                [{"text": "Model: S380-S8P2T", "score": 0.99}],
+            ),
+        ) as ocr_mock:
+            with mock.patch.object(scan2, "load_for_ocr_color") as color_mock:
+                with mock.patch.object(scan2, "load_and_preprocess") as bin_mock:
+                    model, raw, source = scan2.recognize_model("model.png", use_barcode=False)
+
+        self.assertEqual(model, "S380-S8P2T")
+        self.assertEqual(raw, "Model: S380-S8P2T")
+        self.assertEqual(source, "ocr_file")
+        ocr_mock.assert_called_once_with("model.png")
+        color_mock.assert_not_called()
+        bin_mock.assert_not_called()
+
     def test_s380_s8p2t_ocr_noise_is_normalized(self):
         scan2 = _import_scan2()
 
