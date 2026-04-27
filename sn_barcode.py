@@ -17,8 +17,9 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_RE = re.compile(r"(2[0-9]{9,10}(?:ERA|ERB|ER|LDR|LDRA|SRA)[0-9]{4,7})")
+SN20_RE = re.compile(r"(2[0-9]{10}(?:ERA|ER[A-Z]?|LDR|LDRA|SRA)[0-9]{4,7})")
 SN12_RE = re.compile(r"(4E[0-9A-Z]{10})")
+PURE_LONG_DIGITS_RE = re.compile(r"[0-9]{16,}")
 
 NON_SN_PREFIX_RE = re.compile(
     r"^(SF|MAC|EAN|UPC|QR|HTTP|HTTPS|PART|PN|MODEL|DESC|ROUTE|WAYBILL|SNMP|IMEI)"
@@ -130,23 +131,32 @@ def extract_sn_from_payload(value: str) -> str:
     cleaned = _clean_code(value)
     if not cleaned:
         return ""
+    if cleaned.startswith("F") or PURE_LONG_DIGITS_RE.fullmatch(cleaned):
+        return ""
     if NON_SN_PREFIX_RE.match(cleaned):
         return ""
     while cleaned.startswith("SN"):
         cleaned = cleaned[2:]
+    if "S215" in cleaned:
+        cleaned = cleaned[cleaned.index("S215") + 1:]
     for prefix in ("SERIALNO", "SERIAL", "SNO"):
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix):]
     if NON_SN_PREFIX_RE.match(cleaned):
         return ""
+    if cleaned.startswith("F") or PURE_LONG_DIGITS_RE.fullmatch(cleaned):
+        return ""
 
-    m = SN20_RE.search(cleaned)
-    if m and len(m.group(1)) == 20:
-        return m.group(1)
+    if SN20_RE.fullmatch(cleaned):
+        return cleaned
+    m = SN20_RE.match(cleaned)
+    if m:
+        suffix = cleaned[m.end():]
+        if suffix.isalpha() and len(suffix) <= 2:
+            return m.group(1)
 
-    m = SN12_RE.search(cleaned)
-    if m and len(m.group(1)) == 12:
-        return m.group(1)
+    if SN12_RE.fullmatch(cleaned):
+        return cleaned
 
     return ""
 
@@ -162,6 +172,14 @@ def _source_rank(source_region: str) -> int:
     if value.startswith("barcode-region") or ".region." in value:
         return 3
     return 9
+
+
+def _sn_value_rank(sn: str) -> tuple[int, int]:
+    if sn.startswith("215"):
+        return (0, -len(sn))
+    if sn.startswith("4E"):
+        return (1, -len(sn))
+    return (2, -len(sn))
 
 
 def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcodeReport:
@@ -194,14 +212,24 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
             )
         )
 
-    best_rank = None
-    best_rank_candidates: list[SnCandidate] = []
+    best_source_rank = None
+    source_rank_candidates: list[SnCandidate] = []
     for candidate in sn_candidates:
         rank = _source_rank(candidate.source_region)
-        if best_rank is None or rank < best_rank:
-            best_rank = rank
+        if best_source_rank is None or rank < best_source_rank:
+            best_source_rank = rank
+            source_rank_candidates = [candidate]
+        elif rank == best_source_rank:
+            source_rank_candidates.append(candidate)
+
+    best_value_rank = None
+    best_rank_candidates: list[SnCandidate] = []
+    for candidate in source_rank_candidates:
+        rank = _sn_value_rank(candidate.sn)
+        if best_value_rank is None or rank < best_value_rank:
+            best_value_rank = rank
             best_rank_candidates = [candidate]
-        elif rank == best_rank:
+        elif rank == best_value_rank:
             best_rank_candidates.append(candidate)
 
     unique_sns = sorted({candidate.sn for candidate in best_rank_candidates})
@@ -219,7 +247,12 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
     if len(unique_sns) == 1:
         chosen = sorted(
             best_rank_candidates,
-            key=lambda c: (_source_rank(c.source_region), c.rotation, c.decoder_name),
+            key=lambda c: (
+                _source_rank(c.source_region),
+                _sn_value_rank(c.sn),
+                c.rotation,
+                c.decoder_name,
+            ),
         )[0]
         return SnBarcodeReport(
             status="hit",

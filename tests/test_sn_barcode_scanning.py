@@ -30,6 +30,54 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             sn_barcode.extract_sn_from_payload("[)>06 1P50087149 18VLEHWT S21500871494ERB006054"),
             "21500871494ERB006054",
         )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21500872904ERC000382"),
+            "21500872904ERC000382",
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21500872904ERC000382AP"),
+            "21500872904ERC000382",
+        )
+
+    def test_bad_direct_barcode_payloads_are_not_normalized_into_sn(self):
+        self.assertEqual(sn_barcode.extract_sn_from_payload("F'500872904ERB000951"), "")
+        self.assertEqual(sn_barcode.extract_sn_from_payload("532570497307251622"), "")
+        self.assertEqual(sn_barcode.extract_sn_from_payload("215BROKEN4ERC000382AP"), "")
+
+    def test_direct_barcode_selection_filters_bad_payloads(self):
+        report = sn_barcode.select_sn_from_decoder_results(
+            [
+                sn_barcode.DecoderResult("fake", "F'500872904ERB000951", "sn", "sn"),
+                sn_barcode.DecoderResult("fake", "21500872904ERB000951", "sn", "sn"),
+                sn_barcode.DecoderResult("fake", "532570497307251622", "sn", "sn"),
+            ]
+        )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "21500872904ERB000951")
+        self.assertIn("F'500872904ERB000951", report.non_sn_payloads)
+
+    def test_direct_barcode_selection_accepts_short_sn_over_logistics_code(self):
+        report = sn_barcode.select_sn_from_decoder_results(
+            [
+                sn_barcode.DecoderResult("fake", "532570497307251622", "sn", "sn"),
+                sn_barcode.DecoderResult("fake", "4E25B0105906", "sn", "sn"),
+            ]
+        )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25B0105906")
+
+    def test_full_sn_is_preferred_over_short_sn_from_same_source(self):
+        report = sn_barcode.select_sn_from_decoder_results(
+            [
+                sn_barcode.DecoderResult("fake", "4E25B0105906", "sn", "sn"),
+                sn_barcode.DecoderResult("fake", "21500871494ERB006499", "sn", "sn"),
+            ]
+        )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "21500871494ERB006499")
 
     def test_conflicting_barcode_sns_are_ambiguous(self):
         report = sn_barcode.select_sn_from_decoder_results(

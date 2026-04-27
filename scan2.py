@@ -324,7 +324,7 @@ def extract_model_from_ocr_result(text: str, concat: str) -> str:
 # ========= SN RULES =========
 
 SN20_RE = re.compile(
-    r"(2[0-9]{9,10}(?:ERA|ERB|ER|LDR|LDRA|SRA)[0-9]{4,7})"
+    r"(2[0-9]{10}(?:ERA|ER[A-Z]?|LDR|LDRA|SRA)[0-9]{4,7})"
 )
 
 SN12_RE = re.compile(
@@ -342,7 +342,7 @@ def extract_sn_from_text(text: str) -> str:
         s = s[2:]
 
     m = SN20_RE.search(s)
-    if m and len(m.group(1)) == 20:
+    if m:
         return m.group(1)
 
     m = SN12_RE.search(s)
