@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
 datas = [
@@ -8,6 +10,8 @@ datas = [
     ('bundle\\BarcodeReaderCLI\\bin\\curl-ca-bundle.crt', 'BarcodeReaderCLI\\bin'),
     ('bundle\\BarcodeReaderCLI\\bin\\inlite-barcode-reader-license-agreement.pdf', 'BarcodeReaderCLI\\bin'),
 ]
+if os.path.exists('.env'):
+    datas.append(('.env', '.'))
 datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
 datas += copy_metadata('opencv-contrib-python')
 datas += copy_metadata('pyclipper')

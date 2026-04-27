@@ -30,21 +30,34 @@ def _log(msg: str, level: str = "info") -> None:
             print(msg)
 
 def load_dotenv(path=".env"):
-    if not os.path.exists(path):
-        return
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, val = line.split("=", 1)
-                key = key.strip()
-                val = val.strip().strip('"').strip("'")
-                if key and key not in os.environ:
-                    os.environ[key] = val
-    except Exception:
-        pass
+    paths = [path]
+    if not os.path.isabs(path):
+        paths.append(os.path.join(os.getcwd(), path))
+        if getattr(sys, "frozen", False):
+            exe_dir = os.path.dirname(sys.executable)
+            paths.append(os.path.join(exe_dir, path))
+            paths.append(os.path.join(exe_dir, "_internal", path))
+        paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), path))
+
+    seen = set()
+    for dotenv_path in paths:
+        dotenv_path = os.path.abspath(dotenv_path)
+        if dotenv_path in seen or not os.path.exists(dotenv_path):
+            continue
+        seen.add(dotenv_path)
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+        except Exception:
+            pass
 
 # ==================== 基础配置 ====================
 load_dotenv()

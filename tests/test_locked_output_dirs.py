@@ -811,6 +811,37 @@ class CropTempFileTest(unittest.TestCase):
             self.assertFalse(os.path.exists(calls[0]))
             self.assertFalse(os.path.exists(calls[1]))
 
+    def test_dotenv_loads_from_packaged_internal_dir(self):
+        crop = _import_crop()
+
+        with tempfile.TemporaryDirectory() as root:
+            internal = os.path.join(root, "_internal")
+            os.makedirs(internal)
+            with open(os.path.join(internal, ".env"), "w", encoding="utf-8") as f:
+                f.write("API_KEY=packaged-test-key\n")
+
+            old_frozen = getattr(sys, "frozen", None)
+            old_executable = sys.executable
+            old_api_key = os.environ.pop("API_KEY", None)
+            try:
+                sys.frozen = True
+                sys.executable = os.path.join(root, "HuaweiOCR.exe")
+                crop.load_dotenv()
+                self.assertEqual(os.environ.get("API_KEY"), "packaged-test-key")
+            finally:
+                if old_frozen is None:
+                    try:
+                        delattr(sys, "frozen")
+                    except AttributeError:
+                        pass
+                else:
+                    sys.frozen = old_frozen
+                sys.executable = old_executable
+                if old_api_key is None:
+                    os.environ.pop("API_KEY", None)
+                else:
+                    os.environ["API_KEY"] = old_api_key
+
 
 class GuiPipelineTest(unittest.TestCase):
     def test_same_basename_sources_are_staged_with_unique_names(self):
