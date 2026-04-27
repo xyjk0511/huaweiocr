@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover
 SN20_RE = re.compile(r"(2[0-9]{10}(?:ERA|ER[A-Z]?|LDR|LDRA|SRA)[0-9]{4,7})")
 SN12_RE = re.compile(r"(4E[0-9A-Z]{10})")
 PURE_LONG_DIGITS_RE = re.compile(r"[0-9]{16,}")
+DIRECT_SCANNED_SN_RE = re.compile(r"2[0-9]{8,12}4E[0-9A-Z]{6,12}")
 
 NON_SN_PREFIX_RE = re.compile(
     r"^(SF|MAC|EAN|UPC|QR|HTTP|HTTPS|PART|PN|MODEL|DESC|ROUTE|WAYBILL|SNMP|IMEI)"
@@ -156,6 +157,12 @@ def extract_sn_from_payload(value: str) -> str:
             return m.group(1)
 
     if SN12_RE.fullmatch(cleaned):
+        return cleaned
+
+    # Some Huawei box SN barcodes encode the full scanner payload directly
+    # instead of the older ERA/ERB/ERC/SRA family pattern.  Do not force those
+    # through OCR; if the scanner gives one compact SN-like payload, keep it.
+    if DIRECT_SCANNED_SN_RE.fullmatch(cleaned):
         return cleaned
 
     return ""

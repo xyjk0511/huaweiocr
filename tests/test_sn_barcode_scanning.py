@@ -38,6 +38,10 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             sn_barcode.extract_sn_from_payload("21500872904ERC000382AP"),
             "21500872904ERC000382",
         )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21500871474ES1016428"),
+            "21500871474ES1016428",
+        )
 
     def test_bad_direct_barcode_payloads_are_not_normalized_into_sn(self):
         self.assertEqual(sn_barcode.extract_sn_from_payload("F'500872904ERB000951"), "")
