@@ -404,6 +404,38 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             with mock.patch.object(ocr, "get_resource_path", side_effect=lambda *parts: os.path.join(root, *parts)):
                 self.assertEqual(ocr._local_model_root_fallback(), bundle_root)
 
+    def test_ocr_import_disables_packaged_onednn_executor_path(self):
+        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+            sys.modules.pop(name, None)
+
+        for name in (
+            "FLAGS_use_mkldnn",
+            "FLAGS_use_onednn",
+            "FLAGS_enable_pir_api",
+            "FLAGS_enable_pir_in_executor",
+        ):
+            os.environ.pop(name, None)
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+        paddleocr.PaddleOCR = type("DummyPaddleOCR", (), {})
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
+        sys.modules["app_paths"] = app_paths
+
+        import ocr
+
+        self.assertEqual(os.environ["FLAGS_use_mkldnn"], "0")
+        self.assertEqual(os.environ["FLAGS_use_onednn"], "0")
+        self.assertEqual(os.environ["FLAGS_enable_pir_api"], "0")
+        self.assertEqual(os.environ["FLAGS_enable_pir_in_executor"], "0")
+
 
 class Scan2ManifestTest(unittest.TestCase):
     def test_main_signature_keeps_legacy_arguments(self):

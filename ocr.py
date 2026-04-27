@@ -9,6 +9,26 @@ from win_subprocess import hide_subprocess_windows
 
 hide_subprocess_windows()
 
+
+def configure_paddle_runtime_env():
+    """
+    Keep PaddleOCR on the conservative CPU executor path in frozen builds.
+
+    Some packaged Paddle/PaddleOCR combinations can fail inside oneDNN/PIR
+    conversion before OCR returns a usable fallback.  These flags must be set
+    before importing paddle.
+    """
+    os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("FLAGS_use_mkldnn", "0")
+    os.environ.setdefault("FLAGS_use_onednn", "0")
+    os.environ.setdefault("FLAGS_enable_pir_api", "0")
+    os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
+
+
+configure_paddle_runtime_env()
+
 import paddle
 from paddleocr import PaddleOCR
 from app_paths import ensure_models_installed, get_resource_path
@@ -133,6 +153,8 @@ def _paddleocr_model_kwargs(model_root):
         "use_doc_unwarping": False,
         "use_textline_orientation": True,
         "use_angle_cls": True,
+        "use_mkldnn": False,
+        "enable_mkldnn": False,
         "text_detection_model_name": "PP-OCRv5_server_det" if det_dir else None,
         "det_model_dir": det_dir,
         "text_detection_model_dir": det_dir,
@@ -158,9 +180,7 @@ def init_ocr():
     model_root = ensure_models_installed() or _local_model_root_fallback()
     patch_paddlex_dep_checks()
 
-    # 你之前日志里用过这个环境变量，这里顺便设一下
-    os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+    configure_paddle_runtime_env()
 
     device = "gpu" if USE_GPU else "cpu"
     paddle.set_device(device)
