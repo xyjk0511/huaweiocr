@@ -902,7 +902,7 @@ class GuiPipelineTest(unittest.TestCase):
             names = [record["input_name"] for record in records]
             self.assertEqual(len(names), 2)
             self.assertEqual(len(set(names)), 2)
-            self.assertEqual(names, ["input_0001.png", "input_0002.png"])
+            self.assertEqual(names, ["same.png", "same_2.png"])
             self.assertTrue(os.path.exists(os.path.join(run_dir, names[0])))
             self.assertTrue(os.path.exists(os.path.join(run_dir, names[1])))
             with open(os.path.join(run_dir, "source_manifest.jsonl"), "r", encoding="utf-8") as f:
@@ -913,10 +913,16 @@ class GuiPipelineTest(unittest.TestCase):
             self.assertNotIn(os.path.abspath(root), manifest_text)
             for row in manifest_rows:
                 self.assertEqual(set(row), {"source_index", "input_name", "sha256"})
-                self.assertNotIn("same.png", row["input_name"])
             self.assertEqual([row["source_index"] for row in manifest_rows], [1, 2])
             self.assertEqual([row["input_name"] for row in manifest_rows], names)
             self.assertTrue(all(len(row["sha256"]) == 64 for row in manifest_rows))
+
+    def test_display_sources_are_chinese(self):
+        import gui_app
+
+        self.assertEqual(gui_app._display_model_src("barcode"), "扫描条形码")
+        self.assertEqual(gui_app._display_model_src("ocr_file"), "文字识别")
+        self.assertEqual(gui_app._display_sn_src("barcode_decoder_miss"), "未扫到条形码")
 
     def test_gui_import_does_not_import_pipeline_modules(self):
         sys.modules.pop("gui_app", None)

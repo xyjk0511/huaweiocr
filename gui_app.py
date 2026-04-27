@@ -73,21 +73,47 @@ def _mask_path_text(text: str) -> str:
     return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\s|,;\"']+", replace_path, text)
 
 
-def _display_sn_src(value: str) -> str:
+def _display_source(value: str) -> str:
     src = str(value or "")
     if src == "barcode":
-        return "barcode SN"
+        return "扫描条形码"
+    if src == "ocr_file":
+        return "文字识别"
+    if src == "ocr_color":
+        return "文字识别"
+    if src == "ocr_bin":
+        return "文字识别"
+    if src == "ocr_top":
+        return "文字识别"
+    if src == "ocr_no_match":
+        return "文字识别未匹配"
     if src.startswith("ocr"):
-        return "OCR fallback"
+        return "文字识别"
     if src == "barcode_ambiguous":
-        return "barcode ambiguous"
+        return "条形码结果冲突"
     if src == "barcode_parse_fail":
-        return "barcode parse fail"
+        return "条形码解析失败"
     if src == "barcode_quality_reject":
-        return "barcode quality reject"
+        return "条形码质量不足"
     if src == "barcode_decoder_miss":
-        return "barcode miss"
+        return "未扫到条形码"
+    if src == "barcode_no_match":
+        return "条形码未匹配"
+    if src == "missing":
+        return "缺失"
+    if src == "none":
+        return "未识别"
+    if "+sn_hint" in src:
+        return _display_source(src.replace("+sn_hint", "")) + "+SN辅助判断"
     return src
+
+
+def _display_model_src(value: str) -> str:
+    return _display_source(value)
+
+
+def _display_sn_src(value: str) -> str:
+    return _display_source(value)
 
 
 def _self_check():
@@ -229,11 +255,11 @@ class App(BaseTk):
         table_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
         columns = ("label_id", "model", "sn", "model_src", "sn_src")
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", height=6)
-        self.table.heading("label_id", text="label_id")
-        self.table.heading("model", text="model")
-        self.table.heading("sn", text="sn")
-        self.table.heading("model_src", text="model_src")
-        self.table.heading("sn_src", text="sn_src")
+        self.table.heading("label_id", text="标签ID")
+        self.table.heading("model", text="型号")
+        self.table.heading("sn", text="SN")
+        self.table.heading("model_src", text="型号来源")
+        self.table.heading("sn_src", text="SN来源")
         self.table.column("label_id", width=140, anchor="w")
         self.table.column("model", width=120, anchor="w")
         self.table.column("sn", width=200, anchor="w")
@@ -248,7 +274,7 @@ class App(BaseTk):
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
         self.btn_start = tk.Button(
             btn_frame,
-            text="开始识别（Roboflow裁剪 + 条码+OCR）",
+            text="开始识别（裁剪 + 条形码 + 文字识别）",
             command=self.start_run,
             height=2
         )
@@ -343,10 +369,10 @@ class App(BaseTk):
     def choose_files(self):
         """点击“从电脑选择图片…”的回调"""
         files = filedialog.askopenfilenames(
-            title="??? Excel",
+            title="选择图片",
             filetypes=[
-                ("Image files", "*.jpg;*.jpeg;*.png;*.bmp;*.webp"),
-                ("All files", "*.*"),
+                ("图片文件", "*.jpg;*.jpeg;*.png;*.bmp;*.webp"),
+                ("所有文件", "*.*"),
             ]
         )
         if not files:
@@ -393,9 +419,9 @@ class App(BaseTk):
         if missing_sn:
             lines.append("未识别出SN：" + "，".join(missing_sn))
         if missing_model:
-            lines.append("未识别出Model：" + "，".join(missing_model))
+            lines.append("未识别出型号：" + "，".join(missing_model))
         if missing_both:
-            lines.append("均未识别出Model和SN：" + "，".join(missing_both))
+            lines.append("均未识别出型号和SN：" + "，".join(missing_both))
         if not lines:
             lines.append("未发现缺失项。")
         return "\n".join(lines)
@@ -405,24 +431,30 @@ class App(BaseTk):
             messagebox.showinfo("没有数据", "结果表格为空，无法导出。")
             return
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"ocr_results_{timestamp}.xlsx"
+        default_name = f"识别结果_{timestamp}.xlsx"
         path = filedialog.asksaveasfilename(
             title="导出为 Excel",
             defaultextension=".xlsx",
             initialfile=default_name,
-            filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")]
+            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")]
         )
         if not path:
             return
-        headers = ("label_id", "model", "sn", "model_src", "sn_src")
+        headers = ("标签ID", "型号", "SN", "型号来源", "SN来源")
         try:
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "results"
+            ws.title = "识别结果"
             ws.append(list(headers))
             if self.result_rows:
                 for row in self.result_rows:
-                    ws.append([row.get(name, "") for name in headers])
+                    ws.append([
+                        row.get("label_id", ""),
+                        row.get("model", ""),
+                        row.get("sn", ""),
+                        _display_model_src(row.get("model_src", "")),
+                        _display_sn_src(row.get("sn_src", "")),
+                    ])
             else:
                 for item in self.table.get_children():
                     ws.append(list(self.table.item(item, "values")))
@@ -453,7 +485,7 @@ class App(BaseTk):
                 crop_module, scan2_module = load_pipeline_modules()
             except Exception as exc:
                 msg = _mask_path_text(str(exc))
-                self.write_log(f"❌ 加载 OCR 依赖失败：{msg}")
+                self.write_log(f"❌ 加载文字识别依赖失败：{msg}")
                 self.after(0, lambda msg=msg: messagebox.showerror("加载依赖失败", msg))
                 return
 
@@ -470,13 +502,13 @@ class App(BaseTk):
             crop_module.set_log_sink(self.write_log)
             scan2_module.set_log_sink(self.write_log)
             try:
-                self.write_log("[2/4] 运行 crop_labels.main()：大图 → label → model/sn 小图")
+                self.write_log("[2/4] 运行裁剪：大图 → 标签小图 → 型号/SN 小图")
                 crop_stats = crop_module.main(input_dir=input_dir, clean=True)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
-                    raise RuntimeError("未生成任何 label 裁剪图，已停止 OCR。")
+                    raise RuntimeError("未生成任何标签裁剪图，已停止识别。")
                 if crop_stats.get("manifest_rows", 0) <= 0:
-                    raise RuntimeError("未生成 manifest 记录，已停止 OCR。")
-                self.write_log("[3/4] 运行 scan2.main()：识别 MODEL / SN")
+                    raise RuntimeError("未生成裁剪清单记录，已停止识别。")
+                self.write_log("[3/4] 运行识别：识别型号 / SN")
                 result_jsonl = os.path.join(crop_module.STAGE2_DIR, "model_sn_ocr.jsonl")
                 debug_log = os.path.join(crop_module.STAGE2_DIR, "debug_ocr_barcode.log")
                 scan2_module.main(
@@ -536,7 +568,7 @@ class App(BaseTk):
                     r.get("label_id", ""),
                     r.get("model", ""),
                     r.get("sn", ""),
-                    r.get("model_src", ""),
+                    _display_model_src(r.get("model_src", "")),
                     _display_sn_src(r.get("sn_src", "")),
                 )
                 self.table.insert("", tk.END, values=values)

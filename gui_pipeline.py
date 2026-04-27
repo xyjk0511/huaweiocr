@@ -23,10 +23,13 @@ def copy_images_to_unique_run_dir(image_paths, root_dir, run_prefix="gui_run"):
     used_names = set()
     records = []
     for index, source in enumerate(image_paths, 1):
-        _, ext = os.path.splitext(source)
-        target_name = f"input_{index:04d}{ext.lower()}"
+        original_name = os.path.basename(source)
+        name_stem, ext = os.path.splitext(original_name)
+        target_name = original_name
+        suffix = 2
         while target_name.lower() in used_names:
-            target_name = f"input_{index:04d}_{len(used_names)}{ext.lower()}"
+            target_name = f"{name_stem}_{suffix}{ext}"
+            suffix += 1
         used_names.add(target_name.lower())
 
         target = os.path.join(run_dir, target_name)

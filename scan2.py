@@ -66,6 +66,35 @@ def configure_paths(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, d
     if debug_log:
         DEBUG_LOG_PATH = debug_log
 
+
+def display_source(value: str) -> str:
+    src = str(value or "")
+    if src == "barcode":
+        return "扫描条形码"
+    if src in {"ocr_file", "ocr_color", "ocr_bin", "ocr_top"}:
+        return "文字识别"
+    if src == "ocr_no_match":
+        return "文字识别未匹配"
+    if src.startswith("ocr"):
+        return "文字识别"
+    if src == "barcode_ambiguous":
+        return "条形码结果冲突"
+    if src == "barcode_parse_fail":
+        return "条形码解析失败"
+    if src == "barcode_quality_reject":
+        return "条形码质量不足"
+    if src == "barcode_decoder_miss":
+        return "未扫到条形码"
+    if src == "barcode_no_match":
+        return "条形码未匹配"
+    if src == "missing":
+        return "缺失"
+    if src == "none":
+        return "未识别"
+    if "+sn_hint" in src:
+        return display_source(src.replace("+sn_hint", "")) + "+SN辅助判断"
+    return src
+
 # ===================== OCR =====================
 OCR_ENGINE = None
 
@@ -928,8 +957,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
             _log(
                 f"[{key}] "
-                f"MODEL={model_code} (M_SRC={model_src}) | "
-                f"SN={sn_code} (SN_SRC={sn_src})",
+                f"型号={model_code}（来源={display_source(model_src)}） | "
+                f"SN={sn_code}（来源={display_source(sn_src)}）",
                 "info",
             )
 

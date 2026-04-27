@@ -432,7 +432,7 @@ def stage1_crop_labels(img_path):
         out_path = os.path.join(STAGE1_DIR, out_name)
         out_paths.append(save_png_required(out_path, crop, "stage1 label crop"))
 
-    _log(f"Stage1: {os.path.basename(img_path)} -> {len(out_paths)} label crops", "info")
+    _log(f"标签裁剪：{os.path.basename(img_path)} -> {len(out_paths)} 个标签小图", "info")
     return out_paths
 
 # ==================== Stage 2：标签小图 -> model/sn 小块 ====================
@@ -531,7 +531,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
 
     imgs = list_images(INPUT_DIR)
     if not imgs:
-        _log(f"WARN: no supported images found in input folder: {INPUT_DIR}", "warn")
+        _log(f"警告：输入文件夹中没有可识别的图片：{INPUT_DIR}", "warn")
         return {
             "input_images": 0,
             "label_count": 0,
@@ -552,7 +552,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     for p in imgs:
         all_label_crops.extend(stage1_crop_labels(p))
     if not all_label_crops:
-        raise RuntimeError(f"No label crops generated from {len(imgs)} input image(s).")
+        raise RuntimeError(f"{len(imgs)} 张输入图片没有裁剪出任何标签。")
 
     # Stage2：全部小图 -> model/sn
     ok_any = 0
@@ -582,10 +582,10 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
             elif (not has_sn) and (not has_model):
                 shutil.copy2(lp, os.path.join(MISS_BOTH_DIR, os.path.basename(lp)))
 
-    _log(f"\nStage1 complete: {len(all_label_crops)} label crops generated", "info")
-    _log(f"Stats: at least one field {ok_any}; both fields {ok_both}", "info")
-    _log(f"Manifest: {MANIFEST_PATH}", "info")
-    _log(f"Failed categories: {MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
+    _log(f"\n标签裁剪完成：共生成 {len(all_label_crops)} 个标签小图", "info")
+    _log(f"字段裁剪统计：至少识别到一个字段 {ok_any} 个；型号和SN都识别到 {ok_both} 个", "info")
+    _log(f"清单文件：{MANIFEST_PATH}", "info")
+    _log(f"缺失分类文件夹：{MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
     return {
         "input_images": len(imgs),
         "label_count": len(all_label_crops),
