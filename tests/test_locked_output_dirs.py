@@ -413,6 +413,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             "FLAGS_use_onednn",
             "FLAGS_enable_pir_api",
             "FLAGS_enable_pir_in_executor",
+            "PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT",
         ):
             os.environ.pop(name, None)
 
@@ -435,6 +436,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         self.assertEqual(os.environ["FLAGS_use_onednn"], "0")
         self.assertEqual(os.environ["FLAGS_enable_pir_api"], "0")
         self.assertEqual(os.environ["FLAGS_enable_pir_in_executor"], "0")
+        self.assertEqual(os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"], "False")
 
 
 class Scan2ManifestTest(unittest.TestCase):
