@@ -23,3 +23,6 @@ validation/wechat_*_run/
 clearimage_cli/**/bin/
 clearimage_cli/**/obj/
 clearimage_cli/publish/
+release/
+test_runs/
+*.zip
