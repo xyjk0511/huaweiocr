@@ -817,7 +817,7 @@ class CropTempFileTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             internal = os.path.join(root, "_internal")
             os.makedirs(internal)
-            with open(os.path.join(internal, ".env"), "w", encoding="utf-8") as f:
+            with open(os.path.join(internal, ".env"), "w", encoding="utf-8-sig") as f:
                 f.write("API_KEY=packaged-test-key\n")
 
             old_frozen = getattr(sys, "frozen", None)
@@ -826,7 +826,8 @@ class CropTempFileTest(unittest.TestCase):
             try:
                 sys.frozen = True
                 sys.executable = os.path.join(root, "HuaweiOCR.exe")
-                crop.load_dotenv()
+                with mock.patch("os.getcwd", return_value=root):
+                    crop.load_dotenv()
                 self.assertEqual(os.environ.get("API_KEY"), "packaged-test-key")
             finally:
                 if old_frozen is None:

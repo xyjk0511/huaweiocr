@@ -30,13 +30,15 @@ def _log(msg: str, level: str = "info") -> None:
             print(msg)
 
 def load_dotenv(path=".env"):
-    paths = [path]
-    if not os.path.isabs(path):
-        paths.append(os.path.join(os.getcwd(), path))
+    paths = []
+    if os.path.isabs(path):
+        paths.append(path)
+    else:
         if getattr(sys, "frozen", False):
             exe_dir = os.path.dirname(sys.executable)
             paths.append(os.path.join(exe_dir, path))
             paths.append(os.path.join(exe_dir, "_internal", path))
+        paths.append(os.path.join(os.getcwd(), path))
         paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), path))
 
     seen = set()
@@ -52,7 +54,7 @@ def load_dotenv(path=".env"):
                     if not line or line.startswith("#") or "=" not in line:
                         continue
                     key, val = line.split("=", 1)
-                    key = key.strip()
+                    key = key.strip().lstrip("\ufeff")
                     val = val.strip().strip('"').strip("'")
                     if key and key not in os.environ:
                         os.environ[key] = val
