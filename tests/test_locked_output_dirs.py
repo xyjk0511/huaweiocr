@@ -622,7 +622,7 @@ class Scan2ManifestTest(unittest.TestCase):
                 scan2.set_log_sink(old_sink)
 
             joined = "\n".join(logs)
-            self.assertIn("MODEL=S380-S8P2T", joined)
+            self.assertIn("型号=S380-S8P2T", joined)
             self.assertIn("SN=4E25B0105849", joined)
             self.assertNotIn("S380**8P2T", joined)
             self.assertNotIn("4E25****5849", joined)
@@ -918,6 +918,9 @@ class GuiPipelineTest(unittest.TestCase):
             self.assertTrue(all(len(row["sha256"]) == 64 for row in manifest_rows))
 
     def test_display_sources_are_chinese(self):
+        sys.modules.pop("gui_app", None)
+        sys.modules.pop("numpy", None)
+        sys.modules.pop("app_paths", None)
         import gui_app
 
         self.assertEqual(gui_app._display_model_src("barcode"), "扫描条形码")

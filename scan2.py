@@ -684,7 +684,7 @@ def recognize_sn(
     if label_path and label_path != sn_path:
         sources.append(("label", label_path))
     if original_path and original_path not in {sn_path, label_path}:
-        sources.append(("original", original_path))
+        append_debug(f"[SN] {tag}ignored original image barcode source for SN recognition")
 
     barcode_report = _scan_sn_barcode_report(sources, label_id=label_id, allow_early_exit=True)
     meta = barcode_report.to_meta()

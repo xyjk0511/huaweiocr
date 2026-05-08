@@ -243,6 +243,41 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertEqual(recognize_sn.call_count, 2)
         self.assertEqual([call.kwargs["original_path"] for call in recognize_sn.call_args_list], ["", ""])
 
+    def test_recognize_sn_ignores_direct_original_path(self):
+        scan2 = _import_scan2()
+        report = sn_barcode.SnBarcodeReport(status="decoder_miss", attempts=1)
+
+        with mock.patch.object(scan2, "_scan_sn_barcode_report", return_value=report) as scan_report:
+            scan2.recognize_sn(
+                "sn.png",
+                label_id="a__label_1",
+                label_path="label.png",
+                original_path="source-photo.jpg",
+                allow_ocr=False,
+            )
+
+        self.assertEqual(scan_report.call_args.args[0], [("sn", "sn.png"), ("label", "label.png")])
+
+    def test_validation_sources_exclude_original_image(self):
+        with tempfile.TemporaryDirectory() as root:
+            sn_path = os.path.join(root, "sn.png")
+            label_path = os.path.join(root, "label.png")
+            original_path = os.path.join(root, "source.jpg")
+            for path in (sn_path, label_path, original_path):
+                open(path, "wb").close()
+
+            sources = validate_sn_barcodes._sources_for_row(
+                {
+                    "sn_path": sn_path,
+                    "label_crop": label_path,
+                    "original_image_path": original_path,
+                    "image_path": original_path,
+                },
+                root,
+            )
+
+        self.assertEqual(sources, [("sn", sn_path), ("label", label_path)])
+
     def test_main_reports_barcode_hit_rate_and_ocr_recovery_separately(self):
         scan2 = _import_scan2()
 

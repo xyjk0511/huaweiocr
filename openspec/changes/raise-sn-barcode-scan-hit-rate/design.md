@@ -46,7 +46,7 @@ The target is not simply "return an SN"; it is "return an SN from a decoded barc
 
 4. Separate barcode extraction from SN selection.
 
-   Barcode decoding returns raw values with source metadata. SN selection parses raw barcode text with existing SN rules, de-duplicates candidates, rejects ambiguous multi-SN conflicts, and ranks sources in this order: SN crop, barcode-region crop, label crop, original image fallback.
+   Barcode decoding returns raw values with source metadata. SN selection parses raw barcode text with existing SN rules, de-duplicates candidates, rejects ambiguous multi-SN conflicts, and ranks label-local sources in this order: SN crop, barcode-region crop, label crop. Original full-image fallback is not used for SN selection because multi-label photos can contain valid SN barcodes for other boxes.
 
    Alternative considered: return the first decoded string. Rejected because full label scans can include logistics or EAN codes that are not device SNs.
 

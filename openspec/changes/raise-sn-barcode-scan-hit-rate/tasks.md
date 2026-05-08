@@ -23,7 +23,7 @@
 
 - [x] 4.1 Parse barcode payloads into SN candidates and reject non-SN payloads such as logistics codes, EAN values, and QR metadata.
 - [x] 4.2 Resolve duplicate barcode candidates and reject conflicting SN candidates as ambiguous instead of choosing silently.
-- [x] 4.3 Integrate SN crop, barcode-region crop, label crop, and original-image fallback sources before OCR fallback in `scan2.recognize_sn`.
+- [x] 4.3 Integrate SN crop, barcode-region crop, and label crop sources before OCR fallback in `scan2.recognize_sn`; original-image fallback was removed because full photos can contain multiple labels and cause cross-label SN reuse.
 - [x] 4.4 Extend JSONL row metadata and aggregate run metrics for barcode attempts, barcode hits, barcode hit rate, OCR recoveries, parse failures, decoder misses, ambiguity, and quality rejects.
 - [x] 4.5 Update GUI/result display text so barcode-derived SN and OCR fallback are visibly different.
 

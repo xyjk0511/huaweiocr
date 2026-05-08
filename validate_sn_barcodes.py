@@ -158,11 +158,6 @@ def _sources_for_row(row: dict[str, Any], manifest_dir: str) -> list[tuple[str, 
         sources.append(("sn", _resolve_path(manifest_dir, str(row["sn_path"]))))
     if row.get("label_crop"):
         sources.append(("label", _resolve_path(manifest_dir, str(row["label_crop"]))))
-    original = row.get("original_image_path") or row.get("image_path")
-    if original:
-        resolved = _resolve_path(manifest_dir, str(original))
-        if resolved not in {path for _, path in sources}:
-            sources.append(("original", resolved))
     return sources
 
 
