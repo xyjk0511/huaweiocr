@@ -13,6 +13,7 @@ datas = [
 if os.path.exists('.env'):
     datas.append(('.env', '.'))
 datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
+datas += collect_data_files('Cython', includes=['Utility/**'])
 datas += copy_metadata('opencv-contrib-python')
 datas += copy_metadata('pyclipper')
 datas += copy_metadata('python-bidi')

@@ -197,6 +197,52 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertIn("BARCODE_AMBIGUOUS", raw)
         self.assertEqual(meta["barcode_status"], "ambiguous")
 
+    def test_main_disables_original_sn_fallback(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            sn_dir = os.path.join(stage2, "sn")
+            model_dir = os.path.join(stage2, "model")
+            label_dir = os.path.join(root, "stage1_labels")
+            os.makedirs(sn_dir)
+            os.makedirs(model_dir)
+            os.makedirs(label_dir)
+            original_path = os.path.join(root, "photo.jpg")
+            open(original_path, "wb").close()
+
+            rows = []
+            for index in (1, 2):
+                label_id = f"photo.jpg__label_{index}"
+                label_path = os.path.join(label_dir, f"{label_id}.png")
+                sn_path = os.path.join(sn_dir, f"{label_id}__sn.png")
+                open(label_path, "wb").close()
+                open(sn_path, "wb").close()
+                rows.append(
+                    {
+                        "label_id": label_id,
+                        "label_crop": label_path,
+                        "sn_path": sn_path,
+                        "original_image_path": original_path,
+                    }
+                )
+
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                for row in rows:
+                    manifest.write(json.dumps(row) + "\n")
+
+            meta = {"barcode_found": False, "ocr_text_found": False, "barcode_status": "decoder_miss"}
+            with mock.patch.object(scan2, "recognize_sn", return_value=("", "", "none", meta)) as recognize_sn:
+                scan2.main(
+                    model_dir=model_dir,
+                    sn_dir=sn_dir,
+                    out_jsonl=os.path.join(root, "out.jsonl"),
+                    debug_log=os.path.join(root, "debug.log"),
+                )
+
+        self.assertEqual(recognize_sn.call_count, 2)
+        self.assertEqual([call.kwargs["original_path"] for call in recognize_sn.call_args_list], ["", ""])
+
     def test_main_reports_barcode_hit_rate_and_ocr_recovery_separately(self):
         scan2 = _import_scan2()
 

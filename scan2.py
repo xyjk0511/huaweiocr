@@ -920,11 +920,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
             sn_input_available = bool(item.get("sn_path") or item.get("label_crop"))
             if sn_input_available:
+                if item.get("original_image_path"):
+                    append_debug(f"[SN] {key} original image barcode fallback disabled")
                 sn_code, sn_raw, sn_src, sn_meta = recognize_sn(
                     item.get("sn_path", ""),
                     label_id=key,
                     label_path=item.get("label_crop", ""),
-                    original_path=item.get("original_image_path", ""),
+                    original_path="",
                 )
 
             if sn_code.startswith("4E25A017") and model_code in {"", "S380-S8P", "S380", "S380-", "S380-S"}:
