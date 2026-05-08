@@ -14,6 +14,10 @@ The system SHALL attempt barcode decoding for SN extraction before any OCR-based
 ### Requirement: Multi-source SN barcode scanning
 The system SHALL scan SN barcodes from all available local visual sources for a label, including the SN crop when present, the full label crop, and generated barcode-region candidates.
 
+#### Scenario: Original source photo is available
+- **WHEN** the manifest preserves an original source image path for provenance
+- **THEN** the system SHALL NOT scan that full source image as an SN barcode source for a cropped label
+
 #### Scenario: SN crop is missing
 - **WHEN** the field detector does not produce an SN crop but a label crop exists
 - **THEN** the system SHALL still attempt SN barcode decoding on the label crop and generated barcode-region candidates

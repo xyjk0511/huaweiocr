@@ -2,7 +2,7 @@
 
 - [x] 1.1 Define the SN barcode validation manifest schema with image path, label id, expected SN, barcode-present flag, accepted-quality flag, and notes.
 - [x] 1.2 Add a deterministic validation command that runs SN barcode extraction without counting OCR fallback as success.
-- [ ] 1.3 Build or import a ground-truth validation set with enough accepted-quality SN barcode samples to justify the 90% gate. Blocked: the repository currently has 0 accepted-quality ground-truth rows in `validation/sn_barcode_manifest.jsonl`; `validate_sn_barcodes.py --init-template-from-stage2 ...` can generate a manual-review candidate manifest, but candidate rows are not release evidence until a reviewer fills verified `expected_sn`, `barcode_present`, and `accepted_quality`. Live scan evidence from 6 uploaded high-resolution originals found barcode-derived SN candidates in 6/6 images, but 5/6 images contain multiple SN labels and therefore correctly return `ambiguous` rather than a single selected SN.
+- [ ] 1.3 Build or import a ground-truth validation set with enough accepted-quality SN barcode samples to justify the 90% gate. Blocked: the repository currently has 0 accepted-quality ground-truth rows in `validation/sn_barcode_manifest.jsonl`; `validate_sn_barcodes.py --init-template-from-stage2 ...` can generate a manual-review candidate manifest, but candidate rows are not release evidence until a reviewer fills verified `expected_sn`, `barcode_present`, and `accepted_quality`. Offline diagnostic probes on 6 uploaded high-resolution originals found barcode-derived SN candidates in 6/6 images, but 5/6 images contain multiple SN labels and therefore correctly return `ambiguous` rather than a single selected SN.
 - [x] 1.4 Add quality diagnostics for too-small, clipped, blurred, or quiet-zone-missing SN barcodes.
 
 ## 2. Barcode Candidate Generation
@@ -16,7 +16,7 @@
 
 - [x] 3.1 Introduce a local decoder adapter result schema with decoder name, raw text, source region, rotation, and confidence when available.
 - [x] 3.2 Update `pyzbar` and `BarcodeReaderCLI` calls to use the shared adapter schema and scan Code128/UCC128-oriented candidates.
-- [x] 3.3 Add a second local decoder adapter only if the validation report remains below 90% after candidate-generation tuning. Added optional local `zxing-cpp` adapter plus expanded BarcodeReaderCLI type coverage; direct full-image scans of the 6 uploaded high-resolution originals now find barcode-derived SN candidates in 6/6 images after enabling QR payload decode and accepting `ERB` SNs.
+- [x] 3.3 Add a second local decoder adapter only if the validation report remains below 90% after candidate-generation tuning. Added optional local `zxing-cpp` adapter plus expanded BarcodeReaderCLI type coverage; offline diagnostic probes on the 6 uploaded high-resolution originals found barcode-derived SN candidates in 6/6 images after enabling QR payload decode and accepting `ERB` SNs. Those probes are not a runtime original-image fallback.
 - [x] 3.4 Keep decoder errors isolated so one decoder failure does not block the remaining barcode attempts.
 
 ## 4. SN Selection And Pipeline Output

@@ -4,7 +4,9 @@ Windows-first batch OCR pipeline for device labels.
 
 ## What It Does
 
-The pipeline detects label regions, crops model/SN fields, decodes SN barcodes, falls back to OCR, and writes structured JSONL.
+The pipeline detects label regions, crops model/SN fields, decodes label-local SN barcodes, falls back to OCR, and writes structured JSONL.
+
+SN barcode recognition only uses crops bound to the current label, such as the SN crop, barcode candidates, and the label crop. The original full source photo is kept as provenance metadata only and is not scanned as an SN barcode fallback, because one photo can contain multiple valid labels.
 
 Roboflow detection requires a valid `API_KEY`. Local PaddleOCR models and the barcode CLI can be bundled for packaging, but the detector step is not fully offline.
 

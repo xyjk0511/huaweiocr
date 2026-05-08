@@ -17,6 +17,10 @@ Optional crop paths:
 - `label_crop`
 - `original_image_path`
 
+`original_image_path` is provenance metadata only. Validation scans label-local visual
+sources (`sn_path` and `label_crop`) and does not scan the original full image as an
+SN barcode source, so a multi-label source photo cannot satisfy another label's SN.
+
 The validation command defaults to at least 50 accepted-quality barcode-present rows and a 90% exact hit-rate threshold:
 
 ```powershell
