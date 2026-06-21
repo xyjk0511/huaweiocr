@@ -15,7 +15,6 @@ from typing import List, Dict, Tuple
 
 import cv2
 import numpy as np
-from pyzbar import pyzbar
 
 from win_subprocess import hide_subprocess_windows
 
@@ -51,6 +50,9 @@ CLI_MAX_PIXELS = 50_000_000
 CLI_MAX_CALLS_PER_PATCH = int(os.environ.get("BARCODE_CLI_MAX_CALLS_PER_PATCH", "4"))
 CLI_TIMEOUT_SECONDS = float(os.environ.get("BARCODE_CLI_TIMEOUT_SECONDS", "2"))
 _CLI_UNAVAILABLE = False
+_CLI_UNAVAILABLE_REASON = ""
+_PYZBAR_MODULE = None
+_PYZBAR_IMPORT_ERROR = None
 
 PAD_X = 30
 PAD_Y = 16
@@ -100,6 +102,60 @@ class _StderrSilencer:
         os.close(self._devnull)
         os.close(self._orig_fd)
         return False
+
+
+def _short_error(exc: Exception) -> str:
+    text = str(exc).strip()
+    if text:
+        return f"{exc.__class__.__name__}:{text}"
+    return exc.__class__.__name__
+
+
+def _append_decoder_error(decoder_errors, message: str) -> None:
+    if decoder_errors is None or not message:
+        return
+    if message not in decoder_errors:
+        decoder_errors.append(message)
+
+
+def _get_pyzbar(decoder_errors=None):
+    global _PYZBAR_MODULE, _PYZBAR_IMPORT_ERROR
+    if _PYZBAR_MODULE is not None:
+        return _PYZBAR_MODULE
+    if _PYZBAR_IMPORT_ERROR is not None:
+        _append_decoder_error(
+            decoder_errors,
+            f"decoder_unavailable:pyzbar:{_short_error(_PYZBAR_IMPORT_ERROR)}",
+        )
+        return None
+
+    try:
+        from pyzbar import pyzbar as pyzbar_module
+    except Exception as exc:
+        _PYZBAR_IMPORT_ERROR = exc
+        _append_decoder_error(
+            decoder_errors,
+            f"decoder_unavailable:pyzbar:{_short_error(exc)}",
+        )
+        return None
+
+    _PYZBAR_MODULE = pyzbar_module
+    return _PYZBAR_MODULE
+
+
+def _one_line(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _format_cli_process_error(proc) -> str:
+    parts = [f"BarcodeReaderCLI_error:returncode={proc.returncode}"]
+    stderr = _one_line(getattr(proc, "stderr", ""))
+    stdout = _one_line(getattr(proc, "stdout", ""))
+    if stderr:
+        parts.append(f"stderr={stderr}")
+    if stdout:
+        parts.append(f"stdout={stdout}")
+    return " ".join(parts)
 
 
 
@@ -414,7 +470,8 @@ def _rotate90(img: np.ndarray, k: int) -> np.ndarray:
 
 
 def decode_with_transforms(gray_or_bin: np.ndarray,
-                           tag: str) -> List[Dict]:
+                           tag: str,
+                           decoder_errors=None) -> List[Dict]:
     """
     瀵瑰崟閫氶亾鍥惧儚鍋?
       - 0/90/180/270掳 鏃嬭浆
@@ -423,6 +480,9 @@ def decode_with_transforms(gray_or_bin: np.ndarray,
     """
     results: List[Dict] = []
     seen = set()
+    pyzbar = _get_pyzbar(decoder_errors)
+    if pyzbar is None:
+        return results
 
     base = pad_quiet_zone(gray_or_bin)
 
@@ -437,7 +497,8 @@ def decode_with_transforms(gray_or_bin: np.ndarray,
 
             try:
                 decoded = pyzbar.decode(img, symbols=[pyzbar.ZBarSymbol.CODE128])
-            except Exception:
+            except Exception as exc:
+                _append_decoder_error(decoder_errors, f"pyzbar_error:{_short_error(exc)}")
                 decoded = []
             for d in decoded:
                 try:
@@ -467,12 +528,21 @@ def decode_with_transforms(gray_or_bin: np.ndarray,
 
 # ===================== BarcodeReaderCLI =====================
 
-def read_barcodes_cli(img_path: str) -> List[str]:
-    global _CLI_UNAVAILABLE
+def read_barcodes_cli(img_path: str, decoder_errors=None) -> List[str]:
+    global _CLI_UNAVAILABLE, _CLI_UNAVAILABLE_REASON
     if _CLI_UNAVAILABLE:
+        _append_decoder_error(
+            decoder_errors,
+            _CLI_UNAVAILABLE_REASON or "decoder_unavailable:BarcodeReaderCLI:cached",
+        )
         return []
     if not BARCODE_CLI_PATH or not os.path.exists(BARCODE_CLI_PATH):
         _CLI_UNAVAILABLE = True
+        _CLI_UNAVAILABLE_REASON = (
+            "decoder_unavailable:BarcodeReaderCLI:path_missing:"
+            f"{BARCODE_CLI_PATH or '<empty>'}"
+        )
+        _append_decoder_error(decoder_errors, _CLI_UNAVAILABLE_REASON)
         return []
 
     cmd = [
@@ -495,16 +565,27 @@ def read_barcodes_cli(img_path: str) -> List[str]:
             errors="ignore",
             timeout=CLI_TIMEOUT_SECONDS,
         )
-    except Exception:
+    except FileNotFoundError as exc:
+        _CLI_UNAVAILABLE = True
+        _CLI_UNAVAILABLE_REASON = f"BarcodeReaderCLI_file_not_found:{_short_error(exc)}"
+        _append_decoder_error(decoder_errors, _CLI_UNAVAILABLE_REASON)
+        return []
+    except subprocess.TimeoutExpired as exc:
+        timeout = getattr(exc, "timeout", CLI_TIMEOUT_SECONDS)
+        _append_decoder_error(decoder_errors, f"BarcodeReaderCLI_timeout:{timeout}s")
+        return []
+    except Exception as exc:
+        _append_decoder_error(decoder_errors, f"BarcodeReaderCLI_error:{_short_error(exc)}")
         return []
 
     if proc.returncode != 0:
+        _append_decoder_error(decoder_errors, _format_cli_process_error(proc))
         return []
 
     return [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
 
 
-def decode_with_cli(img_bgr: np.ndarray, tag: str) -> List[Dict]:
+def decode_with_cli(img_bgr: np.ndarray, tag: str, decoder_errors=None) -> List[Dict]:
     img_bgr = pad_quiet_zone(img_bgr)
     if img_bgr.ndim == 2:
         img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
@@ -512,8 +593,11 @@ def decode_with_cli(img_bgr: np.ndarray, tag: str) -> List[Dict]:
         tmp_path = tmp.name
 
     try:
-        cv2.imwrite(tmp_path, img_bgr)
-        lines = read_barcodes_cli(tmp_path)
+        if not cv2.imwrite(tmp_path, img_bgr):
+            _append_decoder_error(decoder_errors, "BarcodeReaderCLI_error:temp_write_failed")
+            lines = []
+        else:
+            lines = read_barcodes_cli(tmp_path, decoder_errors=decoder_errors)
     finally:
         if os.path.exists(tmp_path):
             try:
@@ -536,7 +620,12 @@ def decode_with_cli(img_bgr: np.ndarray, tag: str) -> List[Dict]:
     return results
 
 
-def decode_cli_multi(img: np.ndarray, tag: str, budget: Dict | None = None) -> List[Dict]:
+def decode_cli_multi(
+    img: np.ndarray,
+    tag: str,
+    budget: Dict | None = None,
+    decoder_errors=None,
+) -> List[Dict]:
     base = img
     rotations = [0, 1, 2, 3]
     if budget is None:
@@ -564,7 +653,7 @@ def decode_cli_multi(img: np.ndarray, tag: str, budget: Dict | None = None) -> L
                 if budget["calls"] >= budget["limit"]:
                     return results
                 budget["calls"] += 1
-                for r in decode_with_cli(cand, tag):
+                for r in decode_with_cli(cand, tag, decoder_errors=decoder_errors):
                     key = (r.get('data'), r.get('type'))
                     if key in seen:
                         continue
@@ -576,7 +665,12 @@ def decode_cli_multi(img: np.ndarray, tag: str, budget: Dict | None = None) -> L
     return results
 
 
-def decode_cli_sharp_variants(gray_band: np.ndarray, tag: str, budget: Dict | None = None) -> List[Dict]:
+def decode_cli_sharp_variants(
+    gray_band: np.ndarray,
+    tag: str,
+    budget: Dict | None = None,
+    decoder_errors=None,
+) -> List[Dict]:
     if gray_band is None or gray_band.size == 0:
         return []
     h, w = gray_band.shape[:2]
@@ -593,7 +687,12 @@ def decode_cli_sharp_variants(gray_band: np.ndarray, tag: str, budget: Dict | No
         sharp = cv2.addWeighted(clahe, 1.8, blur, -0.8, 0)
         _, otsu = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         for name, candidate in (("sharp", sharp), ("otsu", otsu)):
-            for r in decode_cli_multi(candidate, f"{tag}_{name}{scale:g}", budget):
+            for r in decode_cli_multi(
+                candidate,
+                f"{tag}_{name}{scale:g}",
+                budget,
+                decoder_errors=decoder_errors,
+            ):
                 key = (r.get("data"), r.get("type"))
                 if key in seen:
                     continue
@@ -617,57 +716,122 @@ def decode_small_patch(img_bgr: np.ndarray) -> Dict:
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     gray = auto_rotate_to_horizontal(gray)
     cli_budget = {"limit": CLI_MAX_CALLS_PER_PATCH, "calls": 0}
+    decoder_errors: List[str] = []
 
     detected_band = crop_detected_barcode_band(gray)
     if detected_band is not None:
-        results: List[Dict] = decode_with_transforms(detected_band, "detected_band_raw")
-        results += decode_cli_multi(detected_band, "detected_band_cli", cli_budget)
+        results: List[Dict] = decode_with_transforms(
+            detected_band,
+            "detected_band_raw",
+            decoder_errors=decoder_errors,
+        )
+        results += decode_cli_multi(
+            detected_band,
+            "detected_band_cli",
+            cli_budget,
+            decoder_errors=decoder_errors,
+        )
         if results:
-            return {"results": results}
+            return {"results": results, "decoder_errors": decoder_errors}
 
         enh_gray, bin_img = enhance_band(detected_band)
-        results += decode_with_transforms(enh_gray, "detected_band_enh_gray")
-        results += decode_cli_multi(enh_gray, "detected_band_cli_enh_gray", cli_budget)
+        results += decode_with_transforms(
+            enh_gray,
+            "detected_band_enh_gray",
+            decoder_errors=decoder_errors,
+        )
+        results += decode_cli_multi(
+            enh_gray,
+            "detected_band_cli_enh_gray",
+            cli_budget,
+            decoder_errors=decoder_errors,
+        )
         if results:
-            return {"results": results}
+            return {"results": results, "decoder_errors": decoder_errors}
 
-        results += decode_with_transforms(bin_img, "detected_band_enh_bin")
-        results += decode_cli_multi(bin_img, "detected_band_cli_enh_bin", cli_budget)
+        results += decode_with_transforms(
+            bin_img,
+            "detected_band_enh_bin",
+            decoder_errors=decoder_errors,
+        )
+        results += decode_cli_multi(
+            bin_img,
+            "detected_band_cli_enh_bin",
+            cli_budget,
+            decoder_errors=decoder_errors,
+        )
         if results:
-            return {"results": results}
+            return {"results": results, "decoder_errors": decoder_errors}
 
-        results += decode_cli_sharp_variants(detected_band, "detected_band_cli", cli_budget)
+        results += decode_cli_sharp_variants(
+            detected_band,
+            "detected_band_cli",
+            cli_budget,
+            decoder_errors=decoder_errors,
+        )
         if results:
-            return {"results": results}
+            return {"results": results, "decoder_errors": decoder_errors}
 
     # ?????
     band = crop_bar_band(gray)
 
     # ?? band ?????????????????
-    results: List[Dict] = decode_with_transforms(band, "band_raw")
+    results: List[Dict] = decode_with_transforms(
+        band,
+        "band_raw",
+        decoder_errors=decoder_errors,
+    )
 
     # BarcodeReaderCLI multi-pass on band (if available)
-    results += decode_cli_multi(band, "band_cli", cli_budget)
+    results += decode_cli_multi(
+        band,
+        "band_cli",
+        cli_budget,
+        decoder_errors=decoder_errors,
+    )
     if results:
-        return {"results": results}
+        return {"results": results, "decoder_errors": decoder_errors}
 
     # ????
     enh_gray, bin_img = enhance_band(band)
 
     # ?????????
-    results += decode_with_transforms(enh_gray, "band_enh_gray")
-    results += decode_cli_multi(enh_gray, "band_cli_enh_gray", cli_budget)
+    results += decode_with_transforms(
+        enh_gray,
+        "band_enh_gray",
+        decoder_errors=decoder_errors,
+    )
+    results += decode_cli_multi(
+        enh_gray,
+        "band_cli_enh_gray",
+        cli_budget,
+        decoder_errors=decoder_errors,
+    )
     if results:
-        return {"results": results}
+        return {"results": results, "decoder_errors": decoder_errors}
 
     # ?????????
-    results += decode_with_transforms(bin_img, "band_enh_bin")
-    results += decode_cli_multi(bin_img, "band_cli_enh_bin", cli_budget)
+    results += decode_with_transforms(
+        bin_img,
+        "band_enh_bin",
+        decoder_errors=decoder_errors,
+    )
+    results += decode_cli_multi(
+        bin_img,
+        "band_cli_enh_bin",
+        cli_budget,
+        decoder_errors=decoder_errors,
+    )
     if results:
-        return {"results": results}
+        return {"results": results, "decoder_errors": decoder_errors}
 
-    results += decode_cli_multi(gray, "full_cli", cli_budget)
-    return {"results": results}
+    results += decode_cli_multi(
+        gray,
+        "full_cli",
+        cli_budget,
+        decoder_errors=decoder_errors,
+    )
+    return {"results": results, "decoder_errors": decoder_errors}
 
 def process_path(path: str) -> None:
     if os.path.isfile(path):

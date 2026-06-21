@@ -8,6 +8,7 @@ import ctypes
 MODEL_INSTALL_MARKER = ".huaweiocr_complete"
 MODEL_ROOT_MARKER = ".huaweiocr_models_root"
 MODEL_INSTALL_LOCK_MALFORMED_GRACE_SECONDS = 1
+MODEL_INSTALL_LOCK_TIMEOUT_SECONDS = 300
 
 
 def _pid_is_running(pid):
@@ -126,22 +127,34 @@ def get_model_install_root():
     return os.path.join(get_user_data_dir(), "models", "official_models")
 
 
+def _env_float(name, default):
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def ensure_models_installed():
     bundled = get_resource_path("models", "official_models")
     if not os.path.isdir(bundled):
         return None
 
+    override_root = bool(os.environ.get("HUAWEIOCR_MODEL_DIR"))
     target_root = get_model_install_root()
     os.makedirs(target_root, exist_ok=True)
     root_marker = os.path.join(target_root, MODEL_ROOT_MARKER)
-    with open(root_marker, "a", encoding="utf-8"):
-        pass
 
     os.environ["HUAWEIOCR_INSTALLED_MODEL_DIR"] = target_root
     os.environ["PADDLE_PDX_OFFICIAL_MODEL_DIR"] = target_root
     lock_path = os.path.join(target_root, ".huaweiocr_install.lock")
     lock_fd = None
-    deadline = time.time() + 30
+    deadline = time.time() + _env_float(
+        "HUAWEIOCR_MODEL_INSTALL_LOCK_TIMEOUT",
+        MODEL_INSTALL_LOCK_TIMEOUT_SECONDS,
+    )
     while lock_fd is None:
         try:
             lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
@@ -154,6 +167,7 @@ def ensure_models_installed():
             time.sleep(0.2)
 
     try:
+        root_is_managed = (not override_root) or os.path.isfile(root_marker)
         for name in os.listdir(bundled):
             src = os.path.join(bundled, name)
             dst = os.path.join(target_root, name)
@@ -163,9 +177,12 @@ def ensure_models_installed():
             if os.path.isdir(dst) and os.path.isfile(marker):
                 continue
             if os.path.exists(dst):
-                if not os.path.isfile(root_marker):
+                if not (root_is_managed or os.path.isfile(marker)):
                     raise RuntimeError(f"Refusing to modify unmanaged model directory: {dst}")
-                shutil.rmtree(dst)
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst)
+                else:
+                    os.remove(dst)
             tmp = tempfile.mkdtemp(prefix=f".{name}.", dir=target_root)
             try:
                 shutil.copytree(src, tmp, dirs_exist_ok=True)
@@ -175,6 +192,8 @@ def ensure_models_installed():
             finally:
                 if os.path.exists(tmp):
                     shutil.rmtree(tmp, ignore_errors=True)
+        with open(root_marker, "a", encoding="utf-8"):
+            pass
     finally:
         if lock_fd is not None:
             os.close(lock_fd)

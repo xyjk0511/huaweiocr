@@ -461,7 +461,9 @@ class App(BaseTk):
             self._crop_module = crop_module
             self._scan2_module = scan2_module
             input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
-            input_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
+            run_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
+            input_dir = run_dir
+            out_dir = run_dir
 
             self.write_log("[1/4] Preparing input directory")
             self.write_log(f"Copied {len(copied_records)} image(s).")
@@ -472,7 +474,7 @@ class App(BaseTk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log("[2/4] Running crop.main(): full image -> label -> model/sn crops")
-                crop_stats = crop_module.main(input_dir=input_dir, clean=True)
+                crop_stats = crop_module.main(input_dir=input_dir, out_dir=out_dir)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
                     raise RuntimeError("No label crops were generated; OCR was stopped.")
                 if crop_stats.get("manifest_rows", 0) <= 0:

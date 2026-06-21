@@ -1,5 +1,6 @@
 import importlib
 import inspect
+import io
 import json
 import os
 import sys
@@ -9,6 +10,27 @@ import types
 import unittest
 import subprocess
 from unittest import mock
+
+
+def tearDownModule():
+    for name in (
+        "app_paths",
+        "barcode",
+        "crop",
+        "cv2",
+        "gui_app",
+        "gui_app_en",
+        "gui_pipeline",
+        "numpy",
+        "ocr",
+        "paddle",
+        "paddleocr",
+        "pyzbar",
+        "pyzbar.pyzbar",
+        "scan2",
+        "win_subprocess",
+    ):
+        sys.modules.pop(name, None)
 
 
 def _install_crop_import_fakes():
@@ -198,12 +220,25 @@ class RunAllPathPropagationTest(unittest.TestCase):
                 with mock.patch.object(sys, "argv", argv):
                     self.assertEqual(run_all.main(), 0)
 
+            summary_path = os.path.join(out_dir, "run_summary.json")
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary = json.load(f)
+
             self.assertEqual(calls["model_dir"], crop.OUT_MODEL_DIR)
             self.assertEqual(calls["sn_dir"], crop.OUT_SN_DIR)
             self.assertEqual(
                 calls["out_jsonl"],
                 os.path.join(crop.STAGE2_DIR, "model_sn_ocr.jsonl"),
             )
+            self.assertEqual(summary["exit_status"], 0)
+            self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["image_count"], 1)
+            self.assertEqual(summary["crop_stats"]["label_count"], 1)
+            self.assertEqual(summary["scan2_stats"]["sn_total"], 0)
+            self.assertEqual(summary["output_paths"]["model_dir"], crop.OUT_MODEL_DIR)
+            self.assertEqual(summary["output_paths"]["result_jsonl"], calls["out_jsonl"])
+            self.assertIsInstance(summary["timing_sec"]["crop"], float)
+            self.assertIsInstance(summary["timing_sec"]["scan"], float)
 
     def test_zero_label_crop_returns_nonzero_without_scanning(self):
         import run_all
@@ -228,7 +263,181 @@ class RunAllPathPropagationTest(unittest.TestCase):
                 with mock.patch.object(sys, "argv", argv):
                     self.assertEqual(run_all.main(), 1)
 
+            with open(os.path.join(out_dir, "run_summary.json"), "r", encoding="utf-8") as f:
+                summary = json.load(f)
+
             scan2.main.assert_not_called()
+            self.assertEqual(summary["exit_status"], 1)
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["crop_stats"]["label_count"], 0)
+            self.assertIn("No label crops", summary["message"])
+
+    def test_summary_json_out_overrides_default_path(self):
+        import run_all
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "missing")
+            out_dir = os.path.join(root, "out")
+            summary_path = os.path.join(root, "agent", "summary.json")
+
+            argv = [
+                "run_all.py",
+                "--input",
+                input_dir,
+                "--out",
+                out_dir,
+                "--summary-json-out",
+                summary_path,
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(run_all.main(), 2)
+
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary = json.load(f)
+            self.assertEqual(summary["exit_status"], 2)
+            self.assertEqual(summary["output_paths"]["summary_json"], summary_path)
+            self.assertFalse(os.path.exists(os.path.join(out_dir, "run_summary.json")))
+
+    def test_successful_pipeline_returns_nonzero_when_summary_path_is_directory(self):
+        import run_all
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "out")
+            summary_path = os.path.join(root, "summary_dir")
+            os.makedirs(input_dir)
+            os.makedirs(summary_path)
+            with open(os.path.join(input_dir, "sample.png"), "wb") as image:
+                image.write(b"not-a-real-image")
+
+            crop = types.ModuleType("crop")
+            crop.OUT_MODEL_DIR = os.path.join(out_dir, "stage2_fields", "model")
+            crop.OUT_SN_DIR = os.path.join(out_dir, "stage2_fields", "sn")
+            crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
+            crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
+            crop.set_log_level = lambda level: None
+            crop.main = lambda **kwargs: {"label_count": 1, "manifest_rows": 1}
+
+            scan2 = types.ModuleType("scan2")
+            scan2.set_log_level = lambda level: None
+            scan2.main = lambda **kwargs: {"sn_total": 0}
+
+            argv = [
+                "run_all.py",
+                "--input",
+                input_dir,
+                "--out",
+                out_dir,
+                "--summary-json-out",
+                summary_path,
+            ]
+            stderr = io.StringIO()
+            with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
+                with mock.patch.object(sys, "argv", argv):
+                    with mock.patch("sys.stderr", stderr):
+                        self.assertEqual(run_all.main(), 1)
+
+            stderr_text = stderr.getvalue()
+            self.assertIn("Warning: failed to write run summary", stderr_text)
+            self.assertIn("Error: failed to write run summary", stderr_text)
+
+    def test_existing_failure_keeps_exit_code_when_summary_path_is_directory(self):
+        import run_all
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "missing")
+            out_dir = os.path.join(root, "out")
+            summary_path = os.path.join(root, "summary_dir")
+            os.makedirs(summary_path)
+
+            argv = [
+                "run_all.py",
+                "--input",
+                input_dir,
+                "--out",
+                out_dir,
+                "--summary-json-out",
+                summary_path,
+            ]
+            stderr = io.StringIO()
+            with mock.patch.object(sys, "argv", argv):
+                with mock.patch("sys.stderr", stderr):
+                    self.assertEqual(run_all.main(), 2)
+
+            stderr_text = stderr.getvalue()
+            self.assertIn("Input directory does not exist", stderr_text)
+            self.assertIn("Warning: failed to write run summary", stderr_text)
+            self.assertNotIn("returning failure status", stderr_text)
+
+    def test_cli_can_export_gui_equivalent_excel(self):
+        import run_all
+
+        try:
+            import openpyxl
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "out")
+            os.makedirs(input_dir)
+            with open(os.path.join(input_dir, "sample.png"), "wb") as image:
+                image.write(b"not-a-real-image")
+
+            crop = types.ModuleType("crop")
+            crop.OUT_MODEL_DIR = os.path.join(out_dir, "stage2_fields", "model")
+            crop.OUT_SN_DIR = os.path.join(out_dir, "stage2_fields", "sn")
+            crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
+            crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
+            crop.set_log_level = lambda level: None
+            crop.main = lambda **kwargs: {"label_count": 1, "manifest_rows": 1}
+
+            scan2 = types.ModuleType("scan2")
+            scan2.set_log_level = lambda level: None
+
+            def fake_scan2_main(**kwargs):
+                os.makedirs(os.path.dirname(kwargs["out_jsonl"]), exist_ok=True)
+                with open(kwargs["out_jsonl"], "w", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "label_id": "sample.png__label_1",
+                        "model": "AP162E",
+                        "sn": "4E25A0170000",
+                        "model_src": "ocr_file",
+                        "sn_src": "barcode",
+                    }) + "\n")
+                return {"records": 1, "sn_total": 1, "sn_success": 1}
+
+            scan2.main = fake_scan2_main
+
+            excel_path = os.path.join(root, "result.xlsx")
+            argv = [
+                "run_all.py",
+                "--input",
+                input_dir,
+                "--out",
+                out_dir,
+                "--excel-out",
+                excel_path,
+            ]
+            with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
+                with mock.patch.object(sys, "argv", argv):
+                    self.assertEqual(run_all.main(), 0)
+
+            wb = openpyxl.load_workbook(excel_path)
+            ws = wb.active
+            self.assertEqual(
+                [cell.value for cell in ws[1]],
+                ["label_id", "model", "sn", "model_src", "sn_src"],
+            )
+            self.assertEqual(
+                [cell.value for cell in ws[2]],
+                ["sample.png__label_1", "AP162E", "4E25A0170000", "ocr_file", "barcode"],
+            )
+
+            with open(os.path.join(out_dir, "run_summary.json"), "r", encoding="utf-8") as f:
+                summary = json.load(f)
+            self.assertEqual(summary["excel_export"]["rows"], 1)
+            self.assertEqual(summary["output_paths"]["excel"], excel_path)
 
     def test_empty_input_returns_nonzero_without_running_pipeline(self):
         import run_all
@@ -527,7 +736,7 @@ class Scan2ManifestTest(unittest.TestCase):
                     debug_log=os.path.join(root, "debug.log"),
                 )
 
-    def test_raw_fields_keep_full_values_by_default(self):
+    def test_raw_fields_are_masked_by_default(self):
         scan2 = _import_scan2()
 
         with tempfile.TemporaryDirectory() as root:
@@ -554,6 +763,7 @@ class Scan2ManifestTest(unittest.TestCase):
                             {
                                 "SCAN2_MASK_RAW": "",
                                 "SCAN2_UNSAFE_RAW": "",
+                                "HUAWEIOCR_UNSAFE_RAW": "",
                                 "SCAN2_MODEL_BARCODE": "0",
                                 "SCAN2_OCR_FALLBACK": "1",
                             },
@@ -570,8 +780,66 @@ class Scan2ManifestTest(unittest.TestCase):
                 row = json.loads(f.readline())
             self.assertEqual(row["model"], "AP162E")
             self.assertEqual(row["sn"], "4E25A0170000")
+            self.assertNotIn("RAW_MODEL_SECRET_123456", row["model_raw"])
+            self.assertNotIn("RAW_SN_SECRET_123456", row["sn_raw"])
+
+    def test_raw_fields_can_keep_full_values_with_unsafe_env(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            open(model_path, "wb").close()
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            meta = {"barcode_found": False, "ocr_text_found": False, "barcode_status": "decoder_miss"}
+            report = types.SimpleNamespace(status="decoder_miss", results=[])
+            with mock.patch.object(scan2, "recognize_model_ocr", return_value=("AP162E", "RAW_MODEL_SECRET_123456", "ocr_file")):
+                with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("", "", "barcode_decoder_miss", meta, report)):
+                    with mock.patch.object(scan2, "recognize_sn_ocr_after_barcode", return_value=("4E25A0170000", "RAW_SN_SECRET_123456", "ocr", meta)):
+                        with mock.patch.dict(
+                            os.environ,
+                            {
+                                "SCAN2_MASK_RAW": "",
+                                "SCAN2_UNSAFE_RAW": "1",
+                                "HUAWEIOCR_UNSAFE_RAW": "",
+                                "SCAN2_MODEL_BARCODE": "0",
+                                "SCAN2_OCR_FALLBACK": "1",
+                            },
+                            clear=False,
+                        ):
+                            scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=out_jsonl,
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
             self.assertEqual(row["model_raw"], "RAW_MODEL_SECRET_123456")
             self.assertEqual(row["sn_raw"], "RAW_SN_SECRET_123456")
+
+    def test_huaweiocr_unsafe_raw_alias_disables_raw_field_masking(self):
+        scan2 = _import_scan2()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SCAN2_UNSAFE_RAW": "",
+                "HUAWEIOCR_UNSAFE_RAW": "1",
+            },
+            clear=False,
+        ):
+            self.assertFalse(scan2.raw_result_fields_are_masked())
 
     def test_raw_fields_can_be_masked_with_env_flag(self):
         scan2 = _import_scan2()
@@ -600,6 +868,7 @@ class Scan2ManifestTest(unittest.TestCase):
                             {
                                 "SCAN2_MASK_RAW": "1",
                                 "SCAN2_UNSAFE_RAW": "",
+                                "HUAWEIOCR_UNSAFE_RAW": "",
                                 "SCAN2_MODEL_BARCODE": "0",
                                 "SCAN2_OCR_FALLBACK": "1",
                             },
@@ -1339,13 +1608,96 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertIn("source: [path]", masked)
         self.assertNotIn(external_path, masked)
 
-    def test_gui_run_pipeline_requests_clean_crop_outputs(self):
-        sys.modules.pop("gui_app", None)
-        import gui_app
+    def _run_gui_pipeline_with_fakes(self, module_name):
+        sys.modules.pop(module_name, None)
+        gui_module = importlib.import_module(module_name)
 
-        source = inspect.getsource(gui_app.App.run_pipeline)
+        with tempfile.TemporaryDirectory() as root:
+            input_root = os.path.join(root, "new_images")
+            run_dir = os.path.join(input_root, "gui_run_test")
+            stage2_dir = os.path.join(run_dir, "stage2_fields")
+            os.makedirs(run_dir)
 
-        self.assertIn("crop_module.main(input_dir=input_dir, clean=True)", source)
+            crop_calls = []
+            scan2_calls = []
+
+            crop_module = types.SimpleNamespace(
+                DEFAULT_INPUT_DIR=input_root,
+                STAGE1_DIR=os.path.join(run_dir, "stage1_labels"),
+                STAGE2_DIR=stage2_dir,
+                OUT_MODEL_DIR=os.path.join(stage2_dir, "model"),
+                OUT_SN_DIR=os.path.join(stage2_dir, "sn"),
+                LOG_SINK=None,
+            )
+
+            def crop_main(**kwargs):
+                crop_calls.append(kwargs)
+                out_dir = kwargs.get("out_dir") or run_dir
+                crop_module.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
+                crop_module.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
+                crop_module.OUT_MODEL_DIR = os.path.join(crop_module.STAGE2_DIR, "model")
+                crop_module.OUT_SN_DIR = os.path.join(crop_module.STAGE2_DIR, "sn")
+                return {"label_count": 1, "manifest_rows": 1}
+
+            crop_module.main = crop_main
+            crop_module.set_log_sink = lambda sink: setattr(crop_module, "LOG_SINK", sink)
+
+            scan2_module = types.SimpleNamespace(
+                OUT_JSONL=os.path.join(stage2_dir, "model_sn_ocr.jsonl"),
+                LOG_SINK=None,
+            )
+
+            def scan2_main(**kwargs):
+                scan2_calls.append(kwargs)
+                scan2_module.OUT_JSONL = kwargs["out_jsonl"]
+                return {"rows": 1}
+
+            scan2_module.main = scan2_main
+            scan2_module.set_log_sink = lambda sink: setattr(scan2_module, "LOG_SINK", sink)
+
+            app = types.SimpleNamespace(
+                image_paths=[os.path.join(root, "source.png")],
+                btn_start=types.SimpleNamespace(config=lambda **_kwargs: None),
+                write_log=lambda _text: None,
+                after=lambda _delay, callback=None: callback() if callback else None,
+                load_results_into_table=lambda: None,
+                _format_issue_summary=lambda: "ok",
+            )
+
+            with mock.patch.object(gui_module, "load_pipeline_modules", return_value=(crop_module, scan2_module)):
+                with mock.patch.object(
+                    gui_module,
+                    "copy_images_to_unique_run_dir",
+                    return_value=(run_dir, [{"input_name": "source.png"}]),
+                ) as copy_run_dir:
+                    gui_module.App.run_pipeline(app)
+
+            return {
+                "input_root": input_root,
+                "run_dir": run_dir,
+                "image_paths": app.image_paths,
+                "copy_call": copy_run_dir.call_args,
+                "crop_call": crop_calls[0],
+                "scan2_call": scan2_calls[0],
+            }
+
+    def test_gui_run_pipeline_uses_unique_run_dir_as_crop_out_dir(self):
+        for module_name in ("gui_app", "gui_app_en"):
+            with self.subTest(gui=module_name):
+                result = self._run_gui_pipeline_with_fakes(module_name)
+
+                self.assertEqual(result["copy_call"].args, (result["image_paths"], result["input_root"]))
+                self.assertEqual(result["crop_call"]["input_dir"], result["run_dir"])
+                self.assertEqual(result["crop_call"].get("out_dir"), result["run_dir"])
+                self.assertNotIn("clean", result["crop_call"])
+                self.assertEqual(
+                    result["scan2_call"]["model_dir"],
+                    os.path.join(result["run_dir"], "stage2_fields", "model"),
+                )
+                self.assertEqual(
+                    result["scan2_call"]["sn_dir"],
+                    os.path.join(result["run_dir"], "stage2_fields", "sn"),
+                )
 
     def test_gui_starts_ocr_prewarm_after_init(self):
         sys.modules.pop("gui_app", None)
@@ -1480,7 +1832,7 @@ class BarcodeCliBudgetTest(unittest.TestCase):
         fake_img = types.SimpleNamespace(shape=(10, 10))
         calls = []
 
-        def fake_cli(_img, _tag):
+        def fake_cli(_img, _tag, **_kwargs):
             calls.append(_tag)
             return []
 
@@ -1524,6 +1876,72 @@ class Scan2DebugLogTest(unittest.TestCase):
 
 
 class AppPathsInstallTest(unittest.TestCase):
+    def setUp(self):
+        sys.modules.pop("app_paths", None)
+        self._real_app_paths = importlib.import_module("app_paths")
+
+    def tearDown(self):
+        sys.modules.pop("app_paths", None)
+        sys.modules["app_paths"] = self._real_app_paths
+
+    def test_override_root_refuses_to_replace_unmarked_external_child(self):
+        import app_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            bundled = os.path.join(root, "bundled", "models", "official_models")
+            source_model = os.path.join(bundled, "model_a")
+            os.makedirs(source_model)
+            with open(os.path.join(source_model, "weights.bin"), "wb") as f:
+                f.write(b"complete")
+
+            external_root = os.path.join(root, "external_models")
+            target = os.path.join(external_root, "model_a")
+            os.makedirs(target)
+            with open(os.path.join(target, "partial.bin"), "wb") as f:
+                f.write(b"partial")
+
+            def fake_resource_path(*parts):
+                return os.path.join(root, "bundled", *parts)
+
+            with mock.patch.object(app_paths, "get_resource_path", side_effect=fake_resource_path):
+                with mock.patch.dict(os.environ, {"HUAWEIOCR_MODEL_DIR": external_root}, clear=False):
+                    with self.assertRaisesRegex(RuntimeError, "unmanaged model directory"):
+                        app_paths.ensure_models_installed()
+
+            self.assertTrue(os.path.exists(os.path.join(target, "partial.bin")))
+            self.assertFalse(os.path.exists(os.path.join(target, "weights.bin")))
+            self.assertFalse(os.path.exists(os.path.join(external_root, app_paths.MODEL_ROOT_MARKER)))
+
+    def test_override_root_marker_allows_replacing_incomplete_child(self):
+        import app_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            bundled = os.path.join(root, "bundled", "models", "official_models")
+            source_model = os.path.join(bundled, "model_a")
+            os.makedirs(source_model)
+            with open(os.path.join(source_model, "weights.bin"), "wb") as f:
+                f.write(b"complete")
+
+            external_root = os.path.join(root, "external_models")
+            os.makedirs(external_root)
+            with open(os.path.join(external_root, app_paths.MODEL_ROOT_MARKER), "w", encoding="utf-8") as f:
+                f.write("managed\n")
+            target = os.path.join(external_root, "model_a")
+            os.makedirs(target)
+            with open(os.path.join(target, "partial.bin"), "wb") as f:
+                f.write(b"partial")
+
+            def fake_resource_path(*parts):
+                return os.path.join(root, "bundled", *parts)
+
+            with mock.patch.object(app_paths, "get_resource_path", side_effect=fake_resource_path):
+                with mock.patch.dict(os.environ, {"HUAWEIOCR_MODEL_DIR": external_root}, clear=False):
+                    app_paths.ensure_models_installed()
+
+            self.assertTrue(os.path.exists(os.path.join(target, "weights.bin")))
+            self.assertTrue(os.path.exists(os.path.join(target, app_paths.MODEL_INSTALL_MARKER)))
+            self.assertFalse(os.path.exists(os.path.join(target, "partial.bin")))
+
     def test_incomplete_model_dir_is_replaced(self):
         import app_paths
 

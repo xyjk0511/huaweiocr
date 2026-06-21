@@ -3,6 +3,24 @@ import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
+LOCAL_DETECTOR_TARGET = 'local_models\\detectors'
+REQUIRED_LOCAL_DETECTORS = (
+    os.path.join('local_models', 'detectors', 'label_detector.onnx'),
+    os.path.join('local_models', 'detectors', 'field_detector.onnx'),
+)
+
+missing_local_detectors = [
+    path for path in REQUIRED_LOCAL_DETECTORS if not os.path.isfile(path)
+]
+if missing_local_detectors:
+    raise FileNotFoundError(
+        "Missing required local ONNX detector model(s) for release build: "
+        + ", ".join(missing_local_detectors)
+        + ". Place label_detector.onnx and field_detector.onnx under "
+        + LOCAL_DETECTOR_TARGET
+        + " before running PyInstaller."
+    )
+
 datas = [
     ('bundle\\models', 'models'),
     ('bundle\\BarcodeReaderCLI\\bin\\BarcodeReaderCLI.exe', 'BarcodeReaderCLI\\bin'),
@@ -10,8 +28,10 @@ datas = [
     ('bundle\\BarcodeReaderCLI\\bin\\curl-ca-bundle.crt', 'BarcodeReaderCLI\\bin'),
     ('bundle\\BarcodeReaderCLI\\bin\\inlite-barcode-reader-license-agreement.pdf', 'BarcodeReaderCLI\\bin'),
 ]
-if os.path.exists('.env'):
-    datas.append(('.env', '.'))
+datas += [
+    (path, LOCAL_DETECTOR_TARGET)
+    for path in REQUIRED_LOCAL_DETECTORS
+]
 datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
 datas += collect_data_files('Cython', includes=['Utility/**'])
 datas += copy_metadata('opencv-contrib-python')

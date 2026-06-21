@@ -3,7 +3,6 @@
   "title": "SN barcode validation manifest row",
   "type": "object",
   "required": [
-    "image_path",
     "label_id",
     "expected_sn",
     "barcode_present",
@@ -13,7 +12,7 @@
   "properties": {
     "image_path": {
       "type": "string",
-      "description": "Path to the original image or the only available local visual source."
+      "description": "Optional provenance path only; it is not a barcode validation source."
     },
     "label_id": {
       "type": "string",
@@ -33,19 +32,53 @@
     },
     "label_crop": {
       "type": "string",
+      "minLength": 1,
       "description": "Optional path to the full label crop."
     },
     "sn_path": {
       "type": "string",
+      "minLength": 1,
       "description": "Optional path to the detector-produced SN crop."
     },
     "original_image_path": {
       "type": "string",
-      "description": "Optional explicit original image path when image_path is a crop."
+      "description": "Optional explicit original image provenance path; it is not a barcode validation source."
     },
     "notes": {
       "type": "string"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "barcode_present": {
+            "const": true
+          },
+          "accepted_quality": {
+            "const": true
+          }
+        },
+        "required": [
+          "barcode_present",
+          "accepted_quality"
+        ]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "required": [
+              "sn_path"
+            ]
+          },
+          {
+            "required": [
+              "label_crop"
+            ]
+          }
+        ]
+      }
+    }
+  ],
   "additionalProperties": true
 }

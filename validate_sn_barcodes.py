@@ -40,6 +40,7 @@ class ValidationSummary:
         "quality_reject": 0,
         "wrong_sn": 0,
         "missing_expected_sn": 0,
+        "missing_label_local_source": 0,
         "not_barcode_present": 0,
     })
     rows: list[dict[str, Any]] = field(default_factory=list)
@@ -132,7 +133,7 @@ def _load_rows_by_label(path: str) -> dict[str, dict[str, Any]]:
 def _validate_schema(row: dict[str, Any], manifest_dir: str) -> list[str]:
     errors: list[str] = []
     line = row.get("_line_no", "?")
-    required = ["image_path", "label_id", "expected_sn", "barcode_present", "accepted_quality"]
+    required = ["label_id", "expected_sn", "barcode_present", "accepted_quality"]
     for key in required:
         if key not in row:
             errors.append(f"line {line}: missing required field {key}")
@@ -143,7 +144,7 @@ def _validate_schema(row: dict[str, Any], manifest_dir: str) -> list[str]:
         expected = extract_sn_from_payload(str(row.get("expected_sn")))
         if not expected:
             errors.append(f"line {line}: expected_sn does not parse as a valid SN")
-    for key in ("image_path", "label_crop", "sn_path", "original_image_path"):
+    for key in ("label_crop", "sn_path"):
         value = row.get(key)
         if value:
             resolved = _resolve_path(manifest_dir, str(value))
@@ -265,13 +266,14 @@ def evaluate_manifest(
         barcode_present = bool(row["barcode_present"])
         accepted_quality = bool(row["accepted_quality"])
         expected_sn = extract_sn_from_payload(str(row.get("expected_sn", "")))
+        sources = _sources_for_row(row, manifest_dir)
         if barcode_present:
             summary.barcode_present_rows += 1
         else:
             summary.failure_counts["not_barcode_present"] += 1
         if accepted_quality:
             summary.accepted_quality_rows += 1
-        if accepted_quality and barcode_present and expected_sn:
+        if accepted_quality and barcode_present and expected_sn and sources:
             summary.accepted_barcode_rows += 1
 
         row_result = {
@@ -296,10 +298,19 @@ def evaluate_manifest(
             summary.failure_counts["missing_expected_sn"] += 1
             summary.rows.append(row_result)
             continue
+        if not sources:
+            row_result["status"] = "missing_label_local_source"
+            summary.failure_counts["missing_label_local_source"] += 1
+            summary.errors.append(
+                f"line {row.get('_line_no', '?')}: accepted barcode row requires label-local source "
+                "(sn_path or label_crop); image_path/original_image_path are provenance only"
+            )
+            summary.rows.append(row_result)
+            continue
 
         summary.denominator += 1
         report = scan_sn_barcodes(
-            _sources_for_row(row, manifest_dir),
+            sources,
             label_id=str(row.get("label_id", "")),
             debug_dir=debug_dir,
             early_exit=True,

@@ -133,6 +133,7 @@ def stage2_save_model_crops_enabled() -> bool:
 
 # 裁剪/过滤参数（按需微调）
 MIN_CONF_1 = 0.50
+MIN_CONF_1_FALLBACK = 0.25
 MIN_SIZE_1 = 300
 PADDING_1 = 0.07
 NMS_1 = 0.30
@@ -145,6 +146,8 @@ STAGE1_TIGHTEN_PAD_X_RATIO = 0.015
 STAGE1_TIGHTEN_PAD_TOP_RATIO = 0.025
 STAGE1_TIGHTEN_PAD_BOTTOM_RATIO = 0.12
 STAGE1_TIGHTEN_PAD_BOTTOM_IMAGE_RATIO = 0.08
+STAGE1_TIGHTEN_MIN_WIDTH_RETAIN_RATIO = 0.65
+STAGE1_FALLBACK_MAX_CROPS = 1
 DEFAULT_LOCAL_MAX_WORKERS = 4
 DEFAULT_CLOUD_MAX_WORKERS = 8
 
@@ -759,6 +762,11 @@ def stage1_tighten_label_crop(img):
         min(W, x2 + pad_x),
         min(H, y2 + pad_bottom),
     )
+    if (
+        (box[2] - box[0]) < W * STAGE1_TIGHTEN_MIN_WIDTH_RETAIN_RATIO
+        and stage1_is_product_label_crop(img)
+    ):
+        return img
     if (box[2] - box[0]) > W * 0.96 and (box[3] - box[1]) > H * 0.96:
         return img
     tightened = crop_from_box(img, box)
@@ -3238,24 +3246,85 @@ def infer_with_resize(original_img_bgr, original_img_path, model_id, max_side=16
     raise RuntimeError(_format_inference_error(last_err, model_id))
 
 # ==================== Stage 1：大图 -> 标签小图 ====================
-def _stage1_collect_label_crops(img, raw_preds):
-    crops = []
-    dropped = 0
-    label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
-    final_preds = nms(label_preds, MIN_CONF_1, NMS_1)
+def _stage1_prepare_product_label_crop(crop_img, allow_orientation_variants=False):
+    if crop_img is None:
+        return None
 
-    for p in final_preds:
+    rotations = (0, 90, 270, 180) if allow_orientation_variants else (0,)
+    for rotation in rotations:
+        candidate = crop_img if rotation == 0 else rotate_image(crop_img, rotation)
+        if not stage1_is_product_label_crop(candidate):
+            continue
+        tightened = stage1_tighten_label_crop(candidate)
+        if tightened is not None and stage1_is_product_label_crop(tightened):
+            candidate = tightened
+        return stage1_normalize_label_orientation(candidate)
+    return None
+
+
+def _stage1_has_fallback_field_evidence(crop_img):
+    if crop_img is None:
+        return False
+    preds = infer_with_resize(
+        crop_img,
+        "__stage1_fallback_field_check__.png",
+        MODEL2_ID,
+        max_side=1600,
+    )
+    _model_preds, part_no_preds, sn_preds = _stage2_parse_preds(preds)
+    return bool(part_no_preds and sn_preds)
+
+
+def _stage1_collect_product_label_crops(
+    img,
+    label_preds,
+    allow_orientation_variants=False,
+    require_field_evidence=False,
+    max_crops=None,
+):
+    accepted = []
+    dropped = 0
+
+    for p in label_preds:
         crop = crop_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
         if crop is None:
             continue
-        if not stage1_is_product_label_crop(crop):
+        crop = _stage1_prepare_product_label_crop(
+            crop,
+            allow_orientation_variants=allow_orientation_variants,
+        )
+        if crop is None:
             dropped += 1
             continue
-        tightened = stage1_tighten_label_crop(crop)
-        if tightened is not None and stage1_is_product_label_crop(tightened):
-            crop = tightened
-        crop = stage1_normalize_label_orientation(crop)
-        crops.append(crop)
+        if require_field_evidence and not _stage1_has_fallback_field_evidence(crop):
+            dropped += 1
+            continue
+        accepted.append((float(p.get("confidence", 1.0)), crop))
+
+    if max_crops is not None and len(accepted) > max_crops:
+        accepted = sorted(accepted, key=lambda item: item[0], reverse=True)[:max_crops]
+
+    return [crop for _conf, crop in accepted], dropped
+
+
+def _stage1_collect_label_crops(img, raw_preds):
+    label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
+    final_preds = nms(label_preds, MIN_CONF_1, NMS_1)
+
+    crops, dropped = _stage1_collect_product_label_crops(img, final_preds)
+    if crops:
+        return crops, dropped
+
+    fallback_preds = nms(label_preds, MIN_CONF_1_FALLBACK, NMS_1)
+    fallback_crops, fallback_dropped = _stage1_collect_product_label_crops(
+        img,
+        fallback_preds,
+        allow_orientation_variants=True,
+        require_field_evidence=True,
+        max_crops=STAGE1_FALLBACK_MAX_CROPS,
+    )
+    if fallback_crops:
+        return fallback_crops, fallback_dropped
     return crops, dropped
 
 
@@ -3336,7 +3405,8 @@ def _stage2_infer_field_preds(img, label_img_path, debug_suffix=""):
         )
 
     model_preds, part_no_preds, sn_preds = _stage2_parse_preds(preds1)
-    if model_preds and part_no_preds and sn_preds:
+    model_required = stage2_save_model_crops_enabled()
+    if part_no_preds and sn_preds and (model_preds or not model_required):
         return preds1 or []
 
     preds2 = infer_with_resize(img, label_img_path, MODEL2_ID, max_side=2048)
@@ -3688,6 +3758,14 @@ def stage2_crop_fields(label_img_path):
             part_no_raw_codes = recovered_raw_codes
             part_no_codes = recovered_codes
             out["part_no_crop_source"] = "original_context"
+    if (
+        not part_no_codes
+        and selected.get("sn_crop") is None
+        and selected.get("model_crop") is None
+    ):
+        fail_path = os.path.join(FAILED_DIR, f"{base}__FAILED.png")
+        save_png_required(fail_path, img, "failed label crop")
+        return None
     should_save_part_no_crop = part_no_crop is not None and (bool(part_no_codes) or not part_no_raw_codes)
     if should_save_part_no_crop:
         pp = os.path.join(OUT_PART_NO_DIR, f"{base}__part_no.png")
@@ -3712,6 +3790,7 @@ def stage2_crop_fields(label_img_path):
     if not out["model_path"] and not out["sn_path"] and not out["part_no_path"]:
         fail_path = os.path.join(FAILED_DIR, f"{base}__FAILED.png")
         save_png_required(fail_path, img, "failed label crop")
+        return None
 
     return out
 

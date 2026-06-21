@@ -22,6 +22,14 @@ The Huawei label field that carries the device model value, usually near a model
 
 Model recognition may use PartNo evidence from the same label when the model field itself is incomplete or when the model barcode is not the first barcode decoded.
 
+### PartNo Model Map
+
+A label-local lookup that records which Model Field value was learned for a decoded PartNo Field value, so later labels with the same PartNo can reuse that model without treating OCR as a barcode hit.
+
+### Delayed Model Crop
+
+A Stage2 Model Field crop created from an existing Stage1 Label Crop only after earlier label-local barcode or PartNo evidence is missing or insufficient.
+
 ### SN Field
 
 The Huawei label field made of visible `S/N:` text, the printed serial value, and the paired serial-number barcode.

@@ -288,6 +288,10 @@ def _env_flag_default(name: str, default: bool) -> bool:
     return default
 
 
+def raw_result_fields_are_masked() -> bool:
+    return not (_env_flag("SCAN2_UNSAFE_RAW") or _env_flag("HUAWEIOCR_UNSAFE_RAW"))
+
+
 def _env_int(names, default: int) -> int:
     for name in names:
         raw = os.environ.get(name)
@@ -575,6 +579,7 @@ PART_NO_MODEL_MAP = {
     "50087288": "AP162E",
     "50087289": "AP162E",
     "50087290": "AP162E",
+    "50010838": "AR180",
     "50010843": "AR180Pro",
     "98012123": "S380-L4P1T",
     "98012125": "S380-S8P2T",
@@ -588,7 +593,7 @@ PART_NO_MODEL_MAP_CACHE = {}
 KNOWN_MODEL_CODES = set(PART_NO_MODEL_MAP.values())
 KNOWN_MODEL_CODES_UPPER = {code.upper() for code in KNOWN_MODEL_CODES}
 MODEL_CODE_ACCEPT_RE = re.compile(
-    r"(?:AP[0-9]{3,4}E|AR[0-9]{3,4}PRO|S[0-9]{3,4}-[A-Z0-9]+)",
+    r"(?:AP[0-9]{3,4}E|AR[0-9]{3,4}(?:PRO)?|S[0-9]{3,4}-[A-Z0-9]+)",
     re.I,
 )
 
@@ -1048,6 +1053,9 @@ def try_model_from_part_no_crop(
         model, part_no = model_from_part_no_hint([text, concat])
         if model:
             return model, f"[PART_NO_OCR] {part_no}", "part_no_ocr"
+        model = extract_model_from_ocr_result(text, concat)
+        if model:
+            return model, f"[PART_NO_OCR_MODEL] {model}", "part_no_ocr_model"
         if text or concat:
             return "", text or concat, "part_no_ocr_no_match"
 
@@ -1695,14 +1703,34 @@ def _load_manifest_records():
                 record["part_no_codes"] = part_no_codes
             original_path = item.get("original_image_path") or item.get("image_path")
             if original_path:
-                if not os.path.isfile(original_path):
-                    raise FileNotFoundError(f"Manifest original image is missing at {path}:{line_no}: {original_path}")
                 record["original_image_path"] = original_path
     return records
 
 
 def delayed_model_crop_enabled() -> bool:
     return _env_flag_default("SCAN2_DELAYED_MODEL_CROP", True)
+
+
+def _safe_label_id_for_filename(label_id: str) -> str:
+    value = str(label_id or "").strip()
+    if not value:
+        return ""
+    if "/" in value or "\\" in value or ":" in value:
+        return ""
+    if value in {".", ".."} or ".." in value:
+        return ""
+    if os.path.basename(value) != value:
+        return ""
+    return value
+
+
+def _path_within_dir(path: str, directory: str) -> bool:
+    try:
+        directory_abs = os.path.abspath(directory)
+        path_abs = os.path.abspath(path)
+        return os.path.commonpath([directory_abs, path_abs]) == directory_abs
+    except ValueError:
+        return False
 
 
 def delayed_model_crop_from_label(item: dict, label_id: str) -> str:
@@ -1714,7 +1742,15 @@ def delayed_model_crop_from_label(item: dict, label_id: str) -> str:
     if not label_path or not os.path.isfile(label_path):
         return ""
 
-    out_path = os.path.join(MODEL_CROP_DIR, f"{label_id}__model.png")
+    safe_label_id = _safe_label_id_for_filename(label_id)
+    if not safe_label_id:
+        append_debug(f"[MODEL][DELAYED_CROP][REJECT] unsafe label_id={label_id!r}")
+        return ""
+
+    out_path = os.path.join(MODEL_CROP_DIR, f"{safe_label_id}__model.png")
+    if not _path_within_dir(out_path, MODEL_CROP_DIR):
+        append_debug(f"[MODEL][DELAYED_CROP][REJECT] escaped output path for label_id={label_id!r}")
+        return ""
     if os.path.isfile(out_path):
         item["model_path"] = out_path
         return out_path
@@ -1775,7 +1811,7 @@ def assign_part_no_model_result(
 # ===================== MAIN =====================
 def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level="info"):
     set_log_level(log_level)
-    mask_raw = _env_flag("SCAN2_MASK_RAW") and not _env_flag("SCAN2_UNSAFE_RAW")
+    mask_raw = raw_result_fields_are_masked()
     model_barcode = _env_flag_default("SCAN2_MODEL_BARCODE", True)
     ocr_fallback = scan_ocr_fallback_enabled()
     part_no_ocr_fallback = part_no_ocr_fallback_enabled()
@@ -1966,7 +2002,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         sn_code, sn_raw, sn_src, sn_meta, barcode_report = result
         sn_reports[key] = barcode_report
         sn_results[key] = (sn_code, sn_raw, sn_src, sn_meta)
-        if ocr_fallback and not sn_code and item.get("sn_path"):
+        if ocr_fallback and not sn_code and (item.get("sn_path") or item.get("label_crop")):
             ocr_jobs.append(("sn", key, item, barcode_report))
 
     if part_no_ocr_fallback:
@@ -2154,11 +2190,12 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             )
         current = sn_results.get(key, ("", "", "missing", {}))
         sn_meta = current[3] if len(current) > 3 else {}
+        sn_ocr_path = item.get("sn_path") or item.get("label_crop", "")
         return (
             kind,
             key,
             recognize_sn_ocr_after_barcode(
-                item.get("sn_path", ""),
+                sn_ocr_path,
                 label_id=key,
                 barcode_report=barcode_report or sn_reports.get(key),
                 meta=sn_meta,

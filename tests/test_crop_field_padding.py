@@ -640,6 +640,40 @@ class CropFieldPaddingTests(unittest.TestCase):
         self.assertGreater(candidate["part_no_crop"].shape[0], part_no_crop.shape[0])
         self.assertLess((candidate["part_no_crop"][-8:, :, 0] < 128).mean(), 0.01)
 
+    def test_stage2_infer_skips_high_res_pass_when_required_fields_are_found(self):
+        img = np.full((160, 380, 3), 255, dtype=np.uint8)
+        preds1 = [
+            {"class": crop.MODEL2_PART_NO_CLASS, "x": 120, "y": 50, "width": 160, "height": 42},
+            {"class": crop.MODEL2_SN_CLASS, "x": 135, "y": 120, "width": 190, "height": 44},
+        ]
+
+        with mock.patch.dict(crop.os.environ, {"CROP_STAGE2_SAVE_MODEL": "0"}):
+            with mock.patch.object(crop, "infer_with_resize", return_value=preds1) as infer_mock:
+                out = crop._stage2_infer_field_preds(img, "label.png")
+
+        self.assertEqual(out, preds1)
+        self.assertEqual(infer_mock.call_count, 1)
+        self.assertEqual(infer_mock.call_args.kwargs["max_side"], 1600)
+
+    def test_stage2_infer_keeps_high_res_pass_when_model_crop_is_required(self):
+        img = np.full((160, 380, 3), 255, dtype=np.uint8)
+        preds1 = [
+            {"class": crop.MODEL2_PART_NO_CLASS, "x": 120, "y": 50, "width": 160, "height": 42},
+            {"class": crop.MODEL2_SN_CLASS, "x": 135, "y": 120, "width": 190, "height": 44},
+        ]
+        preds2 = [
+            {"class": crop.MODEL2_MODEL_CLASS, "x": 125, "y": 86, "width": 180, "height": 38},
+        ]
+
+        with mock.patch.dict(crop.os.environ, {"CROP_STAGE2_SAVE_MODEL": "1"}):
+            with mock.patch.object(crop, "infer_with_resize", side_effect=[preds1, preds2]) as infer_mock:
+                out = crop._stage2_infer_field_preds(img, "label.png")
+
+        self.assertEqual(out, preds1 + preds2)
+        self.assertEqual(infer_mock.call_count, 2)
+        self.assertEqual(infer_mock.call_args_list[0].kwargs["max_side"], 1600)
+        self.assertEqual(infer_mock.call_args_list[1].kwargs["max_side"], 2048)
+
     def test_stage2_part_no_detector_tries_wider_when_direct_barcode_is_cut(self):
         img = np.full((150, 320, 3), 255, dtype=np.uint8)
         crop.cv2.putText(
@@ -1132,6 +1166,71 @@ class CropFieldPaddingTests(unittest.TestCase):
             self.assertEqual(out["part_no"], "")
             self.assertTrue(os.path.isfile(out["sn_path"]))
 
+    def test_stage2_drops_candidate_without_any_field_crop(self):
+        img = np.full((120, 320, 3), 255, dtype=np.uint8)
+
+        with tempfile.TemporaryDirectory() as root:
+            label_path = os.path.join(root, "input__label_1.png")
+            crop.cv2.imwrite(label_path, img)
+            crop.configure_paths(input_dir=root, out_dir=root)
+            crop.ensure_dirs(clean=True)
+            candidate = {
+                "score": 100.0,
+                "rotation": 0,
+                "model_crop": None,
+                "model_kind": "",
+                "model_conf": None,
+                "sn_crop": None,
+                "sn_conf": None,
+                "part_no_crop": None,
+                "part_no_conf": None,
+                "part_no_kind": "",
+                "part_no_ok": False,
+                "part_no_codes": [],
+                "model_required": False,
+            }
+            with mock.patch.dict(crop.os.environ, {"CROP_STAGE2_SAVE_MODEL": "0"}):
+                with mock.patch.object(crop, "_stage2_infer_field_preds", return_value=[]):
+                    with mock.patch.object(crop, "_stage2_build_candidate", return_value=candidate):
+                        with mock.patch.object(crop, "_stage2_should_retry_rot180", return_value=False):
+                            out = crop.stage2_crop_fields(label_path)
+
+            self.assertIsNone(out)
+
+    def test_stage2_drops_part_no_scan_miss_without_sn_or_model_crop(self):
+        img = np.full((120, 320, 3), 255, dtype=np.uint8)
+        part_no_crop = img[5:55, 20:180].copy()
+
+        with tempfile.TemporaryDirectory() as root:
+            label_path = os.path.join(root, "input__label_1.png")
+            crop.cv2.imwrite(label_path, img)
+            crop.configure_paths(input_dir=root, out_dir=root)
+            crop.ensure_dirs(clean=True)
+            candidate = {
+                "score": 100.0,
+                "rotation": 0,
+                "model_crop": None,
+                "model_kind": "",
+                "model_conf": None,
+                "sn_crop": None,
+                "sn_conf": None,
+                "part_no_crop": part_no_crop,
+                "part_no_conf": 0.42,
+                "part_no_kind": "detector",
+                "part_no_ok": False,
+                "part_no_codes": [],
+                "model_required": False,
+            }
+            with mock.patch.dict(crop.os.environ, {"CROP_STAGE2_SAVE_MODEL": "0"}):
+                with mock.patch.object(crop, "_stage2_infer_field_preds", return_value=[]):
+                    with mock.patch.object(crop, "_stage2_build_candidate", return_value=candidate):
+                        with mock.patch.object(crop, "_stage2_should_retry_rot180", return_value=False):
+                            with mock.patch.object(crop, "decode_raw_part_no_crop", return_value=[]):
+                                out = crop.stage2_crop_fields(label_path)
+
+            self.assertIsNone(out)
+            self.assertFalse(os.path.exists(os.path.join(crop.OUT_PART_NO_DIR, "input__label_1__part_no.png")))
+
     def test_stage2_recovers_part_no_from_original_context_when_label_top_is_cut(self):
         original = np.full((320, 560, 3), 255, dtype=np.uint8)
         crop.cv2.rectangle(original, (30, 48), (520, 285), (0, 0, 0), 2)
@@ -1301,6 +1400,95 @@ class CropFieldPaddingTests(unittest.TestCase):
 
         self.assertFalse(crop.stage1_is_product_label_crop(vertical))
         self.assertFalse(crop.stage1_is_product_label_crop(superwide))
+
+    def test_stage1_collect_uses_validated_low_confidence_fallback(self):
+        img = np.full((800, 1000, 3), 255, dtype=np.uint8)
+        product_crop = np.full((260, 480, 3), 255, dtype=np.uint8)
+        draw_top_right_product_mark(product_crop)
+        field_preds = [
+            {"class": crop.MODEL2_PART_NO_CLASS, "x": 110, "y": 45, "width": 160, "height": 40},
+            {"class": crop.MODEL2_SN_CLASS, "x": 300, "y": 84, "width": 190, "height": 44},
+        ]
+        pred = {
+            "x": 500,
+            "y": 400,
+            "width": 520,
+            "height": 320,
+            "class": crop.MODEL1_LABEL_CLASS,
+            "confidence": crop.MIN_CONF_1 - 0.10,
+        }
+
+        with mock.patch.object(crop, "crop_from_pred", return_value=product_crop):
+            with mock.patch.object(crop, "infer_with_resize", return_value=field_preds):
+                out, dropped = crop._stage1_collect_label_crops(img, [pred])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(dropped, 0)
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+
+    def test_stage1_collect_rejects_low_confidence_candidate_without_field_evidence(self):
+        img = np.full((800, 1000, 3), 255, dtype=np.uint8)
+        product_like_crop = np.full((260, 480, 3), 255, dtype=np.uint8)
+        draw_top_right_product_mark(product_like_crop)
+        pred = {
+            "x": 500,
+            "y": 400,
+            "width": 520,
+            "height": 320,
+            "class": crop.MODEL1_LABEL_CLASS,
+            "confidence": crop.MIN_CONF_1 - 0.10,
+        }
+
+        with mock.patch.object(crop, "crop_from_pred", return_value=product_like_crop):
+            with mock.patch.object(crop, "infer_with_resize", return_value=[]):
+                out, _dropped = crop._stage1_collect_label_crops(img, [pred])
+
+        self.assertEqual(out, [])
+
+    def test_stage1_collect_rotates_vertical_fallback_candidate(self):
+        img = np.full((800, 1000, 3), 255, dtype=np.uint8)
+        product_crop = np.full((260, 480, 3), 255, dtype=np.uint8)
+        draw_top_right_product_mark(product_crop)
+        vertical_crop = crop.rotate_image(product_crop, 90)
+        field_preds = [
+            {"class": crop.MODEL2_PART_NO_CLASS, "x": 110, "y": 45, "width": 160, "height": 40},
+            {"class": crop.MODEL2_SN_CLASS, "x": 300, "y": 84, "width": 190, "height": 44},
+        ]
+        pred = {
+            "x": 500,
+            "y": 400,
+            "width": 320,
+            "height": 520,
+            "class": crop.MODEL1_LABEL_CLASS,
+            "confidence": 0.95,
+        }
+
+        self.assertFalse(crop.stage1_is_product_label_crop(vertical_crop))
+        with mock.patch.object(crop, "crop_from_pred", return_value=vertical_crop):
+            with mock.patch.object(crop, "infer_with_resize", return_value=field_preds):
+                out, dropped = crop._stage1_collect_label_crops(img, [pred])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(dropped, 0)
+        self.assertGreater(out[0].shape[1] / float(out[0].shape[0]), crop.STAGE1_MIN_ASPECT)
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+
+    def test_stage1_collect_rejects_invalid_low_confidence_fallback(self):
+        img = np.full((800, 1000, 3), 255, dtype=np.uint8)
+        invalid_crop = np.full((260, 480, 3), 255, dtype=np.uint8)
+        pred = {
+            "x": 500,
+            "y": 400,
+            "width": 520,
+            "height": 320,
+            "class": crop.MODEL1_LABEL_CLASS,
+            "confidence": crop.MIN_CONF_1 - 0.10,
+        }
+
+        with mock.patch.object(crop, "crop_from_pred", return_value=invalid_crop):
+            out, _dropped = crop._stage1_collect_label_crops(img, [pred])
+
+        self.assertEqual(out, [])
 
     def test_stage1_orientation_keeps_normal_top_right_product_mark(self):
         img = np.full((260, 480, 3), 255, dtype=np.uint8)
@@ -1499,6 +1687,58 @@ class CropFieldPaddingTests(unittest.TestCase):
         self.assertLess(out.shape[0], 360)
         self.assertLess(out.shape[1], 590)
         self.assertGreater(np.count_nonzero(out[-52:, :, :] < 80), 80)
+
+    def test_stage1_tighten_preserves_side_field_context(self):
+        img = np.full((340, 1000, 3), 245, dtype=np.uint8)
+        img[20:320, 20:960] = 255
+        crop.cv2.rectangle(img, (25, 32), (515, 300), (0, 0, 0), 2)
+        crop.cv2.putText(
+            img,
+            "Part No.: 98012123",
+            (48, 70),
+            crop.cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 0),
+            2,
+            crop.cv2.LINE_AA,
+        )
+        crop.cv2.putText(
+            img,
+            "Model: S380-L4P1T",
+            (48, 132),
+            crop.cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 0),
+            2,
+            crop.cv2.LINE_AA,
+        )
+        draw_1d_barcode(img, 48, 84, 350, 120, step=8, bar_width=3)
+        draw_1d_barcode(img, 540, 112, 810, 158, step=8, bar_width=3)
+        crop.cv2.putText(
+            img,
+            "SN: 4E25A0068800",
+            (540, 92),
+            crop.cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 0),
+            2,
+            crop.cv2.LINE_AA,
+        )
+        for x1, y1, x2, y2 in (
+            (825, 38, 878, 72),
+            (890, 40, 930, 72),
+            (835, 90, 878, 122),
+            (895, 92, 942, 126),
+        ):
+            img[y1:y2, x1:x2] = 0
+
+        self.assertTrue(crop.stage1_is_product_label_crop(img))
+
+        out = crop.stage1_tighten_label_crop(img)
+
+        self.assertIsNotNone(out)
+        self.assertGreater(out.shape[1], 850)
+        self.assertTrue(crop.stage1_is_product_label_crop(out))
 
 
 if __name__ == "__main__":

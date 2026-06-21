@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 try:
@@ -18,7 +20,7 @@ except Exception:  # pragma: no cover
 
 
 SN20_BODY_PATTERN = r"2[0-9]{9,10}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{6,7}"
-SN12_BODY_PATTERN = r"4E[0-9]{2}[0-9A-Z]{8}"
+SN12_BODY_PATTERN = r"4E[0-9]{2}(?:[0-9]{8}|[A-Z][0-9]{7})"
 SN20_RE = re.compile(rf"({SN20_BODY_PATTERN})")
 SN12_RE = re.compile(rf"({SN12_BODY_PATTERN})")
 SERIAL_FIELD_SN_RE = re.compile(rf"S({SN20_BODY_PATTERN}|{SN12_BODY_PATTERN})(?![0-9A-Z])")
@@ -37,6 +39,10 @@ DEFAULT_MIN_BARCODE_HEIGHT = 22
 DEFAULT_BLUR_VARIANCE = 18.0
 DEFAULT_DESKEW_ANGLES = (0, -4, 4, -8, 8)
 DEFAULT_DECODERS = ("pyzbar", "zxingcpp")
+DEFAULT_PIXEL_REPAIR_TEMPLATE = "4E26########,###########ER@######,###########ES#######"
+DEFAULT_PIXEL_REPAIR_LENGTHS = "12,20"
+DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE = 0.24
+_PIXEL_REPAIR_LOCK = threading.Lock()
 
 
 def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
@@ -48,6 +54,24 @@ def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
     except ValueError:
         return default
     return max(min_value, value)
+
+
+def _env_float(name: str, default: float, *, min_value: float = 0.0) -> float:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(min_value, value)
+
+
+def _env_flag_default(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _env_decoder_names() -> tuple[str, ...]:
@@ -654,15 +678,15 @@ def diagnose_quality(image: Any) -> list[str]:
     return issues
 
 
-def generate_candidate_images(
+def iter_candidate_images(
     image: Any,
     source: str,
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
-) -> list[CandidateImage]:
+) -> Iterable[CandidateImage]:
     if image is None:
-        return []
+        return
 
-    candidates: list[CandidateImage] = []
+    yielded = 0
     bases = _base_candidate_images(image, source)
     variants = [
         ("raw", lambda img: img),
@@ -700,20 +724,29 @@ def generate_candidate_images(
             deskewed = _deskew(base_img, angle)
             scaled = _resize(deskewed, scale)
             variant_img = variant_fn(scaled)
-            candidates.append(
-                CandidateImage(
-                    image=variant_img,
-                    source=source,
-                    source_region=source_region,
-                    variant=variant_name,
-                    rotation=base_rotation,
-                    deskew_angle=angle,
-                    rect=rect,
-                )
+            yield CandidateImage(
+                image=variant_img,
+                source=source,
+                source_region=source_region,
+                variant=variant_name,
+                rotation=base_rotation,
+                deskew_angle=angle,
+                rect=rect,
             )
-            if len(candidates) >= max_candidates:
-                return candidates
-    return candidates
+            yielded += 1
+            if yielded >= max_candidates:
+                return
+
+
+def generate_candidate_images(
+    image: Any,
+    source: str,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
+) -> list[CandidateImage]:
+    return list(iter_candidate_images(image, source, max_candidates=max_candidates))
+
+
+_DEFAULT_GENERATE_CANDIDATE_IMAGES = generate_candidate_images
 
 
 def _dump_candidate(debug_dir: str, label_id: str, index: int, candidate: CandidateImage) -> None:
@@ -780,23 +813,31 @@ def _decode_cli(candidate: CandidateImage) -> tuple[list[DecoderResult], list[st
         return [], [f"barcode_module_unavailable:{exc.__class__.__name__}"]
 
     raw_results: list[dict[str, Any]] = []
+    decoder_errors: list[str] = []
     try:
         if hasattr(barcode_module, "decode_with_cli"):
             raw_results = barcode_module.decode_with_cli(
                 candidate.image,
                 f"{candidate.source_region}:{candidate.variant}",
+                decoder_errors=decoder_errors,
             )
         if not raw_results and hasattr(barcode_module, "decode_cli_multi"):
             raw_results = barcode_module.decode_cli_multi(
                 candidate.image,
                 f"{candidate.source_region}:{candidate.variant}",
                 {"limit": 4, "calls": 0},
+                decoder_errors=decoder_errors,
             )
         elif hasattr(barcode_module, "decode_small_patch"):
             info = barcode_module.decode_small_patch(candidate.image)
             raw_results = list(info.get("results", [])) if isinstance(info, dict) else []
+            if isinstance(info, dict):
+                for error in info.get("decoder_errors", []):
+                    if error and error not in decoder_errors:
+                        decoder_errors.append(error)
     except Exception as exc:
-        return [], [f"BarcodeReaderCLI_error:{exc.__class__.__name__}"]
+        decoder_errors.append(f"BarcodeReaderCLI_error:{exc.__class__.__name__}")
+        return [], decoder_errors
 
     results: list[DecoderResult] = []
     for item in raw_results:
@@ -815,7 +856,7 @@ def _decode_cli(candidate: CandidateImage) -> tuple[list[DecoderResult], list[st
                 barcode_type=item.get("type", "CLI") if isinstance(item, dict) else "CLI",
             )
         )
-    return results, []
+    return results, decoder_errors
 
 
 def _decode_zxingcpp(candidate: CandidateImage) -> tuple[list[DecoderResult], list[str]]:
@@ -889,6 +930,75 @@ def _fallback_decode_path(
     return results, 1, []
 
 
+def _pixel_repair_decode_path(source: str, path: str) -> tuple[list[DecoderResult], int, list[str]]:
+    if not _env_flag_default("SN_BARCODE_PIXEL_REPAIR", True):
+        return [], 0, []
+    allowed_sources = {
+        part.strip().lower()
+        for part in os.environ.get("SN_BARCODE_PIXEL_REPAIR_SOURCES", "sn").split(",")
+        if part.strip()
+    }
+    if str(source).lower() not in allowed_sources:
+        return [], 0, []
+    if not path or not os.path.exists(path):
+        return [], 0, []
+
+    try:
+        import linear_barcode_repair
+    except Exception as exc:  # pragma: no cover - depends on optional local module/imports
+        return [], 0, [f"code128_pixel_repair_unavailable:{exc.__class__.__name__}"]
+
+    mode = os.environ.get("SN_BARCODE_REPAIR_CHARSET", "alnum").strip().lower() or "alnum"
+    lengths = os.environ.get("SN_BARCODE_REPAIR_LENGTHS", DEFAULT_PIXEL_REPAIR_LENGTHS).strip()
+    template_spec = os.environ.get("SN_BARCODE_REPAIR_TEMPLATE", DEFAULT_PIXEL_REPAIR_TEMPLATE).strip()
+    regex = os.environ.get("SN_BARCODE_REPAIR_REGEX", "").strip()
+    max_profiles = _env_int("SN_BARCODE_REPAIR_MAX_PROFILES", 6)
+    accept_score = _env_float(
+        "SN_BARCODE_REPAIR_ACCEPT_SCORE",
+        DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE,
+    )
+
+    try:
+        with _PIXEL_REPAIR_LOCK:
+            templates = linear_barcode_repair.parse_templates(template_spec)
+            compiled_regex = linear_barcode_repair.compile_regex_or_empty(regex)
+            candidates, _profiles, _strategy = linear_barcode_repair.decode_image(
+                Path(path),
+                mode=mode,
+                lengths_arg=lengths,
+                regex=compiled_regex,
+                templates=templates,
+                accept_score=accept_score,
+                max_profiles=max_profiles,
+            )
+    except Exception as exc:
+        return [], 1, [f"code128_pixel_repair_error:{exc.__class__.__name__}"]
+
+    if not candidates:
+        return [], 1, []
+
+    best = candidates[0]
+    score = float(getattr(best, "score", 1.0))
+    if score > accept_score:
+        return [], 1, [f"code128_pixel_repair_score_reject:{score:.6f}"]
+
+    raw_text = str(getattr(best, "text", "") or "")
+    if not extract_sn_from_payload(raw_text):
+        return [], 1, ["code128_pixel_repair_parse_failure"]
+
+    return [
+        DecoderResult(
+            decoder_name="code128_pixel_repair",
+            raw_text=raw_text,
+            source=source,
+            source_region=f"{source}.code128_pixel_repair",
+            rotation=0,
+            confidence=max(0.0, 1.0 - score),
+            barcode_type="CODE128",
+        )
+    ], 1, []
+
+
 def scan_sn_barcodes(
     sources: Iterable[tuple[str, str]],
     *,
@@ -913,29 +1023,104 @@ def scan_sn_barcodes(
     has_primary_sn_source = any(str(source).lower() == "sn" and path for source, path in source_items)
     decoders = _selected_decoders()
 
-    for source, path in source_items:
+    def append_results(results: Iterable[DecoderResult]) -> None:
+        for result in results:
+            key = (result.raw_text, result.source_region, result.decoder_name)
+            if key in seen_results:
+                continue
+            seen_results.add(key)
+            all_results.append(result)
+
+    states: list[dict[str, Any]] = []
+
+    for order, (source, path) in enumerate(source_items):
         if not path:
             continue
-        image = _read_image(path)
-        if image is None:
-            fallback, fallback_attempts, errors = _fallback_decode_path(source, path, fallback_path_decoder)
-            attempts += fallback_attempts
-            decoder_errors.extend(errors)
-            all_results.extend(fallback)
-            continue
-
-        candidates = generate_candidate_images(image, source, max_candidates=max_candidates)
         source_budget = decoder_attempt_budget_for_source(
             source,
             max_decoder_attempts,
             has_primary_sn_source=has_primary_sn_source,
         )
-        source_attempts = 0
-        for index, candidate in enumerate(candidates, 1):
-            if source_attempts >= source_budget:
-                break
+        states.append(
+            {
+                "order": order,
+                "source": source,
+                "path": path,
+                "budget": source_budget,
+                "attempts": 0,
+                "index": 0,
+                "candidates": None,
+                "initialized": False,
+                "exhausted": False,
+                "fallback_done": False,
+            }
+        )
+
+    def run_fallback(state: dict[str, Any]) -> None:
+        nonlocal attempts
+        if state["fallback_done"]:
+            return
+        fallback, fallback_attempts, errors = _fallback_decode_path(
+            state["source"],
+            state["path"],
+            fallback_path_decoder,
+        )
+        attempts += fallback_attempts
+        decoder_errors.extend(errors)
+        append_results(fallback)
+        if fallback_path_decoder is not None:
+            partial = select_sn_from_decoder_results(all_results)
+            if partial.status not in {"hit", "ambiguous"}:
+                repair, repair_attempts, repair_errors = _pixel_repair_decode_path(
+                    state["source"],
+                    state["path"],
+                )
+                attempts += repair_attempts
+                decoder_errors.extend(repair_errors)
+                append_results(repair)
+        state["fallback_done"] = True
+
+    def initialize_state(state: dict[str, Any]) -> None:
+        if state["initialized"]:
+            return
+        state["initialized"] = True
+        image = _read_image(state["path"])
+        if image is None:
+            state["exhausted"] = True
+            run_fallback(state)
+            return
+        if generate_candidate_images is _DEFAULT_GENERATE_CANDIDATE_IMAGES:
+            candidates = iter_candidate_images(image, state["source"], max_candidates=max_candidates)
+        else:
+            candidates = generate_candidate_images(image, state["source"], max_candidates=max_candidates)
+        state["candidates"] = iter(candidates)
+
+    def finalize_prior_fallbacks(order: int) -> None:
+        for prior_state in states:
+            if prior_state["order"] >= order:
+                continue
+            run_fallback(prior_state)
+
+    while True:
+        progressed = False
+        for state in states:
+            if state["exhausted"] or state["attempts"] >= state["budget"]:
+                state["exhausted"] = True
+                run_fallback(state)
+                continue
+            initialize_state(state)
+            if state["exhausted"]:
+                continue
+            try:
+                candidate = next(state["candidates"])
+            except StopIteration:
+                state["exhausted"] = True
+                run_fallback(state)
+                continue
+            progressed = True
+            state["index"] += 1
             if debug_dir:
-                _dump_candidate(debug_dir, label_id or source, index, candidate)
+                _dump_candidate(debug_dir, label_id or state["source"], state["index"], candidate)
             issues = diagnose_quality(candidate.image)
             if issues:
                 quality_issues.append(
@@ -949,35 +1134,38 @@ def scan_sn_barcodes(
                 )
 
             for decoder in decoders:
-                if source_attempts >= source_budget:
+                if state["attempts"] >= state["budget"]:
                     break
                 attempts += 1
-                source_attempts += 1
+                state["attempts"] += 1
                 decoded, errors = decoder(candidate)
                 decoder_errors.extend(errors)
-                for result in decoded:
-                    key = (result.raw_text, result.source_region, result.decoder_name)
-                    if key in seen_results:
-                        continue
-                    seen_results.add(key)
-                    all_results.append(result)
+                append_results(decoded)
 
                 if early_exit:
                     partial = select_sn_from_decoder_results(all_results)
                     if partial.status in {"hit", "ambiguous"}:
+                        finalize_prior_fallbacks(state["order"])
+                        partial = select_sn_from_decoder_results(all_results)
                         partial.attempts = attempts
                         partial.quality_issues = quality_issues
                         partial.decoder_errors = decoder_errors
                         return partial
 
-        fallback, fallback_attempts, errors = _fallback_decode_path(source, path, fallback_path_decoder)
-        attempts += fallback_attempts
-        decoder_errors.extend(errors)
-        for result in fallback:
-            key = (result.raw_text, result.source_region, result.decoder_name)
-            if key not in seen_results:
-                seen_results.add(key)
-                all_results.append(result)
+            if str(state["source"]).lower() == "sn" and not state["fallback_done"]:
+                run_fallback(state)
+                if early_exit:
+                    partial = select_sn_from_decoder_results(all_results)
+                    if partial.status in {"hit", "ambiguous"}:
+                        finalize_prior_fallbacks(state["order"])
+                        partial = select_sn_from_decoder_results(all_results)
+                        partial.attempts = attempts
+                        partial.quality_issues = quality_issues
+                        partial.decoder_errors = decoder_errors
+                        return partial
+
+        if not progressed:
+            break
 
     report = select_sn_from_decoder_results(all_results)
     report.attempts = attempts

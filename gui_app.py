@@ -493,7 +493,9 @@ class App(BaseTk):
             self._crop_module = crop_module
             self._scan2_module = scan2_module
             input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
-            input_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
+            run_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
+            input_dir = run_dir
+            out_dir = run_dir
 
             self.write_log("[1/4] 准备输入目录")
             self.write_log(f"已拷贝 {len(copied_records)} 个图片。")
@@ -504,7 +506,7 @@ class App(BaseTk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log("[2/4] 运行裁剪：大图 → 标签小图 → 型号/SN 小图")
-                crop_stats = crop_module.main(input_dir=input_dir, clean=True)
+                crop_stats = crop_module.main(input_dir=input_dir, out_dir=out_dir)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
                     raise RuntimeError("未生成任何标签裁剪图，已停止识别。")
                 if crop_stats.get("manifest_rows", 0) <= 0:

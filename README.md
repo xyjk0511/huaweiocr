@@ -36,6 +36,7 @@ Results are written under `runs/`. If output folders already exist, a per-run si
 
 - `stage1_labels/` or `stage1_labels_run_*`
 - `stage2_fields/model/`
+- `stage2_fields/part_no/`
 - `stage2_fields/sn/`
 - `stage2_fields/manifest.jsonl`
 - `stage2_fields/model_sn_ocr.jsonl`

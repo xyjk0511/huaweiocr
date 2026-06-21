@@ -1,5 +1,7 @@
 import json
+import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -13,6 +15,93 @@ import barcode as barcode_module
 import sn_barcode
 import validate_sn_barcodes
 from tests.test_locked_output_dirs import _import_scan2
+
+
+class BarcodeDecoderReliabilityTest(unittest.TestCase):
+    def test_barcode_module_import_survives_missing_pyzbar(self):
+        module_name = "barcode_without_pyzbar_test"
+        module_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "barcode.py")
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+
+        with mock.patch.dict(
+            sys.modules,
+            {"cv2": cv2, "numpy": np, "pyzbar": None, "pyzbar.pyzbar": None},
+        ):
+            try:
+                spec.loader.exec_module(module)
+                errors = []
+                img = np.full((40, 160), 255, dtype=np.uint8)
+                self.assertEqual(module.decode_with_transforms(img, "unit", decoder_errors=errors), [])
+            finally:
+                sys.modules.pop(module_name, None)
+
+        self.assertTrue(any(err.startswith("decoder_unavailable:pyzbar:") for err in errors))
+
+    def test_cli_infra_failures_are_reported_separately_from_decoder_miss(self):
+        cases = [
+            (
+                FileNotFoundError("missing exe"),
+                "BarcodeReaderCLI_file_not_found:",
+            ),
+            (
+                subprocess.TimeoutExpired(["BarcodeReaderCLI.exe"], 0.25),
+                "BarcodeReaderCLI_timeout:",
+            ),
+            (
+                subprocess.CompletedProcess(
+                    ["BarcodeReaderCLI.exe"],
+                    7,
+                    stdout="",
+                    stderr="license failure",
+                ),
+                "BarcodeReaderCLI_error:returncode=7 stderr=license failure",
+            ),
+        ]
+
+        for side_effect, expected in cases:
+            with self.subTest(expected=expected):
+                errors = []
+                barcode_module._CLI_UNAVAILABLE = False
+                with mock.patch.object(barcode_module, "BARCODE_CLI_PATH", "BarcodeReaderCLI.exe"):
+                    with mock.patch.object(barcode_module.os.path, "exists", return_value=True):
+                        if isinstance(side_effect, subprocess.CompletedProcess):
+                            run_patch = mock.patch.object(barcode_module, "_run_cli", return_value=side_effect)
+                        else:
+                            run_patch = mock.patch.object(barcode_module, "_run_cli", side_effect=side_effect)
+                        with run_patch:
+                            self.assertEqual(
+                                barcode_module.read_barcodes_cli("image.png", decoder_errors=errors),
+                                [],
+                            )
+
+                self.assertTrue(
+                    any(err.startswith(expected) or err == expected for err in errors),
+                    errors,
+                )
+
+    def test_sn_cli_decoder_propagates_barcode_module_decoder_errors(self):
+        candidate = sn_barcode.CandidateImage(
+            np.full((40, 160), 255, dtype=np.uint8),
+            "sn",
+            "sn.rot0.full",
+            "raw",
+        )
+
+        def fake_decode_with_cli(_image, _tag, decoder_errors=None):
+            if decoder_errors is not None:
+                decoder_errors.append("BarcodeReaderCLI_timeout:0.25s")
+            return []
+
+        fake_barcode_module = types.SimpleNamespace(
+            decode_with_cli=fake_decode_with_cli,
+            decode_cli_multi=lambda *_args, **_kwargs: [],
+        )
+        with mock.patch.dict(sys.modules, {"barcode": fake_barcode_module}):
+            results, errors = sn_barcode._decode_cli(candidate)
+
+        self.assertEqual(results, [])
+        self.assertIn("BarcodeReaderCLI_timeout:0.25s", errors)
 
 
 class SnBarcodeSelectionTest(unittest.TestCase):
@@ -40,6 +129,10 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(
             sn_barcode.extract_sn_from_payload("SN:4E25A0170000"),
             "4E25A0170000",
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("4E2630067512"),
+            "4E2630067512",
         )
         self.assertEqual(
             sn_barcode.extract_sn_from_payload("S/N 21500671494ERA050003"),
@@ -100,6 +193,7 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(sn_barcode.extract_sn_from_payload("MSN2150087147LDS4023"), "")
         self.assertEqual(sn_barcode.extract_sn_from_payload("4ERA005537EA"), "")
         self.assertEqual(sn_barcode.extract_sn_from_payload("21500872884ERA007680EAN"), "")
+        self.assertEqual(sn_barcode.extract_sn_from_payload("4E25MODELS38"), "")
 
     def test_part_and_ean_payloads_are_not_accepted_as_sn(self):
         self.assertEqual(sn_barcode.extract_sn_from_payload("98012125"), "")
@@ -371,6 +465,237 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(report.sn, "4E25A0170000")
         self.assertEqual(report.attempts, 2)
 
+    def test_sources_are_interleaved_before_exhausting_sn_candidates(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        candidates_by_source = {
+            "sn": [
+                sn_barcode.CandidateImage(img, "sn", f"sn.{index}", "raw")
+                for index in range(5)
+            ],
+            "label": [sn_barcode.CandidateImage(img, "label", "label.0", "raw")],
+        }
+        decode_order = []
+
+        def fake_candidates(_image, source, max_candidates=96):
+            return candidates_by_source[source]
+
+        def fake_decode(candidate):
+            decode_order.append(candidate.source_region)
+            if candidate.source == "label":
+                return [
+                    sn_barcode.DecoderResult(
+                        "fake",
+                        "SN:4E25A0170000",
+                        "label",
+                        candidate.source_region,
+                    )
+                ], []
+            return [], []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", side_effect=fake_candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_decode):
+                            report = sn_barcode.scan_sn_barcodes(
+                                [("sn", "sn.png"), ("label", "label.png")],
+                                max_decoder_attempts=96,
+                            )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(report.attempts, 2)
+        self.assertEqual(decode_order[:2], ["sn.0", "label.0"])
+
+    def test_label_source_is_not_initialized_when_sn_hits_first(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        read_paths = []
+
+        def fake_read(path):
+            read_paths.append(path)
+            return img
+
+        def fake_candidates(_image, source, max_candidates=96):
+            self.assertEqual(source, "sn")
+            return [sn_barcode.CandidateImage(img, "sn", "sn.0", "raw")]
+
+        def fake_decode(candidate):
+            return [
+                sn_barcode.DecoderResult(
+                    "fake",
+                    "SN:4E25A0170000",
+                    "sn",
+                    candidate.source_region,
+                )
+            ], []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", side_effect=fake_read):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", side_effect=fake_candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_decode):
+                            report = sn_barcode.scan_sn_barcodes(
+                                [("sn", "sn.png"), ("label", "label.png")],
+                                max_decoder_attempts=96,
+                            )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(read_paths, ["sn.png"])
+
+    def test_prior_source_fallback_preempts_lower_source_ambiguity(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        candidates_by_source = {
+            "sn": [sn_barcode.CandidateImage(img, "sn", "sn.0", "raw")],
+            "label": [sn_barcode.CandidateImage(img, "label", "label.0", "raw")],
+        }
+
+        def fake_candidates(_image, source, max_candidates=96):
+            return candidates_by_source[source]
+
+        def fake_decode(candidate):
+            if candidate.source == "label":
+                return [
+                    sn_barcode.DecoderResult("fake", "SN:4E25A0170001", "label", "label.0"),
+                    sn_barcode.DecoderResult("fake", "SN:4E25A0170002", "label", "label.0"),
+                ], []
+            return [], []
+
+        def fake_fallback(path):
+            if path == "sn.png":
+                return ["SN:4E25A0170000"]
+            return []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", side_effect=fake_candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_decode):
+                            report = sn_barcode.scan_sn_barcodes(
+                                [("sn", "sn.png"), ("label", "label.png")],
+                                fallback_path_decoder=fake_fallback,
+                                max_decoder_attempts=96,
+                            )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(report.source, "sn")
+        self.assertEqual(report.attempts, 2)
+
+    def test_sn_path_fallback_runs_before_label_source_after_first_sn_miss(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        read_paths = []
+        fallback_paths = []
+
+        def fake_read(path):
+            read_paths.append(path)
+            return img
+
+        def fake_candidates(_image, source, max_candidates=96):
+            return [sn_barcode.CandidateImage(img, source, f"{source}.0", "raw")]
+
+        def fake_fallback(path):
+            fallback_paths.append(path)
+            if path == "sn.png":
+                return ["SN:4E25A0170000"]
+            return []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", side_effect=fake_read):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", side_effect=fake_candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", return_value=([], [])):
+                            report = sn_barcode.scan_sn_barcodes(
+                                [("sn", "sn.png"), ("label", "label.png")],
+                                fallback_path_decoder=fake_fallback,
+                                max_decoder_attempts=96,
+                            )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(report.attempts, 2)
+        self.assertEqual(read_paths, ["sn.png"])
+        self.assertEqual(fallback_paths, ["sn.png"])
+
+    def test_sn_pixel_repair_runs_before_label_source_after_first_sn_miss(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        read_paths = []
+        template_specs = []
+
+        def fake_read(path):
+            read_paths.append(path)
+            return img
+
+        def fake_candidates(_image, source, max_candidates=96):
+            return [sn_barcode.CandidateImage(img, source, f"{source}.0", "raw")]
+
+        def fake_fallback(_path):
+            return []
+
+        fake_candidate = types.SimpleNamespace(text="4E2630137607", score=0.12)
+        fake_repair = types.SimpleNamespace(
+            parse_templates=lambda spec: template_specs.append(spec) or [[[]]],
+            compile_regex_or_empty=lambda pattern: pattern,
+            decode_image=lambda *_args, **_kwargs: ([fake_candidate], [], "template"),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SN_BARCODE_DECODERS": "pyzbar",
+                "SN_BARCODE_REPAIR_TEMPLATE": "4E26########",
+                "SN_BARCODE_REPAIR_ACCEPT_SCORE": "0.24",
+            },
+        ):
+            with mock.patch.dict(sys.modules, {"linear_barcode_repair": fake_repair}):
+                with mock.patch.object(sn_barcode.os.path, "exists", return_value=True):
+                    with mock.patch.object(sn_barcode, "_read_image", side_effect=fake_read):
+                        with mock.patch.object(sn_barcode, "generate_candidate_images", side_effect=fake_candidates):
+                            with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                                with mock.patch.object(sn_barcode, "_decode_pyzbar", return_value=([], [])):
+                                    report = sn_barcode.scan_sn_barcodes(
+                                        [("sn", "sn.png"), ("label", "label.png")],
+                                        fallback_path_decoder=fake_fallback,
+                                        max_decoder_attempts=96,
+                                    )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E2630137607")
+        self.assertEqual(report.decoder_name, "code128_pixel_repair")
+        self.assertEqual(report.source_region, "sn.code128_pixel_repair")
+        self.assertEqual(read_paths, ["sn.png"])
+        self.assertEqual(template_specs, ["4E26########"])
+
+    def test_scan_does_not_materialize_candidates_beyond_attempt_budget(self):
+        img = np.full((80, 240, 3), 255, dtype=np.uint8)
+        resize_calls = 0
+
+        def fake_resize(image, scale):
+            nonlocal resize_calls
+            resize_calls += 1
+            return image
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(
+                    sn_barcode,
+                    "_base_candidate_images",
+                    return_value=[("sn.rot0.full", img, 0, None)],
+                ):
+                    with mock.patch.object(sn_barcode, "_resize", side_effect=fake_resize):
+                        with mock.patch.object(sn_barcode, "_deskew", side_effect=lambda image, _angle: image):
+                            with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                                with mock.patch.object(sn_barcode, "_decode_pyzbar", return_value=([], [])):
+                                    report = sn_barcode.scan_sn_barcodes(
+                                        [("sn", "sn.png")],
+                                        max_candidates=96,
+                                        max_decoder_attempts=1,
+                                    )
+
+        self.assertEqual(report.status, "decoder_miss")
+        self.assertEqual(report.attempts, 1)
+        self.assertEqual(resize_calls, 1)
+
     def test_label_source_with_sn_uses_independent_decoder_attempt_cap(self):
         img = np.full((50, 120, 3), 255, dtype=np.uint8)
         candidates_by_source = {
@@ -494,6 +819,7 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         cases = {
             "50087144": "AP265E",
             "50087289": "AP162E",
+            "50010838": "AR180",
             "98012403": "S110-5T",
             "98012406": "S110-8P1T",
         }
@@ -628,6 +954,26 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertEqual(model, "AP162E")
         self.assertEqual(raw, "[PART_NO_OCR] 50087288")
         self.assertEqual(source, "part_no_ocr")
+
+    def test_part_no_crop_ocr_can_use_model_text_when_part_no_scan_misses(self):
+        scan2 = _import_scan2()
+
+        with tempfile.NamedTemporaryFile(suffix=".png") as part_no_crop:
+            with mock.patch.object(scan2, "_scan_barcode_sources", return_value=[]):
+                with mock.patch.object(
+                    scan2,
+                    "ocr_text_with_details",
+                    return_value=("Part No.: 50087149 Model: AP162E", "PartNo50087149ModelAP162E", []),
+                ):
+                    with mock.patch.object(scan2, "model_from_part_no_hint", return_value=("", "")):
+                        model, raw, source = scan2.try_model_from_part_no_crop(
+                            part_no_crop.name,
+                            use_ocr=True,
+                        )
+
+        self.assertEqual(model, "AP162E")
+        self.assertEqual(raw, "[PART_NO_OCR_MODEL] AP162E")
+        self.assertEqual(source, "part_no_ocr_model")
 
     def test_main_uses_part_no_ocr_after_part_no_barcode_miss(self):
         scan2 = _import_scan2()
@@ -1208,6 +1554,87 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertEqual(recognize_sn.call_count, 2)
         self.assertEqual([call.kwargs["original_path"] for call in recognize_sn.call_args_list], ["", ""])
 
+    def test_main_uses_label_crop_ocr_when_sn_crop_is_missing(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            label_dir = os.path.join(root, "stage1_labels")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            os.makedirs(label_dir)
+
+            label_id = "photo.jpg__label_1"
+            label_path = os.path.join(label_dir, f"{label_id}.png")
+            open(label_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": label_id, "label_crop": label_path}) + "\n")
+
+            meta = {"barcode_found": False, "ocr_text_found": False, "barcode_status": "decoder_miss"}
+            report = types.SimpleNamespace(status="decoder_miss", results=[])
+            with mock.patch.dict(os.environ, {"SCAN2_PARALLEL": "0", "SCAN2_SCAN_LABEL_WITHOUT_SN": "1"}):
+                with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("", "", "barcode_decoder_miss", meta, report)):
+                    with mock.patch.object(
+                        scan2,
+                        "recognize_sn_ocr_after_barcode",
+                        return_value=("4E25A0068800", "SN:4E25A0068800", "ocr", meta),
+                    ) as sn_ocr:
+                        stats = scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=os.path.join(root, "out.jsonl"),
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
+
+        self.assertEqual(stats["sn_success"], 1)
+        sn_ocr.assert_called_once()
+        self.assertEqual(sn_ocr.call_args.args[0], label_path)
+
+    def test_main_treats_missing_original_image_as_provenance_only(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            sn_dir = os.path.join(stage2, "sn")
+            model_dir = os.path.join(stage2, "model")
+            label_dir = os.path.join(root, "stage1_labels")
+            os.makedirs(sn_dir)
+            os.makedirs(model_dir)
+            os.makedirs(label_dir)
+
+            label_id = "photo.jpg__label_1"
+            label_path = os.path.join(label_dir, f"{label_id}.png")
+            sn_path = os.path.join(sn_dir, f"{label_id}__sn.png")
+            open(label_path, "wb").close()
+            open(sn_path, "wb").close()
+
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({
+                    "label_id": label_id,
+                    "label_crop": label_path,
+                    "sn_path": sn_path,
+                    "original_image_path": os.path.join(root, "missing-source.jpg"),
+                    "image_path": os.path.join(root, "also-missing-source.jpg"),
+                }) + "\n")
+
+            meta = {"barcode_found": False, "ocr_text_found": False, "barcode_status": "decoder_miss"}
+            report = types.SimpleNamespace(status="decoder_miss", results=[])
+            with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("", "", "barcode_decoder_miss", meta, report)) as recognize_sn:
+                with mock.patch.object(scan2, "recognize_sn_ocr_after_barcode", return_value=("", "", "none", meta)):
+                    stats = scan2.main(
+                        model_dir=model_dir,
+                        sn_dir=sn_dir,
+                        out_jsonl=os.path.join(root, "out.jsonl"),
+                        debug_log=os.path.join(root, "debug.log"),
+                    )
+
+        self.assertEqual(stats["sn_total"], 1)
+        recognize_sn.assert_called_once()
+        self.assertEqual(recognize_sn.call_args.kwargs["label_path"], label_path)
+        self.assertEqual(recognize_sn.call_args.kwargs["original_path"], "")
+
     def test_recognize_sn_ignores_direct_original_path(self):
         scan2 = _import_scan2()
         report = sn_barcode.SnBarcodeReport(status="decoder_miss", attempts=1)
@@ -1242,6 +1669,29 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
             )
 
         self.assertEqual(sources, [("sn", sn_path), ("label", label_path)])
+
+    def test_delayed_model_crop_rejects_unsafe_label_id(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            model_dir = os.path.join(root, "stage2_fields", "model")
+            label_path = os.path.join(root, "label.png")
+            open(label_path, "wb").close()
+            scan2.MODEL_CROP_DIR = model_dir
+
+            crop = types.ModuleType("crop")
+            crop.stage2_crop_model_from_label = mock.Mock()
+            with mock.patch.dict(sys.modules, {"crop": crop}):
+                for unsafe_label_id in (r"..\escape", "../escape", "C:escape"):
+                    with self.subTest(label_id=unsafe_label_id):
+                        result = scan2.delayed_model_crop_from_label(
+                            {"label_crop": label_path},
+                            unsafe_label_id,
+                        )
+                        self.assertEqual(result, "")
+
+        crop.stage2_crop_model_from_label.assert_not_called()
+        self.assertFalse(os.path.exists(os.path.join(root, "escape__model.png")))
 
     def test_main_reports_barcode_hit_rate_and_ocr_recovery_separately(self):
         scan2 = _import_scan2()
@@ -1392,6 +1842,78 @@ class ValidationCommandTest(unittest.TestCase):
         self.assertIn("not ground truth", rows[0]["notes"])
         self.assertNotIn("sn_path", rows[1])
 
+    def test_validation_rejects_accepted_barcode_row_without_label_local_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            image_path = os.path.join(root, "source.jpg")
+            open(image_path, "wb").close()
+            manifest_path = os.path.join(root, "manifest.jsonl")
+            with open(manifest_path, "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({
+                    "image_path": image_path,
+                    "label_id": "a__label_1",
+                    "expected_sn": "4E25A0170000",
+                    "barcode_present": True,
+                    "accepted_quality": True,
+                    "notes": "unit test",
+                }) + "\n")
+
+            with mock.patch.object(validate_sn_barcodes, "scan_sn_barcodes") as scan:
+                summary = validate_sn_barcodes.evaluate_manifest(
+                    manifest_path,
+                    threshold=0.90,
+                    min_accepted=1,
+                )
+
+        self.assertFalse(summary.passed)
+        self.assertEqual(summary.accepted_barcode_rows, 0)
+        self.assertEqual(summary.denominator, 0)
+        self.assertEqual(summary.failure_counts["decoder_miss"], 0)
+        self.assertIn("label-local source", "\n".join(summary.errors))
+        scan.assert_not_called()
+
+    def test_validation_accepts_stale_provenance_when_sn_path_exists(self):
+        with tempfile.TemporaryDirectory() as root:
+            sn_path = os.path.join(root, "sn.png")
+            open(sn_path, "wb").close()
+            manifest_path = os.path.join(root, "manifest.jsonl")
+            stale_image_path = os.path.join(root, "missing-source.jpg")
+            stale_original_path = os.path.join(root, "missing-original.jpg")
+            with open(manifest_path, "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({
+                    "image_path": stale_image_path,
+                    "original_image_path": stale_original_path,
+                    "sn_path": sn_path,
+                    "label_id": "a__label_1",
+                    "expected_sn": "4E25A0170000",
+                    "barcode_present": True,
+                    "accepted_quality": True,
+                    "notes": "unit test",
+                }) + "\n")
+
+            fake_report = sn_barcode.SnBarcodeReport(
+                status="hit",
+                sn="4E25A0170000",
+                raw_text="SN:4E25A0170000",
+                source="sn",
+                source_region="sn",
+                decoder_name="fake",
+                attempts=1,
+                decoded_count=1,
+            )
+            with mock.patch.object(validate_sn_barcodes, "scan_sn_barcodes", return_value=fake_report) as scan:
+                summary = validate_sn_barcodes.evaluate_manifest(
+                    manifest_path,
+                    threshold=0.90,
+                    min_accepted=1,
+                )
+
+        self.assertTrue(summary.passed)
+        self.assertEqual(summary.errors, [])
+        self.assertEqual(summary.accepted_barcode_rows, 1)
+        self.assertEqual(summary.denominator, 1)
+        scan.assert_called_once()
+        self.assertEqual(scan.call_args.args[0], [("sn", sn_path)])
+
     def test_validation_fails_when_accepted_sample_count_is_too_small(self):
         with tempfile.TemporaryDirectory() as root:
             image_path = os.path.join(root, "label.png")
@@ -1400,6 +1922,7 @@ class ValidationCommandTest(unittest.TestCase):
             with open(manifest_path, "w", encoding="utf-8") as manifest:
                 manifest.write(json.dumps({
                     "image_path": image_path,
+                    "label_crop": image_path,
                     "label_id": "a__label_1",
                     "expected_sn": "4E25A0170000",
                     "barcode_present": True,
@@ -1433,6 +1956,7 @@ class ValidationCommandTest(unittest.TestCase):
                     open(image_path, "wb").close()
                     manifest.write(json.dumps({
                         "image_path": image_path,
+                        "label_crop": image_path,
                         "label_id": f"a__label_{index}",
                         "expected_sn": "4E25A0170000",
                         "barcode_present": True,
@@ -1477,6 +2001,7 @@ class ValidationCommandTest(unittest.TestCase):
             with open(manifest_path, "w", encoding="utf-8") as manifest:
                 manifest.write(json.dumps({
                     "image_path": image_path,
+                    "label_crop": image_path,
                     "label_id": "a__label_1",
                     "expected_sn": "4E25A0170000",
                     "barcode_present": True,

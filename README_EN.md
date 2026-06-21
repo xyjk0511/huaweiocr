@@ -4,11 +4,11 @@ Windows-first batch OCR pipeline for device labels.
 
 ## What It Does
 
-The pipeline detects label regions, crops model/SN fields, decodes label-local SN barcodes, falls back to OCR, and writes structured JSONL.
+The pipeline detects label regions, crops model/PartNo/SN fields, decodes label-local barcodes, falls back to OCR, and writes structured JSONL.
 
 SN barcode recognition only uses crops bound to the current label, such as the SN crop, barcode candidates, and the label crop. The original full source photo is kept as provenance metadata only and is not scanned as an SN barcode fallback, because one photo can contain multiple valid labels.
 
-Detection uses local ONNX models by default: `local_models/detectors/label_detector.onnx` for stage1 label crops and `local_models/detectors/field_detector.onnx` for model/SN crops. The normal local path does not require a Roboflow API key.
+Detection uses local ONNX models by default: `local_models/detectors/label_detector.onnx` for stage1 label crops and `local_models/detectors/field_detector.onnx` for model/PartNo/SN crops. The normal local path does not require a Roboflow API key.
 
 ## Requirements
 
@@ -60,18 +60,19 @@ Typical run outputs:
 
 - `stage1_labels/` or `stage1_labels_run_*`
 - `stage2_fields/model/`
+- `stage2_fields/part_no/`
 - `stage2_fields/sn/`
 - `stage2_fields/manifest.jsonl`
 - `stage2_fields/model_sn_ocr.jsonl`
 - `stage2_fields/debug_ocr_barcode.log` only when `--log-level debug`
 
-`model_raw` and `sn_raw` keep complete raw values by default for local review. Set `SCAN2_MASK_RAW=1` when you need a masked result file; if `SCAN2_UNSAFE_RAW=1` is also set, complete raw values are forced.
+`model_raw` and `sn_raw` are masked by default in result JSONL. Set `SCAN2_UNSAFE_RAW=1` or `HUAWEIOCR_UNSAFE_RAW=1` only for trusted local debugging when complete raw values are required.
 Model fields use barcode-first recognition by default. Set `SCAN2_MODEL_BARCODE=0` only when you need to temporarily disable barcode decoding on model crops.
 
 Example JSONL line:
 
 ```json
-{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"S380-S8P2T","sn_raw":"4E25A0170000","model_src":"ocr_color","sn_src":"barcode"}
+{"label_id":"sample_label_001.png__label_1","model":"S380-S8P2T","sn":"2000000000AGQC000000","model_raw":"[masked-model-raw]","sn_raw":"2000********0000","model_src":"ocr_color","sn_src":"barcode"}
 ```
 
 ## GUI

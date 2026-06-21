@@ -4,11 +4,11 @@
 
 ## 做什么
 
-流程会检测标签区域，裁剪 model/SN 字段，优先识别标签内 SN 条码，再用 OCR 兜底，最后输出结构化 JSONL。
+流程会检测标签区域，裁剪 model/PartNo/SN 字段，优先识别标签内条码，再用 OCR 兜底，最后输出结构化 JSONL。
 
 SN 条码识别只使用当前标签绑定的裁剪图，例如 SN 小图、条码候选区和标签小图；整张原始照片只保留为来源元数据，不作为 SN 条码兜底扫描源，避免一张照片里多个标签互相串号。
 
-检测步骤默认使用本地 ONNX 模型：`local_models/detectors/label_detector.onnx` 负责 stage1 标签裁剪，`local_models/detectors/field_detector.onnx` 负责 model/SN 字段裁剪。正常本地运行不需要 Roboflow API key。
+检测步骤默认使用本地 ONNX 模型：`local_models/detectors/label_detector.onnx` 负责 stage1 标签裁剪，`local_models/detectors/field_detector.onnx` 负责 model/PartNo/SN 字段裁剪。正常本地运行不需要 Roboflow API key。
 
 ## 环境
 
@@ -60,18 +60,19 @@ python run_all.py --help
 
 - `stage1_labels/` 或 `stage1_labels_run_*`
 - `stage2_fields/model/`
+- `stage2_fields/part_no/`
 - `stage2_fields/sn/`
 - `stage2_fields/manifest.jsonl`
 - `stage2_fields/model_sn_ocr.jsonl`
 - `stage2_fields/debug_ocr_barcode.log`，只在 `--log-level debug` 时写入
 
-默认保留 `model_raw` 和 `sn_raw` 的完整原始值，方便本地核对。需要生成脱敏结果文件时可设置 `SCAN2_MASK_RAW=1`；如同时设置 `SCAN2_UNSAFE_RAW=1`，则强制保留完整原始值。
+结果 JSONL 中的 `model_raw` 和 `sn_raw` 默认脱敏。只有在可信本地调试且确实需要完整 raw 值时，才设置 `SCAN2_UNSAFE_RAW=1` 或 `HUAWEIOCR_UNSAFE_RAW=1`。
 model 字段默认按 barcode-first 处理；如需临时禁用 model 裁剪图条码识别，可设置 `SCAN2_MODEL_BARCODE=0`。
 
 JSONL 示例：
 
 ```json
-{"label_id":"input_0001.png__label_1","model":"S380-S8P2T","sn":"4E25A0170000","model_raw":"S380-S8P2T","sn_raw":"4E25A0170000","model_src":"ocr_color","sn_src":"barcode"}
+{"label_id":"sample_label_001.png__label_1","model":"S380-S8P2T","sn":"2000000000AGQC000000","model_raw":"[masked-model-raw]","sn_raw":"2000********0000","model_src":"ocr_color","sn_src":"barcode"}
 ```
 
 ## GUI

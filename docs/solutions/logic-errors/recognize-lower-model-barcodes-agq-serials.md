@@ -8,7 +8,7 @@ component: service_object
 symptoms:
   - "Model barcode fallback could miss the lower model barcode after seeing a numeric barcode first."
   - "SN decoding could return a valid AGQ serial payload but still report barcode_parse_fail."
-  - "A real outbound-label run needed label-local barcode fixes to reach 97/97 SN barcode hits."
+  - "A private outbound-label verification run needed label-local barcode fixes to reach 97/97 SN barcode hits."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -23,16 +23,16 @@ tags: [huaweiocr, stage2, barcode-first, model-barcode, sn-parsing, agq-serials]
 
 ## Problem
 
-Stage2 barcode-first recognition had two narrow logic gaps. A model crop could expose multiple 1D barcodes and the first decoded payload might be a numeric PartNo-like code instead of the lower model barcode. Separately, SN barcode decoding could successfully read `2150087144AGQC000131`, but the parser rejected it because the SN20 rule only accepted `AGQA`.
+Stage2 barcode-first recognition had two narrow logic gaps. A model crop could expose multiple 1D barcodes and the first decoded payload might be a numeric PartNo-like code instead of the lower model barcode. Separately, SN barcode decoding could successfully read a synthetic AGQC-style payload such as `2000000000AGQC000000`, but the parser rejected that serial family because the SN20 rule only accepted `AGQA`.
 
 Both fixes had to preserve the project boundary: SN evidence stays label-local, and OCR fallback must not inflate barcode hit metrics.
 
 ## Symptoms
 
-- `张家港.jpg__label_1` produced `sn_src="barcode_parse_fail"` even though `sn_raw` contained repeated `2150087144AGQC000131` payloads.
+- `sample_label_001.png__label_1` produced `sn_src="barcode_parse_fail"` even though `sn_raw` contained repeated synthetic AGQC-style payloads.
 - The SN crop visually contained the `S/N:` text and the complete barcode, so the failure was not a crop-boundary miss.
 - A model crop could decode a numeric payload first, then fail to continue to the lower model barcode.
-- After the fix, `F:\HuaweiOCR\test_runs\huawei_outbound_parser_20260621_124616\summary_counts.json` reported 97 rows, 97 SN barcode hits, and 0 SN failures.
+- After the fix, `test_runs/<sanitized-run>/summary_counts.json` reported 97 rows, 97 SN barcode hits, and 0 SN failures.
 
 ## What Didn't Work
 
@@ -76,8 +76,8 @@ The SN issue was not that the decoder failed. `select_sn_from_decoder_results()`
 
 ## Prevention
 
-- Add parser tests whenever a new real SN family appears in decoded payloads; do not treat a parse failure as a decoder miss.
-- Keep true-image verification alongside unit tests. The closing evidence for this fix was `run_all.py` on `华为出库图`, producing 97/97 SN barcode hits.
+- Add parser tests whenever a new observed SN family appears in decoded payloads; do not treat a parse failure as a decoder miss.
+- Keep true-image verification alongside unit tests. The closing evidence for this fix was `run_all.py` on a private outbound-label dataset, producing 97/97 SN barcode hits.
 - Keep SN barcode metrics barcode-only. OCR fallback can recover values, but it must remain a separate source count.
 - Keep SN source boundaries label-local: SN crop, label crop, and label-local candidate regions only.
 - For model recognition, do not stop at a numeric barcode payload when the crop can contain a lower model barcode.

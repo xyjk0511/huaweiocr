@@ -1,7 +1,9 @@
 import importlib
-import importlib
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -12,6 +14,177 @@ import local_yolo
 
 
 class LocalYoloInferenceTests(unittest.TestCase):
+    def _load_huaweiocr_spec_datas(self, cwd):
+        hooks = types.ModuleType("PyInstaller.utils.hooks")
+        hooks.collect_data_files = lambda *args, **kwargs: []
+        hooks.collect_dynamic_libs = lambda *args, **kwargs: []
+        hooks.copy_metadata = lambda *args, **kwargs: []
+
+        fake_modules = {
+            "PyInstaller": types.ModuleType("PyInstaller"),
+            "PyInstaller.utils": types.ModuleType("PyInstaller.utils"),
+            "PyInstaller.utils.hooks": hooks,
+        }
+
+        class StubAnalysis:
+            def __init__(self, scripts, pathex=None, binaries=None, datas=None, **_kwargs):
+                self.scripts = scripts
+                self.pure = []
+                self.binaries = list(binaries or [])
+                self.datas = list(datas or [])
+
+        spec_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "HuaweiOCR.spec")
+        namespace = {
+            "Analysis": StubAnalysis,
+            "PYZ": lambda pure: object(),
+            "EXE": lambda *args, **kwargs: object(),
+            "COLLECT": lambda *args, **kwargs: object(),
+        }
+        with open(spec_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        with mock.patch.dict(sys.modules, fake_modules):
+            old_cwd = os.getcwd()
+            os.chdir(cwd)
+            try:
+                exec(compile(source, spec_path, "exec"), namespace)
+            finally:
+                os.chdir(old_cwd)
+        return namespace["datas"]
+
+    def test_pyinstaller_spec_requires_local_detector_onnx(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(FileNotFoundError) as raised:
+                self._load_huaweiocr_spec_datas(root)
+
+        message = str(raised.exception)
+        self.assertIn("Missing required local ONNX detector model(s)", message)
+        self.assertIn(os.path.join("local_models", "detectors", "label_detector.onnx"), message)
+        self.assertIn(os.path.join("local_models", "detectors", "field_detector.onnx"), message)
+
+    def test_pyinstaller_spec_bundles_required_local_detector_onnx_without_dotenv(self):
+        with tempfile.TemporaryDirectory() as root:
+            detector_dir = os.path.join(root, "local_models", "detectors")
+            os.makedirs(detector_dir)
+            for filename in (
+                "label_detector.onnx",
+                "field_detector.onnx",
+                "ignored_extra_detector.onnx",
+            ):
+                with open(os.path.join(detector_dir, filename), "wb") as f:
+                    f.write(b"onnx")
+            with open(os.path.join(root, ".env"), "w", encoding="utf-8") as f:
+                f.write("API_KEY=should-not-bundle\n")
+
+            datas = self._load_huaweiocr_spec_datas(root)
+
+        normalized = {
+            (src.replace("/", "\\"), dst.replace("/", "\\"))
+            for src, dst in datas
+            if dst.replace("/", "\\") == "local_models\\detectors"
+        }
+
+        self.assertEqual(
+            normalized,
+            {
+                (
+                    "local_models\\detectors\\label_detector.onnx",
+                    "local_models\\detectors",
+                ),
+                (
+                    "local_models\\detectors\\field_detector.onnx",
+                    "local_models\\detectors",
+                ),
+            },
+        )
+        self.assertFalse(any(os.path.basename(src) == ".env" for src, _dst in datas))
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch entrypoint only")
+    def _run_start_bat(self, env_updates):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        with tempfile.TemporaryDirectory() as root:
+            shutil.copy2(os.path.join(repo_root, "start.bat"), os.path.join(root, "start.bat"))
+            os.makedirs(os.path.join(root, "new_images"))
+            with open(os.path.join(root, "new_images", "sample.jpg"), "wb") as f:
+                f.write(b"image")
+            with open(os.path.join(root, "run_all.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    "import os, sys\n"
+                    "with open('args.txt', 'w', encoding='utf-8') as out:\n"
+                    "    out.write('\\n'.join(sys.argv[1:]))\n"
+                    "sys.exit(int(os.environ.get('STUB_EXIT', '0')))\n"
+                )
+
+            env = os.environ.copy()
+            for name in ("API_KEY", "CROP_INFERENCE_BACKEND", "HUAWEIOCR_NO_PAUSE", "CI"):
+                env.pop(name, None)
+            env.update(env_updates)
+
+            result = subprocess.run(
+                ["cmd.exe", "/c", "start.bat"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            args_path = os.path.join(root, "args.txt")
+            args = ""
+            if os.path.exists(args_path):
+                with open(args_path, "r", encoding="utf-8") as f:
+                    args = f.read()
+            return result, args
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch entrypoint only")
+    def test_start_bat_defaults_to_local_backend_without_api_key_and_returns_python_exit(self):
+        result, args = self._run_start_bat({"HUAWEIOCR_NO_PAUSE": "1", "STUB_EXIT": "7"})
+
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+        self.assertIn("--input\nnew_images\n--out\nruns", args)
+        self.assertNotIn("--pause", args)
+        self.assertNotIn("API_KEY is not set", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch entrypoint only")
+    def test_start_bat_requires_api_key_for_roboflow_backend(self):
+        result, args = self._run_start_bat(
+            {
+                "CROP_INFERENCE_BACKEND": "roboflow",
+                "HUAWEIOCR_NO_PAUSE": "1",
+                "STUB_EXIT": "0",
+            }
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(args, "")
+        self.assertIn("API_KEY", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch entrypoint only")
+    def test_start_bat_requires_api_key_for_remote_backend(self):
+        result, args = self._run_start_bat(
+            {
+                "CROP_INFERENCE_BACKEND": "remote",
+                "HUAWEIOCR_NO_PAUSE": "1",
+                "STUB_EXIT": "0",
+            }
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(args, "")
+        self.assertIn("API_KEY", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch entrypoint only")
+    def test_start_bat_requires_api_key_for_cloud_backend(self):
+        result, args = self._run_start_bat(
+            {
+                "CROP_INFERENCE_BACKEND": "cloud",
+                "HUAWEIOCR_NO_PAUSE": "1",
+                "STUB_EXIT": "0",
+            }
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(args, "")
+        self.assertIn("API_KEY", result.stdout + result.stderr)
+
     def test_default_field_detector_names_include_partno(self):
         self.assertEqual(
             local_yolo.DEFAULT_MODEL_SPECS["sn_model/9"].names,
