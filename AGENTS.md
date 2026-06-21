@@ -28,6 +28,11 @@ python -m PyInstaller --noconfirm HuaweiOCR.spec
 
 Then verify the packaged app starts and that `_internal\.env` plus `_internal\Cython\Utility\CppSupport.cpp` exist when the release depends on them.
 
+## Documented Knowledge
+
+- `docs/solutions/` contains documented fixes and practices for past bugs, organized by category with YAML frontmatter.
+- `CONCEPTS.md` defines shared OCR pipeline vocabulary such as Stage1 label crops, Stage2 field crops, PartNo fields, and label-local evidence.
+
 ## Commit Messages
 
 Use concise decision-record commit messages with trailers when useful:
