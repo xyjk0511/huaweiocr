@@ -433,6 +433,85 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertEqual(part_no, "50087147")
         self.assertEqual(model, "AP362E")
 
+    def test_current_611_part_no_products_map_to_models(self):
+        scan2 = _import_scan2()
+
+        cases = {
+            "50087144": "AP265E",
+            "50087289": "AP162E",
+            "98012403": "S110-5T",
+            "98012406": "S110-8P1T",
+        }
+
+        for part_no, expected_model in cases.items():
+            with self.subTest(part_no=part_no):
+                model, parsed_part_no = scan2.model_from_part_no_text(f"Part No: {part_no}")
+                self.assertEqual(parsed_part_no, part_no)
+                self.assertEqual(model, expected_model)
+
+    def test_ocr_fallbacks_are_default_enabled(self):
+        scan2 = _import_scan2()
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(scan2.scan_ocr_fallback_enabled())
+            self.assertTrue(scan2.part_no_ocr_fallback_enabled())
+
+        with mock.patch.dict(os.environ, {"SCAN2_OCR_FALLBACK": "0"}, clear=True):
+            self.assertFalse(scan2.scan_ocr_fallback_enabled())
+            self.assertFalse(scan2.part_no_ocr_fallback_enabled())
+
+        with mock.patch.dict(
+            os.environ,
+            {"SCAN2_OCR_FALLBACK": "0", "SCAN2_PART_NO_OCR_FALLBACK": "1"},
+            clear=True,
+        ):
+            self.assertFalse(scan2.scan_ocr_fallback_enabled())
+            self.assertTrue(scan2.part_no_ocr_fallback_enabled())
+
+    def test_main_preserves_unmapped_manifest_part_no_in_output(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            manifest_path = os.path.join(stage2, "manifest.jsonl")
+            with open(manifest_path, "w", encoding="utf-8") as manifest:
+                manifest.write(
+                    json.dumps(
+                        {
+                            "label_id": "a__label_1",
+                            "part_no": "98099999",
+                            "part_no_codes": ["98099999"],
+                        }
+                    )
+                    + "\n"
+                )
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SCAN2_PARALLEL": "0",
+                    "SCAN2_SCAN_LABEL_WITHOUT_SN": "0",
+                    "SCAN2_PART_NO_MODEL_MAP_PATH": os.path.join(root, "empty_map.json"),
+                },
+            ):
+                scan2.main(
+                    model_dir=model_dir,
+                    sn_dir=sn_dir,
+                    out_jsonl=out_jsonl,
+                    debug_log=os.path.join(root, "debug.log"),
+                )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(rows[0]["part_no"], "98099999")
+        self.assertEqual(rows[0]["model"], "")
+
     def test_part_no_scan_tries_upscaled_candidates_after_miss(self):
         scan2 = _import_scan2()
 
@@ -494,6 +573,165 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertEqual(model, "AP162E")
         self.assertEqual(raw, "[PART_NO_OCR] 50087288")
         self.assertEqual(source, "part_no_ocr")
+
+    def test_main_uses_part_no_ocr_after_part_no_barcode_miss(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            part_no_dir = os.path.join(stage2, "part_no")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(part_no_dir)
+            os.makedirs(sn_dir)
+            label_id = "a__label_1"
+            part_no_path = os.path.join(part_no_dir, f"{label_id}__part_no.png")
+            open(part_no_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(
+                    json.dumps(
+                        {
+                            "label_id": label_id,
+                            "part_no_path": part_no_path,
+                        }
+                    )
+                    + "\n"
+                )
+
+            def fake_part_no(_path, label_id="", use_ocr=False):
+                if use_ocr:
+                    return "AP265E", "[PART_NO_OCR] 50087144", "part_no_ocr"
+                return "", "", "part_no_no_barcode"
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SCAN2_PARALLEL": "0",
+                    "SCAN2_SCAN_LABEL_WITHOUT_SN": "0",
+                    "SCAN2_PART_NO_MODEL_MAP_PATH": os.path.join(root, "empty_map.json"),
+                },
+            ):
+                with mock.patch.object(
+                    scan2,
+                    "try_model_from_part_no_crop",
+                    side_effect=fake_part_no,
+                ) as part_no_scan:
+                    with mock.patch.object(scan2, "delayed_model_crop_from_label") as delayed_crop:
+                        with mock.patch.object(scan2, "recognize_model_barcode") as model_barcode:
+                            with mock.patch.object(scan2, "recognize_model_ocr") as model_ocr:
+                                stats = scan2.main(
+                                    model_dir=model_dir,
+                                    sn_dir=sn_dir,
+                                    out_jsonl=out_jsonl,
+                                    debug_log=os.path.join(root, "debug.log"),
+                                )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+
+        self.assertEqual(stats["model_success"], 1)
+        self.assertEqual(stats["model_part_no_hits"], 1)
+        self.assertEqual(row["model"], "AP265E")
+        self.assertEqual(row["part_no"], "50087144")
+        self.assertEqual(row["model_src"], "part_no_ocr")
+        self.assertEqual([call.kwargs["use_ocr"] for call in part_no_scan.call_args_list], [False, True])
+        delayed_crop.assert_not_called()
+        model_barcode.assert_not_called()
+        model_ocr.assert_not_called()
+
+    def test_main_uses_same_label_model_crop_when_part_no_ocr_fails(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            part_no_dir = os.path.join(stage2, "part_no")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(part_no_dir)
+            os.makedirs(sn_dir)
+            label_id = "a__label_1"
+            label_crop = os.path.join(stage2, f"{label_id}.png")
+            part_no_path = os.path.join(part_no_dir, f"{label_id}__part_no.png")
+            model_path = os.path.join(model_dir, f"{label_id}__model.png")
+            open(label_crop, "wb").close()
+            open(part_no_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(
+                    json.dumps(
+                        {
+                            "label_id": label_id,
+                            "label_crop": label_crop,
+                            "part_no_path": part_no_path,
+                        }
+                    )
+                    + "\n"
+                )
+
+            def fake_part_no(_path, label_id="", use_ocr=False):
+                return "", "", "part_no_ocr_no_match" if use_ocr else "part_no_no_barcode"
+
+            def fake_delayed_crop(item, requested_label_id):
+                self.assertEqual(requested_label_id, label_id)
+                open(model_path, "wb").close()
+                item["model_path"] = model_path
+                return model_path
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SCAN2_PARALLEL": "0",
+                    "SCAN2_SCAN_LABEL_WITHOUT_SN": "0",
+                    "SCAN2_DELAYED_MODEL_CROP": "1",
+                    "SCAN2_PART_NO_MODEL_MAP_PATH": os.path.join(root, "empty_map.json"),
+                },
+            ):
+                with mock.patch.object(
+                    scan2,
+                    "try_model_from_part_no_crop",
+                    side_effect=fake_part_no,
+                ) as part_no_scan:
+                    with mock.patch.object(
+                        scan2,
+                        "delayed_model_crop_from_label",
+                        side_effect=fake_delayed_crop,
+                    ) as delayed_crop:
+                        with mock.patch.object(
+                            scan2,
+                            "recognize_model_barcode",
+                            return_value=("", "", "barcode_no_match"),
+                        ) as model_barcode:
+                            with mock.patch.object(
+                                scan2,
+                                "recognize_model_ocr",
+                                return_value=("AP162E", "AP162E", "ocr_file"),
+                            ) as model_ocr:
+                                stats = scan2.main(
+                                    model_dir=model_dir,
+                                    sn_dir=sn_dir,
+                                    out_jsonl=out_jsonl,
+                                    debug_log=os.path.join(root, "debug.log"),
+                                )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+
+        self.assertEqual(stats["model_success"], 1)
+        self.assertEqual(stats["model_deferred_crops"], 1)
+        self.assertEqual(stats["model_ocr_recoveries"], 1)
+        self.assertEqual(row["model"], "AP162E")
+        self.assertEqual(row["model_src"], "ocr_file")
+        self.assertEqual([call.kwargs["use_ocr"] for call in part_no_scan.call_args_list], [False, True, True])
+        delayed_crop.assert_called_once()
+        model_barcode.assert_called_once_with(model_path, label_id=label_id)
+        model_ocr.assert_called_once_with(
+            model_path,
+            label_id=label_id,
+            verify_barcode_visual=True,
+        )
 
     def test_model_ocr_garbage_is_not_plausible_model(self):
         scan2 = _import_scan2()
@@ -987,6 +1225,60 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertEqual(stats["sn_ocr_recoveries"], 1)
         self.assertEqual(stats["sn_barcode_attempts"], 3)
         self.assertEqual(stats["sn_barcode_hit_rate"], 0.0)
+
+    def test_main_marks_sn_problem_after_barcode_and_ocr_fail(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "sn_path": sn_path}) + "\n")
+
+            barcode_meta = {
+                "barcode_found": False,
+                "ocr_text_found": False,
+                "barcode_status": "decoder_miss",
+                "barcode_attempts": 2,
+                "barcode_decoded_count": 0,
+            }
+            ocr_meta = dict(barcode_meta)
+            ocr_meta["ocr_text_found"] = True
+            report = types.SimpleNamespace(status="decoder_miss", results=[])
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.dict(os.environ, {"SCAN2_PARALLEL": "0"}, clear=False):
+                with mock.patch.object(
+                    scan2,
+                    "_recognize_sn_barcode",
+                    return_value=("", "", "barcode_decoder_miss", barcode_meta, report),
+                ):
+                    with mock.patch.object(
+                        scan2,
+                        "recognize_sn_ocr_after_barcode",
+                        return_value=("", "SN: unreadable", "ocr_no_match", ocr_meta),
+                    ) as sn_ocr:
+                        stats = scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=out_jsonl,
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+
+        self.assertEqual(stats["sn_success"], 0)
+        self.assertEqual(stats["sn_problem"], 1)
+        self.assertEqual(stats["sn_ocr_recoveries"], 0)
+        self.assertTrue(row["sn_problem"])
+        self.assertEqual(row["sn_problem_reason"], "ocr_no_match")
+        self.assertEqual(row["sn_src"], "ocr_no_match")
+        sn_ocr.assert_called_once()
 
 
 class ValidationCommandTest(unittest.TestCase):

@@ -325,7 +325,11 @@ def scan_worker_count(kind: str) -> int:
 
 
 def scan_ocr_fallback_enabled() -> bool:
-    return _env_flag_default("SCAN2_OCR_FALLBACK", False)
+    return _env_flag_default("SCAN2_OCR_FALLBACK", True)
+
+
+def part_no_ocr_fallback_enabled() -> bool:
+    return _env_flag_default("SCAN2_PART_NO_OCR_FALLBACK", scan_ocr_fallback_enabled())
 
 
 def scan_label_with_sn_enabled() -> bool:
@@ -565,14 +569,18 @@ BAD_MODEL_WORDS = {
 }
 
 PART_NO_MODEL_MAP = {
+    "50087144": "AP265E",
     "50087147": "AP362E",
     "50087149": "AP162E",
     "50087288": "AP162E",
+    "50087289": "AP162E",
     "50087290": "AP162E",
     "50010843": "AR180Pro",
     "98012123": "S380-L4P1T",
     "98012125": "S380-S8P2T",
+    "98012403": "S110-5T",
     "98012404": "S110-8T",
+    "98012406": "S110-8P1T",
 }
 PART_NO_MODEL_MAP_LOCK = threading.Lock()
 PART_NO_MODEL_MAP_CACHE_PATH = None
@@ -1753,6 +1761,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     mask_raw = _env_flag("SCAN2_MASK_RAW") and not _env_flag("SCAN2_UNSAFE_RAW")
     model_barcode = _env_flag_default("SCAN2_MODEL_BARCODE", True)
     ocr_fallback = scan_ocr_fallback_enabled()
+    part_no_ocr_fallback = part_no_ocr_fallback_enabled()
     model_ocr_allowed = ocr_fallback or not model_barcode
     scan_label_with_sn = scan_label_with_sn_enabled()
     scan_label_without_sn = scan_label_without_sn_enabled()
@@ -1793,6 +1802,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         "sn_barcode_decoder_misses": 0,
         "sn_barcode_ambiguous": 0,
         "sn_barcode_quality_rejects": 0,
+        "sn_problem": 0,
         "regex_fail": 0,
         "barcode_fail": 0,
         "ocr_fail": 0,
@@ -1942,6 +1952,32 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         if ocr_fallback and not sn_code and item.get("sn_path"):
             ocr_jobs.append(("sn", key, item, barcode_report))
 
+    if part_no_ocr_fallback:
+        for key in keys:
+            if key in model_results or key in part_no_by_key:
+                continue
+            item = records[key]
+            if not item.get("part_no_path"):
+                continue
+            miss_raw, miss_src = model_barcode_misses.get(key, ("", ""))
+            if miss_raw or (miss_src and miss_src != "part_no_no_barcode"):
+                continue
+            model_code, model_raw, model_src = try_model_from_part_no_crop(
+                item.get("part_no_path", ""),
+                label_id=key,
+                use_ocr=True,
+            )
+            part_no = first_part_no_from_chunks(model_raw)
+            if part_no:
+                part_no_by_key[key] = part_no
+                part_no_src_by_key[key] = model_src
+            if model_code:
+                model_results[key] = (model_code, model_raw, model_src)
+            else:
+                model_barcode_misses[key] = (model_raw, model_src)
+                if not part_no:
+                    part_no_scan_miss_keys.add(key)
+
     part_no_key_groups = {}
     for key, part_no in part_no_by_key.items():
         if key not in model_results and part_no:
@@ -2029,9 +2065,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 model_barcode_jobs.append(("model", key, item))
             else:
                 ocr_jobs.append(("model", key, item, None))
-        elif item.get("part_no_path") and (
-            ocr_fallback or _env_flag_default("SCAN2_PART_NO_OCR_FALLBACK", False)
-        ):
+        elif item.get("part_no_path") and (ocr_fallback or part_no_ocr_fallback):
             ocr_jobs.append(("model", key, item, None))
 
     for kind, key, result in _map_ordered(model_barcode_jobs, run_barcode_job, barcode_workers):
@@ -2077,6 +2111,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 part_model, part_raw, part_source = try_model_from_part_no_crop(
                     item.get("part_no_path", ""),
                     label_id=key,
+                    use_ocr=part_no_ocr_fallback,
                 )
                 if part_model:
                     model_results[key] = (part_model, part_raw, part_source)
@@ -2119,7 +2154,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             if (
                 not model_code_is_plausible(model_code)
                 and records.get(key, {}).get("part_no_path")
-                and _env_flag_default("SCAN2_PART_NO_OCR_FALLBACK", False)
+                and part_no_ocr_fallback
             ):
                 part_model, part_raw, part_source = try_model_from_part_no_crop(
                     records[key].get("part_no_path", ""),
@@ -2162,7 +2197,11 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 ),
             )
 
-            part_no = part_no_by_key.get(key) or first_part_no_from_chunks(model_raw, sn_raw)
+            part_no = (
+                part_no_by_key.get(key)
+                or item.get("part_no", "")
+                or first_part_no_from_chunks(model_raw, sn_raw)
+            )
             part_no_src = part_no_src_by_key.get(key, "")
             if item.get("part_no_path"):
                 stats["part_no_total"] += 1
@@ -2170,13 +2209,15 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     stats["part_no_decoded"] += 1
 
             sn_input_available = bool(item.get("sn_path") or item.get("label_crop"))
+            sn_problem = bool(sn_input_available and not sn_code)
+            sn_problem_reason = ""
             if sn_input_available:
                 stats["sn_total"] += 1
                 barcode_status = sn_meta.get("barcode_status", "not_attempted")
                 stats["sn_barcode_attempts"] += int(sn_meta.get("barcode_attempts", 0) or 0)
                 if sn_src == "barcode":
                     stats["sn_barcode_hits"] += 1
-                elif sn_src.startswith("ocr") and barcode_status in {
+                elif sn_code and sn_src.startswith("ocr") and barcode_status in {
                     "decoder_miss",
                     "parse_failure",
                     "ambiguous",
@@ -2196,6 +2237,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 if sn_code:
                     stats["sn_success"] += 1
                 else:
+                    stats["sn_problem"] += 1
+                    sn_problem_reason = sn_src or barcode_status or "missing"
                     if sn_meta.get("barcode_found") or sn_meta.get("ocr_text_found"):
                         stats["regex_fail"] += 1
                     if not sn_meta.get("barcode_found"):
@@ -2208,10 +2251,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 model_code = hinted_model
                 model_src = f"{model_src}+sn_hint" if model_src else "sn_hint"
             elif not model_code:
-                part_model, part_no = model_from_part_no_hint([model_raw, sn_raw])
+                part_model, hint_part_no = model_from_part_no_hint([model_raw, sn_raw])
                 if part_model:
                     model_code = part_model
-                    model_raw = f"[PART_NO_HINT] {part_no}"
+                    model_raw = f"[PART_NO_HINT] {hint_part_no}"
                     model_src = "part_no_hint"
 
             if model_code:
@@ -2257,6 +2300,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "sn_barcode_source_regions": sn_meta.get("barcode_source_regions", []),
                 "sn_barcode_decoder_names": sn_meta.get("barcode_decoder_names", []),
                 "sn_barcode_ambiguous_sns": sn_meta.get("barcode_ambiguous_sns", []),
+                "sn_problem": sn_problem,
+                "sn_problem_reason": sn_problem_reason,
             }
 
             _log(
