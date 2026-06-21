@@ -55,6 +55,29 @@ _CLI_UNAVAILABLE = False
 PAD_X = 30
 PAD_Y = 16
 
+CODE128_VISUAL_MIN_SCORE = float(os.environ.get("CODE128_VISUAL_MIN_SCORE", "0.75"))
+CODE128_VISUAL_MIN_CORR = float(os.environ.get("CODE128_VISUAL_MIN_CORR", "0.53"))
+CODE128_VISUAL_MIN_SEP = float(os.environ.get("CODE128_VISUAL_MIN_SEP", "0.20"))
+CODE128_VISUAL_MIN_SYMBOL_CORR = float(os.environ.get("CODE128_VISUAL_MIN_SYMBOL_CORR", "0.0"))
+CODE128_VISUAL_MIN_SYMBOL_SEP = float(os.environ.get("CODE128_VISUAL_MIN_SYMBOL_SEP", "0.0"))
+
+CODE128_PATTERNS = (
+    "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312",
+    "132212", "221213", "221312", "231212", "112232", "122132", "122231", "113222",
+    "123122", "123221", "223211", "221132", "221231", "213212", "223112", "312131",
+    "311222", "321122", "321221", "312212", "322112", "322211", "212123", "212321",
+    "232121", "111323", "131123", "131321", "112313", "132113", "132311", "211313",
+    "231113", "231311", "112133", "112331", "132131", "113123", "113321", "133121",
+    "313121", "211331", "231131", "213113", "213311", "213131", "311123", "311321",
+    "331121", "312113", "312311", "332111", "314111", "221411", "431111", "111224",
+    "111422", "121124", "121421", "141122", "141221", "112214", "112412", "122114",
+    "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111",
+    "111242", "121142", "121241", "114212", "124112", "124211", "411212", "421112",
+    "421211", "212141", "214121", "412121", "111143", "111341", "131141", "114113",
+    "114311", "411113", "411311", "113141", "114131", "311141", "411131", "211412",
+    "211214", "211232", "2331112",
+)
+
 def _run_cli(cmd, **kwargs):
     if os.name == "nt":
         startupinfo = subprocess.STARTUPINFO()
@@ -110,6 +133,63 @@ def crop_bar_band(gray: np.ndarray) -> np.ndarray:
     y2 = max(y1 + 1, min(y2, h))
     band = gray[y1:y2, :]
     return band
+
+
+def crop_detected_barcode_band(gray: np.ndarray) -> np.ndarray | None:
+    if gray is None or not hasattr(gray, "shape") or not hasattr(gray, "size") or gray.size == 0:
+        return None
+    h, w = gray.shape[:2]
+    if h < 20 or w < 90:
+        return None
+
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    dark = bw > 0
+    row_dark = dark.mean(axis=1)
+    row_trans = np.count_nonzero(dark[:, 1:] != dark[:, :-1], axis=1) / max(1, w - 1)
+    candidate_rows = (row_dark > 0.08) & (row_dark < 0.75) & (row_trans > 0.07)
+
+    min_run_h = max(16, int(h * 0.18))
+    min_span_w = max(95, int(w * 0.30))
+    best = None
+    best_score = 0
+    start = None
+
+    for i, value in enumerate(candidate_rows):
+        if value and start is None:
+            start = i
+        at_end = i == len(candidate_rows) - 1
+        if start is not None and ((not value) or at_end):
+            end = i if not value else i + 1
+            run_h = end - start
+            if run_h >= min_run_h:
+                band = dark[start:end]
+                col_dark = band.mean(axis=0)
+                active = col_dark > 0.30
+                active_idx = np.where(active)[0]
+                if active_idx.size:
+                    span_w = int(active_idx[-1] - active_idx[0] + 1)
+                    transitions = int(np.count_nonzero(active[1:] != active[:-1]))
+                    aspect = span_w / float(max(run_h, 1))
+                    if span_w >= min_span_w and transitions >= 14 and aspect >= 2.8:
+                        score = span_w * run_h * max(0.1, float(row_trans[start:end].mean()))
+                        if score > best_score:
+                            pad_x = max(20, int(span_w * 0.22))
+                            pad_y = max(6, int(run_h * 0.28))
+                            best = (
+                                max(0, int(active_idx[0]) - pad_x),
+                                max(0, start - pad_y),
+                                min(w, int(active_idx[-1]) + 1 + pad_x),
+                                min(h, end + pad_y),
+                            )
+                            best_score = score
+            start = None
+
+    if best is None:
+        return None
+    x1, y1, x2, y2 = best
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return gray[y1:y2, x1:x2]
 
 
 def upscale(gray: np.ndarray,
@@ -179,6 +259,150 @@ def pad_quiet_zone(img: np.ndarray, pad_x: int = PAD_X, pad_y: int = PAD_Y) -> n
         borderType=cv2.BORDER_CONSTANT,
         value=value,
     )
+
+
+def _code128b_values(text: str) -> List[int] | None:
+    values = [104]
+    for ch in text:
+        code = ord(ch)
+        if code < 32 or code > 127:
+            return None
+        values.append(code - 32)
+
+    checksum = values[0]
+    for idx, value in enumerate(values[1:], 1):
+        checksum += idx * value
+    values.append(checksum % 103)
+    values.append(106)
+    return values
+
+
+def _code128b_module_bits(text: str) -> np.ndarray | None:
+    values = _code128b_values(text)
+    if not values:
+        return None
+
+    bits = []
+    for value in values:
+        color = 1
+        for width in map(int, CODE128_PATTERNS[value]):
+            bits.extend([color] * width)
+            color = 1 - color
+    return np.asarray(bits, dtype=np.float32)
+
+
+def _code128_value_bits(value: int) -> np.ndarray:
+    bits = []
+    color = 1
+    for width in map(int, CODE128_PATTERNS[value]):
+        bits.extend([color] * width)
+        color = 1 - color
+    return np.asarray(bits, dtype=np.float32)
+
+
+def _code128b_symbol_quality(segment: np.ndarray, values: List[int]) -> Tuple[float, float]:
+    total_modules = sum(sum(map(int, CODE128_PATTERNS[value])) for value in values)
+    module_idx = ((np.arange(total_modules) + 0.5) * len(segment) / total_modules).astype(int)
+    modules = segment[np.clip(module_idx, 0, len(segment) - 1)]
+
+    min_corr = 1.0
+    min_sep = 1.0
+    offset = 0
+    for value in values:
+        ideal = _code128_value_bits(value)
+        observed = modules[offset:offset + len(ideal)]
+        offset += len(ideal)
+        if observed.size != ideal.size or observed.std() < 1e-6:
+            return 0.0, 0.0
+        corr = float(np.corrcoef(observed, ideal)[0, 1])
+        black = float(observed[ideal > 0.5].mean())
+        white = float(observed[ideal < 0.5].mean())
+        min_corr = min(min_corr, corr)
+        min_sep = min(min_sep, black - white)
+    return min_corr, min_sep
+
+
+def _score_code128b_projection(gray: np.ndarray, text: str) -> Dict | None:
+    bits = _code128b_module_bits(text)
+    values = _code128b_values(text)
+    if bits is None or values is None or gray is None or not hasattr(gray, "shape") or gray.size == 0:
+        return None
+
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    gray = auto_rotate_to_horizontal(gray)
+    h, w = gray.shape[:2]
+    if h < 20 or w < 90:
+        return None
+
+    row_ranges = []
+    for top_ratio, bottom_ratio in ((0.25, 0.72), (0.30, 0.68), (0.20, 0.78), (0.0, 1.0)):
+        y1 = int(h * top_ratio)
+        y2 = int(h * bottom_ratio)
+        if y2 - y1 >= 12:
+            row_ranges.append((y1, y2))
+
+    best = None
+    for y1, y2 in row_ranges:
+        roi = gray[y1:y2, :]
+        smooth = cv2.GaussianBlur(roi.astype(np.float32), (3, 3), 0)
+        dark = 1.0 - (smooth - smooth.min()) / max(1.0, smooth.max() - smooth.min())
+        profile = dark.mean(axis=0)
+
+        min_w = max(40, int(len(bits) * 1.05))
+        max_w = min(w, int(len(bits) * 2.50))
+        if max_w < min_w:
+            continue
+
+        for x1 in range(0, max(1, w - min_w + 1), 4):
+            for width in range(min_w, max_w + 1, 4):
+                x2 = x1 + width
+                if x2 > w:
+                    break
+                segment = profile[x1:x2]
+                if segment.std() < 1e-6:
+                    continue
+
+                sample_idx = ((np.arange(len(segment)) + 0.5) * len(bits) / len(segment)).astype(int)
+                ideal = bits[np.clip(sample_idx, 0, len(bits) - 1)]
+                corr = float(np.corrcoef(segment, ideal)[0, 1])
+                black = float(segment[ideal > 0.5].mean())
+                white = float(segment[ideal < 0.5].mean())
+                separation = black - white
+                score = corr + separation
+
+                if best is None or score > best["score"]:
+                    min_symbol_corr, min_symbol_sep = _code128b_symbol_quality(segment, values)
+                    best = {
+                        "score": score,
+                        "corr": corr,
+                        "separation": separation,
+                        "min_symbol_corr": min_symbol_corr,
+                        "min_symbol_sep": min_symbol_sep,
+                        "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                    }
+
+    return best
+
+
+def verify_code128b_text_in_image(gray_or_bgr: np.ndarray, text: str) -> Dict | None:
+    if not text:
+        return None
+
+    result = _score_code128b_projection(gray_or_bgr, text)
+    if not result:
+        return None
+
+    if (
+        result["score"] >= CODE128_VISUAL_MIN_SCORE
+        and result["corr"] >= CODE128_VISUAL_MIN_CORR
+        and result["separation"] >= CODE128_VISUAL_MIN_SEP
+        and result["min_symbol_corr"] >= CODE128_VISUAL_MIN_SYMBOL_CORR
+        and result["min_symbol_sep"] >= CODE128_VISUAL_MIN_SYMBOL_SEP
+    ):
+        result["text"] = text
+        return result
+    return None
 
 
 # ===================== 澶氳搴?+ 鍙嶈壊 瑙ｇ爜 =====================
@@ -352,6 +576,34 @@ def decode_cli_multi(img: np.ndarray, tag: str, budget: Dict | None = None) -> L
     return results
 
 
+def decode_cli_sharp_variants(gray_band: np.ndarray, tag: str, budget: Dict | None = None) -> List[Dict]:
+    if gray_band is None or gray_band.size == 0:
+        return []
+    h, w = gray_band.shape[:2]
+    results: List[Dict] = []
+    seen = set()
+    for scale in (2.0, 3.0):
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        if new_w * new_h > CLI_MAX_PIXELS:
+            continue
+        big = cv2.resize(gray_band, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(big)
+        blur = cv2.GaussianBlur(clahe, (0, 0), 1.0)
+        sharp = cv2.addWeighted(clahe, 1.8, blur, -0.8, 0)
+        _, otsu = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        for name, candidate in (("sharp", sharp), ("otsu", otsu)):
+            for r in decode_cli_multi(candidate, f"{tag}_{name}{scale:g}", budget):
+                key = (r.get("data"), r.get("type"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(r)
+            if results:
+                return results
+    return results
+
+
 # ===================== 涓绘祦绋? 鍗曞紶灏忔潯鐮佸浘 =====================
 
 def decode_small_patch(img_bgr: np.ndarray) -> Dict:
@@ -365,6 +617,28 @@ def decode_small_patch(img_bgr: np.ndarray) -> Dict:
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     gray = auto_rotate_to_horizontal(gray)
     cli_budget = {"limit": CLI_MAX_CALLS_PER_PATCH, "calls": 0}
+
+    detected_band = crop_detected_barcode_band(gray)
+    if detected_band is not None:
+        results: List[Dict] = decode_with_transforms(detected_band, "detected_band_raw")
+        results += decode_cli_multi(detected_band, "detected_band_cli", cli_budget)
+        if results:
+            return {"results": results}
+
+        enh_gray, bin_img = enhance_band(detected_band)
+        results += decode_with_transforms(enh_gray, "detected_band_enh_gray")
+        results += decode_cli_multi(enh_gray, "detected_band_cli_enh_gray", cli_budget)
+        if results:
+            return {"results": results}
+
+        results += decode_with_transforms(bin_img, "detected_band_enh_bin")
+        results += decode_cli_multi(bin_img, "detected_band_cli_enh_bin", cli_budget)
+        if results:
+            return {"results": results}
+
+        results += decode_cli_sharp_variants(detected_band, "detected_band_cli", cli_budget)
+        if results:
+            return {"results": results}
 
     # ?????
     band = crop_bar_band(gray)

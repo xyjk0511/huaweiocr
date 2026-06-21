@@ -26,3 +26,11 @@ clearimage_cli/publish/
 release/
 test_runs/
 *.zip
+datasets/
+runs/
+yolo*.pt
+local_models/training/
+local_models/eval_zip/
+local_models/quality/
+local_models/**/*.pt
+local_models/**/*.onnx

@@ -3,6 +3,19 @@ import hashlib
 import json
 import os
 import shutil
+import threading
+
+
+def _env_flag_default(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def load_pipeline_modules():
@@ -13,6 +26,37 @@ def load_pipeline_modules():
     import scan2
 
     return crop, scan2
+
+
+def load_scan2_module():
+    from app_paths import ensure_paddle_libs_on_path
+
+    ensure_paddle_libs_on_path()
+    import scan2
+
+    return scan2
+
+
+def start_ocr_prewarm_thread(log=None):
+    default_prewarm = _env_flag_default("SCAN2_OCR_FALLBACK", False)
+    if not _env_flag_default("HUAWEIOCR_PREWARM_OCR", default_prewarm):
+        return None
+
+    def _worker():
+        try:
+            scan2 = load_scan2_module()
+            scan2.prewarm_ocr_engine(log=log)
+        except Exception as exc:
+            if log:
+                log(f"OCR预热启动失败，将在识别时再初始化：{exc.__class__.__name__}: {exc}")
+
+    thread = threading.Thread(
+        target=_worker,
+        name="HuaweiOCR-OCR-Prewarm",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def copy_images_to_unique_run_dir(image_paths, root_dir, run_prefix="gui_run"):

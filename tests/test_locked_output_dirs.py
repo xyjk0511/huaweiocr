@@ -64,7 +64,9 @@ def _install_scan2_import_fakes():
     sys.modules["barcode"] = barcode
 
     app_paths = types.ModuleType("app_paths")
+    user_data_dir = tempfile.mkdtemp(prefix="huaweiocr_test_data_")
     app_paths.ensure_models_installed = lambda: None
+    app_paths.get_user_data_dir = lambda: user_data_dir
     sys.modules["app_paths"] = app_paths
 
 
@@ -472,13 +474,14 @@ class Scan2ManifestTest(unittest.TestCase):
                 image.write(b"model")
 
             out_jsonl = os.path.join(root, "out.jsonl")
-            with mock.patch.object(scan2, "recognize_model", return_value=("M1", "raw", "test")):
-                stats = scan2.main(
-                    model_dir=model_dir,
-                    sn_dir=sn_dir,
-                    out_jsonl=out_jsonl,
-                    debug_log=os.path.join(root, "debug.log"),
-                )
+            with mock.patch.object(scan2, "recognize_model_ocr", return_value=("M1", "raw", "test")):
+                with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "0"}, clear=False):
+                    stats = scan2.main(
+                        model_dir=model_dir,
+                        sn_dir=sn_dir,
+                        out_jsonl=out_jsonl,
+                        debug_log=os.path.join(root, "debug.log"),
+                    )
 
             with open(out_jsonl, "r", encoding="utf-8") as f:
                 rows = [json.loads(line) for line in f if line.strip()]
@@ -541,20 +544,32 @@ class Scan2ManifestTest(unittest.TestCase):
                 manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
 
             out_jsonl = os.path.join(root, "out.jsonl")
-            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
-                with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
-                    with mock.patch.dict(os.environ, {"SCAN2_MASK_RAW": "", "SCAN2_UNSAFE_RAW": ""}, clear=False):
-                        scan2.main(
-                            model_dir=model_dir,
-                            sn_dir=sn_dir,
-                            out_jsonl=out_jsonl,
-                            debug_log=os.path.join(root, "debug.log"),
-                        )
+            meta = {"barcode_found": False, "ocr_text_found": False, "barcode_status": "decoder_miss"}
+            report = types.SimpleNamespace(status="decoder_miss", results=[])
+            with mock.patch.object(scan2, "recognize_model_ocr", return_value=("AP162E", "RAW_MODEL_SECRET_123456", "ocr_file")):
+                with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("", "", "barcode_decoder_miss", meta, report)):
+                    with mock.patch.object(scan2, "recognize_sn_ocr_after_barcode", return_value=("4E25A0170000", "RAW_SN_SECRET_123456", "ocr", meta)):
+                        with mock.patch.dict(
+                            os.environ,
+                            {
+                                "SCAN2_MASK_RAW": "",
+                                "SCAN2_UNSAFE_RAW": "",
+                                "SCAN2_MODEL_BARCODE": "0",
+                                "SCAN2_OCR_FALLBACK": "1",
+                            },
+                            clear=False,
+                        ):
+                            scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=out_jsonl,
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
 
             with open(out_jsonl, "r", encoding="utf-8") as f:
                 row = json.loads(f.readline())
-            self.assertEqual(row["model"], "MODEL1")
-            self.assertEqual(row["sn"], "SN1")
+            self.assertEqual(row["model"], "AP162E")
+            self.assertEqual(row["sn"], "4E25A0170000")
             self.assertEqual(row["model_raw"], "RAW_MODEL_SECRET_123456")
             self.assertEqual(row["sn_raw"], "RAW_SN_SECRET_123456")
 
@@ -575,15 +590,27 @@ class Scan2ManifestTest(unittest.TestCase):
                 manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
 
             out_jsonl = os.path.join(root, "out.jsonl")
-            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "RAW_MODEL_SECRET_123456", "test")):
-                with mock.patch.object(scan2, "recognize_sn", return_value=("SN1", "RAW_SN_SECRET_123456", "test", {})):
-                    with mock.patch.dict(os.environ, {"SCAN2_MASK_RAW": "1", "SCAN2_UNSAFE_RAW": ""}, clear=False):
-                        scan2.main(
-                            model_dir=model_dir,
-                            sn_dir=sn_dir,
-                            out_jsonl=out_jsonl,
-                            debug_log=os.path.join(root, "debug.log"),
-                        )
+            meta = {"barcode_found": False, "ocr_text_found": False, "barcode_status": "decoder_miss"}
+            report = types.SimpleNamespace(status="decoder_miss", results=[])
+            with mock.patch.object(scan2, "recognize_model_ocr", return_value=("AP162E", "RAW_MODEL_SECRET_123456", "ocr_file")):
+                with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("", "", "barcode_decoder_miss", meta, report)):
+                    with mock.patch.object(scan2, "recognize_sn_ocr_after_barcode", return_value=("4E25A0170000", "RAW_SN_SECRET_123456", "ocr", meta)):
+                        with mock.patch.dict(
+                            os.environ,
+                            {
+                                "SCAN2_MASK_RAW": "1",
+                                "SCAN2_UNSAFE_RAW": "",
+                                "SCAN2_MODEL_BARCODE": "0",
+                                "SCAN2_OCR_FALLBACK": "1",
+                            },
+                            clear=False,
+                        ):
+                            scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=out_jsonl,
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
 
             with open(out_jsonl, "r", encoding="utf-8") as f:
                 row = json.loads(f.readline())
@@ -610,14 +637,17 @@ class Scan2ManifestTest(unittest.TestCase):
             old_sink = scan2.LOG_SINK
             scan2.set_log_sink(logs.append)
             try:
-                with mock.patch.object(scan2, "recognize_model", return_value=("S380-S8P2T", "raw", "ocr_color")):
-                    with mock.patch.object(scan2, "recognize_sn", return_value=("4E25B0105849", "raw", "barcode", {})):
-                        scan2.main(
-                            model_dir=model_dir,
-                            sn_dir=sn_dir,
-                            out_jsonl=os.path.join(root, "out.jsonl"),
-                            debug_log=os.path.join(root, "debug.log"),
-                        )
+                meta = {"barcode_found": True, "ocr_text_found": False, "barcode_status": "hit"}
+                report = types.SimpleNamespace(status="hit", results=[])
+                with mock.patch.object(scan2, "recognize_model_ocr", return_value=("S380-S8P2T", "raw", "ocr_color")):
+                    with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("4E25B0105849", "raw", "barcode", meta, report)):
+                        with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "0"}, clear=False):
+                            scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=os.path.join(root, "out.jsonl"),
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
             finally:
                 scan2.set_log_sink(old_sink)
 
@@ -644,12 +674,13 @@ class Scan2ManifestTest(unittest.TestCase):
             out_jsonl = os.path.join(root, "out.jsonl")
             with mock.patch.object(scan2, "read_barcodes", return_value=["SN:4E25A0170000"]):
                 with mock.patch.object(scan2, "load_for_ocr_color") as load_ocr:
-                    stats = scan2.main(
-                        model_dir=model_dir,
-                        sn_dir=sn_dir,
-                        out_jsonl=out_jsonl,
-                        debug_log=os.path.join(root, "debug.log"),
-                    )
+                    with mock.patch.dict(os.environ, {"SCAN2_SCAN_LABEL_WITHOUT_SN": "1"}, clear=False):
+                        stats = scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=out_jsonl,
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
 
             with open(out_jsonl, "r", encoding="utf-8") as f:
                 row = json.loads(f.readline())
@@ -673,16 +704,19 @@ class Scan2ManifestTest(unittest.TestCase):
             with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
                 manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path}) + "\n")
 
-            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "barcode")) as recognize_model:
-                with mock.patch.dict(os.environ, {}, clear=True):
-                    stats = scan2.main(
-                        model_dir=model_dir,
-                        sn_dir=sn_dir,
-                        out_jsonl=os.path.join(root, "out.jsonl"),
-                        debug_log=os.path.join(root, "debug.log"),
-                    )
+            with mock.patch.object(scan2, "recognize_model_barcode", return_value=("AP162E", "raw", "barcode")) as recognize_model:
+                with mock.patch.object(scan2, "recognize_model_ocr") as recognize_model_ocr:
+                    with mock.patch.dict(os.environ, {}, clear=True):
+                        stats = scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=os.path.join(root, "out.jsonl"),
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
 
-            self.assertTrue(recognize_model.call_args.kwargs["use_barcode"])
+            recognize_model.assert_called_once()
+            self.assertEqual(recognize_model.call_args.kwargs["label_id"], "a__label_1")
+            recognize_model_ocr.assert_not_called()
             self.assertEqual(stats["model_total"], 1)
             self.assertEqual(stats["model_success"], 1)
             self.assertEqual(stats["model_barcode_hits"], 1)
@@ -702,16 +736,93 @@ class Scan2ManifestTest(unittest.TestCase):
             with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
                 manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path}) + "\n")
 
-            with mock.patch.object(scan2, "recognize_model", return_value=("MODEL1", "raw", "test")) as recognize_model:
-                with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "0"}, clear=True):
-                    scan2.main(
-                        model_dir=model_dir,
-                        sn_dir=sn_dir,
-                        out_jsonl=os.path.join(root, "out.jsonl"),
-                        debug_log=os.path.join(root, "debug.log"),
-                    )
+            with mock.patch.object(scan2, "recognize_model_barcode") as recognize_model:
+                with mock.patch.object(scan2, "recognize_model_ocr", return_value=("MODEL1", "raw", "test")):
+                    with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "0"}, clear=True):
+                        scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=os.path.join(root, "out.jsonl"),
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
 
-            self.assertFalse(recognize_model.call_args.kwargs["use_barcode"])
+            recognize_model.assert_not_called()
+
+    def test_scan_worker_count_auto_and_env_overrides(self):
+        scan2 = _import_scan2()
+
+        with mock.patch.object(scan2.os, "cpu_count", return_value=16):
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(scan2.scan_worker_count("barcode"), 8)
+                self.assertEqual(scan2.scan_worker_count("ocr"), 1)
+
+            with mock.patch.dict(os.environ, {"SCAN2_WORKERS": "3"}, clear=True):
+                self.assertEqual(scan2.scan_worker_count("barcode"), 3)
+                self.assertEqual(scan2.scan_worker_count("ocr"), 3)
+
+            with mock.patch.dict(os.environ, {"SCAN2_OCR_WORKERS": "4", "SCAN2_WORKERS": "3"}, clear=True):
+                self.assertEqual(scan2.scan_worker_count("barcode"), 3)
+                self.assertEqual(scan2.scan_worker_count("ocr"), 4)
+
+            with mock.patch.dict(os.environ, {"SCAN2_PARALLEL": "0", "SCAN2_WORKERS": "5"}, clear=True):
+                self.assertEqual(scan2.scan_worker_count("barcode"), 1)
+                self.assertEqual(scan2.scan_worker_count("ocr"), 1)
+
+    def test_main_runs_barcode_batch_before_ocr_fallback_and_preserves_rows(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            rows = []
+            for label_id in ("b__label_1", "a__label_1"):
+                model_path = os.path.join(model_dir, f"{label_id}__model.png")
+                open(model_path, "wb").close()
+                rows.append({"label_id": label_id, "model_path": model_path})
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                for row in rows:
+                    manifest.write(json.dumps(row) + "\n")
+
+            events = []
+
+            def fake_barcode(_path, label_id=""):
+                events.append(f"barcode:{label_id}")
+                return "", "", "barcode_no_match"
+
+            def fake_ocr(_path, label_id="", verify_barcode_visual=False):
+                events.append(f"ocr:{label_id}")
+                return "AP162E", "raw", "ocr_file"
+
+            out_jsonl = os.path.join(root, "out.jsonl")
+            with mock.patch.object(scan2, "recognize_model_barcode", side_effect=fake_barcode):
+                with mock.patch.object(scan2, "recognize_model_ocr", side_effect=fake_ocr):
+                    with mock.patch.dict(
+                        os.environ,
+                        {
+                            "SCAN2_BARCODE_WORKERS": "2",
+                            "SCAN2_OCR_WORKERS": "2",
+                            "SCAN2_OCR_FALLBACK": "1",
+                        },
+                        clear=False,
+                    ):
+                        stats = scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=out_jsonl,
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
+
+            last_barcode = max(i for i, value in enumerate(events) if value.startswith("barcode:"))
+            first_ocr = min(i for i, value in enumerate(events) if value.startswith("ocr:"))
+            self.assertLess(last_barcode, first_ocr)
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                output_rows = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual([row["label_id"] for row in output_rows], ["a__label_1", "b__label_1"])
+            self.assertEqual(stats["model_total"], 2)
+            self.assertEqual(stats["model_ocr_recoveries"], 2)
 
     def test_model_recognition_skips_barcode_cli_when_disabled(self):
         scan2 = _import_scan2()
@@ -726,6 +837,51 @@ class Scan2ManifestTest(unittest.TestCase):
         self.assertEqual(model, "")
         self.assertEqual(source, "none")
         barcode_mock.assert_not_called()
+
+    def test_main_uses_sn_hint_before_model_ocr(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            label_id = "a__label_1"
+            model_path = os.path.join(model_dir, f"{label_id}__model.png")
+            sn_path = os.path.join(sn_dir, f"{label_id}__sn.png")
+            open(model_path, "wb").close()
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": label_id, "model_path": model_path, "sn_path": sn_path}) + "\n")
+
+            sn_meta = {
+                "barcode_found": True,
+                "ocr_text_found": False,
+                "barcode_status": "hit",
+                "barcode_attempts": 1,
+                "barcode_decoded_count": 1,
+            }
+            with mock.patch.object(scan2, "recognize_model_barcode", return_value=("", "", "barcode_no_match")):
+                with mock.patch.object(
+                    scan2,
+                    "_recognize_sn_barcode",
+                    return_value=("4E2640069362", "raw", "barcode", sn_meta, None),
+                ):
+                    with mock.patch.object(scan2, "recognize_model_ocr") as model_ocr:
+                        stats = scan2.main(
+                            model_dir=model_dir,
+                            sn_dir=sn_dir,
+                            out_jsonl=os.path.join(root, "out.jsonl"),
+                            debug_log=os.path.join(root, "debug.log"),
+                        )
+
+            model_ocr.assert_not_called()
+            with open(os.path.join(root, "out.jsonl"), "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+            self.assertEqual(row["model"], "S380-S8P2T")
+            self.assertEqual(row["model_src"], "sn_hint")
+            self.assertEqual(stats["model_ocr_recoveries"], 0)
 
     def test_model_recognition_prefers_file_path_ocr(self):
         scan2 = _import_scan2()
@@ -798,9 +954,10 @@ class CropTempFileTest(unittest.TestCase):
             with mock.patch.object(crop, "read_image", return_value=fake_img):
                 with mock.patch.object(crop, "infer_with_resize", return_value=[pred]):
                     with mock.patch.object(crop, "crop_from_pred", return_value=fake_img):
-                        with mock.patch.object(crop, "save_png_required", side_effect=lambda path, _img, _ctx: path):
-                            out_png = crop.stage1_crop_labels(path_png)
-                            out_jpg = crop.stage1_crop_labels(path_jpg)
+                        with mock.patch.object(crop, "stage1_is_product_label_crop", return_value=True):
+                            with mock.patch.object(crop, "save_png_required", side_effect=lambda path, _img, _ctx: path):
+                                out_png = crop.stage1_crop_labels(path_png)
+                                out_jpg = crop.stage1_crop_labels(path_jpg)
 
             self.assertEqual(os.path.basename(out_png[0]), "same.png__label_1.png")
             self.assertEqual(os.path.basename(out_jpg[0]), "same.jpg__label_1.png")
@@ -845,6 +1002,197 @@ class CropTempFileTest(unittest.TestCase):
             self.assertFalse(os.path.exists(calls[0]))
             self.assertFalse(os.path.exists(calls[1]))
 
+    def test_crop_worker_count_defaults_parallel_and_respects_overrides(self):
+        crop = _import_crop()
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for key in ("CROP_WORKERS", "CROP_STAGE1_WORKERS", "CROP_STAGE2_WORKERS"):
+                os.environ.pop(key, None)
+            os.environ.pop("CROP_INFERENCE_BACKEND", None)
+
+            with mock.patch.object(crop.os, "cpu_count", return_value=16):
+                with mock.patch.object(crop, "_local_yolo_cuda_available", return_value=False):
+                    self.assertEqual(crop.inference_backend(), "local")
+                    self.assertEqual(crop.crop_worker_count("stage2"), 2)
+
+                with mock.patch.object(crop, "_local_yolo_cuda_available", return_value=True):
+                    self.assertEqual(crop.crop_worker_count("stage2"), 4)
+
+                os.environ["CROP_INFERENCE_BACKEND"] = "roboflow"
+                self.assertEqual(crop.crop_worker_count("stage2"), 8)
+
+                os.environ["CROP_INFERENCE_BACKEND"] = "local"
+                with mock.patch.object(crop, "_local_yolo_cuda_available", return_value=False):
+                    self.assertEqual(crop.crop_worker_count("stage2"), 2)
+
+                os.environ["CROP_INFERENCE_BACKEND"] = "auto"
+                with mock.patch.object(crop, "_local_yolo_cuda_available", return_value=False):
+                    self.assertEqual(crop.crop_worker_count("stage2"), 2)
+
+            os.environ["CROP_WORKERS"] = "2"
+            self.assertEqual(crop.crop_worker_count("stage2"), 2)
+
+            os.environ["CROP_STAGE2_WORKERS"] = "3"
+            self.assertEqual(crop.crop_worker_count("stage2"), 3)
+
+    def test_map_ordered_preserves_input_order_when_parallel(self):
+        crop = _import_crop()
+
+        def worker(value):
+            if value == 1:
+                time.sleep(0.02)
+            return value * 10
+
+        self.assertEqual(crop._map_ordered([3, 1, 2], worker, workers=3), [30, 10, 20])
+
+    def test_infer_with_resize_reports_cloudflare_block_without_html(self):
+        crop = _import_crop()
+
+        class Cloudflare403(Exception):
+            status_code = 403
+            api_message = "<!DOCTYPE html><title>Attention Required! | Cloudflare</title><h1>Sorry, you have been blocked</h1>"
+            description = "403 Client Error: Forbidden"
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def infer(self, path, model_id):
+                self.calls += 1
+                raise Cloudflare403()
+
+        fake_client = FakeClient()
+        fake_img = types.SimpleNamespace(shape=(100, 200, 3))
+
+        def write_tmp(_bgr, path, quality=85):
+            with open(path, "wb") as f:
+                f.write(b"tmp")
+            return True
+
+        with tempfile.TemporaryDirectory() as root:
+            crop.TMP_DIR = root
+            with mock.patch.dict(os.environ, {"CROP_INFERENCE_BACKEND": "roboflow"}):
+                with mock.patch.object(crop, "get_inference_client", return_value=fake_client):
+                    with mock.patch.object(crop, "_write_tmp_jpg", side_effect=write_tmp):
+                        with self.assertRaises(RuntimeError) as ctx:
+                            crop.infer_with_resize(fake_img, "image.png", "huawei-2ha7t/7")
+
+            message = str(ctx.exception)
+            self.assertIn("Cloudflare", message)
+            self.assertIn("HTTP 403", message)
+            self.assertNotIn("<!DOCTYPE", message)
+            self.assertNotIn("Sorry, you have been blocked", message)
+            self.assertEqual(fake_client.calls, 1)
+
+    def test_auto_backend_falls_back_to_local_on_cloudflare_block(self):
+        crop = _import_crop()
+        crop.auto_fallback_backend = None
+
+        class Cloudflare403(Exception):
+            status_code = 403
+            api_message = "<html>Cloudflare: you have been blocked</html>"
+            description = "403 Client Error: Forbidden"
+
+        class CloudClient:
+            def __init__(self):
+                self.calls = 0
+
+            def infer(self, path, model_id):
+                self.calls += 1
+                raise Cloudflare403()
+
+        class LocalClient:
+            def __init__(self):
+                self.calls = 0
+
+            def infer(self, path, model_id):
+                self.calls += 1
+                return {"predictions": [{"x": 10, "y": 20, "width": 30, "height": 40}]}
+
+        cloud_client = CloudClient()
+        local_client = LocalClient()
+        requested_backends = []
+        fake_img = types.SimpleNamespace(shape=(100, 200, 3))
+
+        def get_client(backend=None):
+            requested_backends.append(backend or crop.inference_backend())
+            return local_client if backend == "local" else cloud_client
+
+        def write_tmp(_bgr, path, quality=85):
+            with open(path, "wb") as f:
+                f.write(b"tmp")
+            return True
+
+        with tempfile.TemporaryDirectory() as root:
+            crop.TMP_DIR = root
+            with mock.patch.dict(os.environ, {"CROP_INFERENCE_BACKEND": "auto"}):
+                with mock.patch.object(crop, "get_inference_client", side_effect=get_client):
+                    with mock.patch.object(crop, "_write_tmp_jpg", side_effect=write_tmp):
+                        preds = crop.infer_with_resize(fake_img, "image.png", "huawei-2ha7t/7")
+
+        self.assertEqual(preds, [{"x": 10, "y": 20, "width": 30, "height": 40}])
+        self.assertEqual(requested_backends, ["roboflow", "local"])
+        self.assertEqual(cloud_client.calls, 1)
+        self.assertEqual(local_client.calls, 1)
+        self.assertEqual(crop.auto_fallback_backend, "local")
+
+    def test_auto_backend_reuses_local_after_cloudflare_block(self):
+        crop = _import_crop()
+        crop.auto_fallback_backend = None
+
+        class Cloudflare403(Exception):
+            status_code = 403
+            api_message = "<html>Attention Required! | Cloudflare</html>"
+            description = "403 Client Error: Forbidden"
+
+        class CloudClient:
+            def __init__(self):
+                self.calls = 0
+
+            def infer(self, path, model_id):
+                self.calls += 1
+                raise Cloudflare403()
+
+        class LocalClient:
+            def __init__(self):
+                self.calls = 0
+
+            def infer(self, path, model_id):
+                self.calls += 1
+                return {"predictions": []}
+
+        cloud_client = CloudClient()
+        local_client = LocalClient()
+        requested_backends = []
+        fake_img = types.SimpleNamespace(shape=(100, 200, 3))
+
+        def get_client(backend=None):
+            requested_backends.append(backend or crop.inference_backend())
+            return local_client if backend == "local" else cloud_client
+
+        def write_tmp(_bgr, path, quality=85):
+            with open(path, "wb") as f:
+                f.write(b"tmp")
+            return True
+
+        with tempfile.TemporaryDirectory() as root:
+            crop.TMP_DIR = root
+            with mock.patch.dict(os.environ, {"CROP_INFERENCE_BACKEND": "auto"}):
+                with mock.patch.object(crop, "get_inference_client", side_effect=get_client):
+                    with mock.patch.object(crop, "_write_tmp_jpg", side_effect=write_tmp):
+                        self.assertEqual(
+                            crop.infer_with_resize(fake_img, "image-a.png", "huawei-2ha7t/7"),
+                            [],
+                        )
+                        self.assertEqual(
+                            crop.infer_with_resize(fake_img, "image-b.png", "sn_model/9"),
+                            [],
+                        )
+
+        self.assertEqual(requested_backends, ["roboflow", "local", "local"])
+        self.assertEqual(cloud_client.calls, 1)
+        self.assertEqual(local_client.calls, 2)
+
     def test_dotenv_loads_from_packaged_internal_dir(self):
         crop = _import_crop()
 
@@ -852,6 +1200,40 @@ class CropTempFileTest(unittest.TestCase):
             internal = os.path.join(root, "_internal")
             os.makedirs(internal)
             with open(os.path.join(internal, ".env"), "w", encoding="utf-8-sig") as f:
+                f.write("API_KEY=packaged-test-key\n")
+
+            old_frozen = getattr(sys, "frozen", None)
+            old_executable = sys.executable
+            old_api_key = os.environ.pop("API_KEY", None)
+            try:
+                sys.frozen = True
+                sys.executable = os.path.join(root, "HuaweiOCR.exe")
+                with mock.patch("os.getcwd", return_value=root):
+                    crop.load_dotenv()
+                self.assertEqual(os.environ.get("API_KEY"), "packaged-test-key")
+            finally:
+                if old_frozen is None:
+                    try:
+                        delattr(sys, "frozen")
+                    except AttributeError:
+                        pass
+                else:
+                    sys.frozen = old_frozen
+                sys.executable = old_executable
+                if old_api_key is None:
+                    os.environ.pop("API_KEY", None)
+                else:
+                    os.environ["API_KEY"] = old_api_key
+
+    def test_dotenv_empty_value_does_not_block_packaged_internal_dir(self):
+        crop = _import_crop()
+
+        with tempfile.TemporaryDirectory() as root:
+            internal = os.path.join(root, "_internal")
+            os.makedirs(internal)
+            with open(os.path.join(root, ".env"), "w", encoding="utf-8") as f:
+                f.write("API_KEY=\n")
+            with open(os.path.join(internal, ".env"), "w", encoding="utf-8") as f:
                 f.write("API_KEY=packaged-test-key\n")
 
             old_frozen = getattr(sys, "frozen", None)
@@ -964,6 +1346,64 @@ class GuiPipelineTest(unittest.TestCase):
         source = inspect.getsource(gui_app.App.run_pipeline)
 
         self.assertIn("crop_module.main(input_dir=input_dir, clean=True)", source)
+
+    def test_gui_starts_ocr_prewarm_after_init(self):
+        sys.modules.pop("gui_app", None)
+        import gui_app
+
+        source = inspect.getsource(gui_app.App.__init__)
+
+        self.assertIn("start_ocr_prewarm_thread(log=self.write_log)", source)
+
+    def test_gui_prewarm_can_be_disabled_without_importing_scan2(self):
+        sys.modules.pop("gui_pipeline", None)
+        sys.modules.pop("scan2", None)
+        import gui_pipeline
+
+        with mock.patch.dict(os.environ, {"HUAWEIOCR_PREWARM_OCR": "0"}):
+            thread = gui_pipeline.start_ocr_prewarm_thread(log=lambda _msg: None)
+
+        self.assertIsNone(thread)
+        self.assertNotIn("scan2", sys.modules)
+
+
+class OCRPrewarmTest(unittest.TestCase):
+    def test_scan2_prewarm_initializes_singleton_and_runs_probe_once(self):
+        scan2 = _import_scan2()
+        engine = object()
+        calls = []
+
+        scan2.OCR_ENGINE = None
+        scan2.OCR_PREWARM_STARTED = False
+        scan2.OCR_PREWARM_DONE = False
+        scan2.init_ocr = lambda: engine
+        scan2.ocr_one_image = lambda ocr, img: calls.append((ocr, img)) or ([], "")
+
+        self.assertTrue(scan2.prewarm_ocr_engine())
+        self.assertIs(scan2.OCR_ENGINE, engine)
+        self.assertTrue(scan2.OCR_PREWARM_DONE)
+        self.assertEqual(len(calls), 1)
+
+        self.assertTrue(scan2.prewarm_ocr_engine())
+        self.assertEqual(len(calls), 1)
+
+    def test_scan2_prewarm_failure_can_retry_later(self):
+        scan2 = _import_scan2()
+        calls = []
+
+        def fail_once(_ocr, _img):
+            calls.append("fail")
+            raise RuntimeError("probe failed")
+
+        scan2.OCR_ENGINE = None
+        scan2.OCR_PREWARM_STARTED = False
+        scan2.OCR_PREWARM_DONE = False
+        scan2.ocr_one_image = fail_once
+
+        self.assertFalse(scan2.prewarm_ocr_engine())
+        self.assertFalse(scan2.OCR_PREWARM_STARTED)
+        self.assertFalse(scan2.OCR_PREWARM_DONE)
+        self.assertEqual(calls, ["fail"])
 
 
 class BarcodeCliBudgetTest(unittest.TestCase):

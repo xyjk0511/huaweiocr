@@ -10,11 +10,8 @@ Windows-first batch OCR pipeline for device labels.
 python -m pip install -r requirements.txt
 ```
 
-Create `.env`:
-
-```text
-API_KEY=your_api_key_here
-```
+The detector runs locally by default with ONNX weights under
+`local_models/detectors`; no Roboflow API key is required for the normal path.
 
 Put images in `new_images`, then run:
 
@@ -23,6 +20,15 @@ python run_all.py --input new_images --out runs --format jsonl --log-level info 
 ```
 
 Or double-click `start.bat`. The script creates `new_images` if needed and stops with a clear prompt when the folder is empty.
+
+Optional Roboflow mode is still available with `CROP_INFERENCE_BACKEND=roboflow`
+and an `.env` containing `API_KEY=...`.
+Local detection chooses conservative stage1/stage2 worker counts from the
+machine and backend; override with `CROP_STAGE1_WORKERS`,
+`CROP_STAGE2_WORKERS`, or `CROP_WORKERS`.
+Recognition also runs in two scheduled pools: barcode work runs first with a
+larger worker pool, and only misses fall back to the smaller OCR pool. Override
+with `SCAN2_BARCODE_WORKERS`, `SCAN2_OCR_WORKERS`, or `SCAN2_WORKERS`.
 
 ## Outputs
 

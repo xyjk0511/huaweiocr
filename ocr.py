@@ -30,6 +30,20 @@ def configure_paddle_runtime_env():
 
 configure_paddle_runtime_env()
 
+
+def preload_torch_runtime_for_paddle():
+    if os.name != "nt":
+        return
+    if "paddle" in sys.modules or "paddleocr" in sys.modules:
+        return
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        pass
+
+
+preload_torch_runtime_for_paddle()
+
 import paddle
 from paddleocr import PaddleOCR
 from app_paths import ensure_models_installed, get_resource_path

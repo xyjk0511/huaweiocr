@@ -17,10 +17,13 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_RE = re.compile(r"(2[0-9]{10}(?:ERA|ER[A-Z]?|LDR|LDRA|SRA)[0-9]{4,7})")
-SN12_RE = re.compile(r"(4E[0-9A-Z]{10})")
+SN20_BODY_PATTERN = r"2[0-9]{9,10}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQA)[0-9]{6,7}"
+SN12_BODY_PATTERN = r"4E[0-9]{2}[0-9A-Z]{8}"
+SN20_RE = re.compile(rf"({SN20_BODY_PATTERN})")
+SN12_RE = re.compile(rf"({SN12_BODY_PATTERN})")
+SERIAL_FIELD_SN_RE = re.compile(rf"S({SN20_BODY_PATTERN}|{SN12_BODY_PATTERN})(?![0-9A-Z])")
 PURE_LONG_DIGITS_RE = re.compile(r"[0-9]{16,}")
-DIRECT_SCANNED_SN_RE = re.compile(r"2[0-9]{8,12}4E[0-9A-Z]{6,12}")
+DIRECT_SCANNED_SN_RE = re.compile(r"2[0-9]{9,10}ES[0-9A-Z]{7}")
 
 NON_SN_PREFIX_RE = re.compile(
     r"^(SF|MAC|EAN|UPC|QR|HTTP|HTTPS|PART|PN|MODEL|DESC|ROUTE|WAYBILL|SNMP|IMEI)"
@@ -28,10 +31,67 @@ NON_SN_PREFIX_RE = re.compile(
 
 DEFAULT_MAX_CANDIDATES = 96
 DEFAULT_MAX_DECODER_ATTEMPTS = 96
+DEFAULT_LABEL_MAX_DECODER_ATTEMPTS = 48
 DEFAULT_MIN_BARCODE_WIDTH = 120
 DEFAULT_MIN_BARCODE_HEIGHT = 22
 DEFAULT_BLUR_VARIANCE = 18.0
 DEFAULT_DESKEW_ANGLES = (0, -4, 4, -8, 8)
+DEFAULT_DECODERS = ("pyzbar", "zxingcpp")
+
+
+def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(min_value, value)
+
+
+def _env_decoder_names() -> tuple[str, ...]:
+    raw = os.environ.get("SN_BARCODE_DECODERS", "")
+    if not raw.strip():
+        return DEFAULT_DECODERS
+    names = []
+    for part in raw.split(","):
+        name = part.strip().lower().replace("-", "_")
+        if name:
+            names.append(name)
+    return tuple(names) or DEFAULT_DECODERS
+
+
+def _selected_decoders():
+    decoder_map = {
+        "pyzbar": _decode_pyzbar,
+        "zxingcpp": _decode_zxingcpp,
+        "zxing_cpp": _decode_zxingcpp,
+        "cli": _decode_cli,
+        "legacy_cli": _decode_cli,
+    }
+    decoders = []
+    for name in _env_decoder_names():
+        decoder = decoder_map.get(name)
+        if decoder is not None and decoder not in decoders:
+            decoders.append(decoder)
+    return tuple(decoders) or (_decode_pyzbar, _decode_zxingcpp)
+
+
+def decoder_attempt_budget_for_source(
+    source: str,
+    max_decoder_attempts: int,
+    *,
+    has_primary_sn_source: bool = False,
+) -> int:
+    budget = max(1, int(max_decoder_attempts))
+    if str(source).lower() == "label" and has_primary_sn_source:
+        label_budget = _env_int(
+            "SN_BARCODE_LABEL_MAX_DECODER_ATTEMPTS",
+            DEFAULT_LABEL_MAX_DECODER_ATTEMPTS,
+        )
+        return min(budget, label_budget)
+    return budget
 
 
 @dataclass(frozen=True)
@@ -140,6 +200,9 @@ def extract_sn_from_payload(value: str) -> str:
         cleaned = cleaned[2:]
     if "S215" in cleaned:
         cleaned = cleaned[cleaned.index("S215") + 1:]
+    m = SERIAL_FIELD_SN_RE.search(cleaned)
+    if m:
+        return m.group(1)
     for prefix in ("SERIALNO", "SERIAL", "SNO"):
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix):]
@@ -831,18 +894,26 @@ def scan_sn_barcodes(
     *,
     fallback_path_decoder: Callable[[str], list[str]] | None = None,
     label_id: str = "",
-    max_candidates: int = DEFAULT_MAX_CANDIDATES,
-    max_decoder_attempts: int = DEFAULT_MAX_DECODER_ATTEMPTS,
+    max_candidates: int | None = None,
+    max_decoder_attempts: int | None = None,
     debug_dir: str = "",
     early_exit: bool = True,
 ) -> SnBarcodeReport:
+    if max_candidates is None:
+        max_candidates = _env_int("SN_BARCODE_MAX_CANDIDATES", DEFAULT_MAX_CANDIDATES)
+    if max_decoder_attempts is None:
+        max_decoder_attempts = _env_int("SN_BARCODE_MAX_DECODER_ATTEMPTS", DEFAULT_MAX_DECODER_ATTEMPTS)
+
     all_results: list[DecoderResult] = []
     quality_issues: list[dict[str, Any]] = []
     decoder_errors: list[str] = []
     attempts = 0
     seen_results: set[tuple[str, str, str]] = set()
+    source_items = [(source, path) for source, path in sources]
+    has_primary_sn_source = any(str(source).lower() == "sn" and path for source, path in source_items)
+    decoders = _selected_decoders()
 
-    for source, path in sources:
+    for source, path in source_items:
         if not path:
             continue
         image = _read_image(path)
@@ -854,9 +925,14 @@ def scan_sn_barcodes(
             continue
 
         candidates = generate_candidate_images(image, source, max_candidates=max_candidates)
+        source_budget = decoder_attempt_budget_for_source(
+            source,
+            max_decoder_attempts,
+            has_primary_sn_source=has_primary_sn_source,
+        )
         source_attempts = 0
         for index, candidate in enumerate(candidates, 1):
-            if source_attempts >= max_decoder_attempts:
+            if source_attempts >= source_budget:
                 break
             if debug_dir:
                 _dump_candidate(debug_dir, label_id or source, index, candidate)
@@ -872,8 +948,8 @@ def scan_sn_barcodes(
                     }
                 )
 
-            for decoder in (_decode_pyzbar, _decode_zxingcpp, _decode_cli):
-                if source_attempts >= max_decoder_attempts:
+            for decoder in decoders:
+                if source_attempts >= source_budget:
                     break
                 attempts += 1
                 source_attempts += 1

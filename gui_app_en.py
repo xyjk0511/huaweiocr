@@ -20,7 +20,7 @@ from win_subprocess import hide_subprocess_windows
 hide_subprocess_windows()
 
 from app_paths import get_resource_path, get_barcode_cli_path
-from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules
+from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, start_ocr_prewarm_thread
 
 # 粘贴图片支持（可选）
 try:
@@ -280,6 +280,7 @@ class App(BaseTk):
             self.write_log("Ctrl+V paste enabled: supports screenshots, copied web images, and copied files.")
         else:
             self.write_log("Note: pillow is not installed. Ctrl+V can only paste file paths; to paste images run: pip install pillow")
+        self._ocr_prewarm_thread = start_ocr_prewarm_thread(log=self.write_log)
 
     # ========== 工具函数 ==========
 

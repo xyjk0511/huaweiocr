@@ -20,7 +20,7 @@ from win_subprocess import hide_subprocess_windows
 hide_subprocess_windows()
 
 from app_paths import get_resource_path, get_barcode_cli_path
-from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules
+from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, start_ocr_prewarm_thread
 # 粘贴图片支持（可选）
 try:
     from PIL import ImageGrab, Image
@@ -293,6 +293,7 @@ class App(BaseTk):
             self.write_log("✅ 已启用 Ctrl+V 粘贴：支持粘贴截图/网页复制的图片，也支持粘贴复制的文件。")
         else:
             self.write_log("提示：未安装 pillow，Ctrl+V 只能尝试粘贴文件路径；要粘贴图片请 pip install pillow")
+        self._ocr_prewarm_thread = start_ocr_prewarm_thread(log=self.write_log)
     # ========== 工具函数 ==========
     def write_log(self, text: str):
         """线程安全地往日志窗口里写一行"""

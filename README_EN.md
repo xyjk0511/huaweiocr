@@ -8,14 +8,14 @@ The pipeline detects label regions, crops model/SN fields, decodes label-local S
 
 SN barcode recognition only uses crops bound to the current label, such as the SN crop, barcode candidates, and the label crop. The original full source photo is kept as provenance metadata only and is not scanned as an SN barcode fallback, because one photo can contain multiple valid labels.
 
-Roboflow detection requires a valid `API_KEY`. Local PaddleOCR models and the barcode CLI can be bundled for packaging, but the detector step is not fully offline.
+Detection uses local ONNX models by default: `local_models/detectors/label_detector.onnx` for stage1 label crops and `local_models/detectors/field_detector.onnx` for model/SN crops. The normal local path does not require a Roboflow API key.
 
 ## Requirements
 
 - Windows
 - Python 3.12 recommended
 - Dependencies pinned in `requirements.txt`
-- Roboflow API key in `.env`
+- No `.env` is required for default local detection; an API key is only needed when explicitly using Roboflow
 
 Install:
 
@@ -23,11 +23,16 @@ Install:
 python -m pip install -r requirements.txt
 ```
 
-Create `.env`:
+To temporarily switch back to Roboflow, create `.env` and set the backend:
 
 ```text
 API_KEY=your_api_key_here
+CROP_INFERENCE_BACKEND=roboflow
 ```
+
+Local detection runs in parallel by default and chooses conservative stage1/stage2 worker counts from the machine and backend. Override with `CROP_STAGE1_WORKERS`, `CROP_STAGE2_WORKERS`, or `CROP_WORKERS`. When `onnxruntime-gpu` is installed on an NVIDIA GPU machine, `LOCAL_YOLO_DEVICE=auto` prefers CUDA; otherwise it falls back to CPU.
+
+Recognition is scheduled in two parallel pools: the larger barcode worker pool runs first, and only barcode misses enter the smaller OCR worker pool. Auto defaults are conservative and CPU-aware, with barcode workers capped at 8 and OCR defaulting to 1 because PaddleOCR multi-instance concurrent initialization is unstable. Override with `SCAN2_BARCODE_WORKERS`, `SCAN2_OCR_WORKERS`, or `SCAN2_WORKERS`; set `SCAN2_PARALLEL=0` to temporarily disable recognition parallelism.
 
 ## Windows Start
 

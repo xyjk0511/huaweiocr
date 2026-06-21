@@ -8,14 +8,14 @@
 
 SN 条码识别只使用当前标签绑定的裁剪图，例如 SN 小图、条码候选区和标签小图；整张原始照片只保留为来源元数据，不作为 SN 条码兜底扫描源，避免一张照片里多个标签互相串号。
 
-Roboflow 检测步骤需要有效 `API_KEY`。PaddleOCR 模型和条码 CLI 可以随包携带，但检测步骤不是完全离线。
+检测步骤默认使用本地 ONNX 模型：`local_models/detectors/label_detector.onnx` 负责 stage1 标签裁剪，`local_models/detectors/field_detector.onnx` 负责 model/SN 字段裁剪。正常本地运行不需要 Roboflow API key。
 
 ## 环境
 
 - Windows
 - 推荐 Python 3.12
 - `requirements.txt` 已锁定依赖版本
-- `.env` 中配置 Roboflow API key
+- 默认本地检测不需要 `.env`；只有显式使用 Roboflow 时才需要 API key
 
 安装依赖：
 
@@ -23,11 +23,16 @@ Roboflow 检测步骤需要有效 `API_KEY`。PaddleOCR 模型和条码 CLI 可�
 python -m pip install -r requirements.txt
 ```
 
-创建 `.env`：
+如需临时切回 Roboflow，创建 `.env` 并设置后端：
 
 ```text
 API_KEY=your_api_key_here
+CROP_INFERENCE_BACKEND=roboflow
 ```
+
+本地检测默认并发运行：stage1 和 stage2 会按机器与后端保守自动分配 worker。可用 `CROP_STAGE1_WORKERS`、`CROP_STAGE2_WORKERS` 或 `CROP_WORKERS` 调整；有 NVIDIA GPU 且安装了 `onnxruntime-gpu` 时，`LOCAL_YOLO_DEVICE=auto` 会优先使用 CUDA，否则自动走 CPU。
+
+识别阶段也分池并行：先用较大的 barcode worker 池批量快扫，只有条码没命中的字段才进入较小的 OCR worker 池。默认 worker 数按 CPU 核数保守计算，barcode 最多自动到 8，OCR 默认自动为 1（PaddleOCR 多实例并发初始化不稳定）；可用 `SCAN2_BARCODE_WORKERS`、`SCAN2_OCR_WORKERS` 或 `SCAN2_WORKERS` 调整，`SCAN2_PARALLEL=0` 可临时关闭识别并行。
 
 ## Windows 一键启动
 
