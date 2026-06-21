@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_BODY_PATTERN = r"2[0-9]{9,10}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQA)[0-9]{6,7}"
+SN20_BODY_PATTERN = r"2[0-9]{9,10}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{6,7}"
 SN12_BODY_PATTERN = r"4E[0-9]{2}[0-9A-Z]{8}"
 SN20_RE = re.compile(rf"({SN20_BODY_PATTERN})")
 SN12_RE = re.compile(rf"({SN12_BODY_PATTERN})")

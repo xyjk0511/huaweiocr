@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import types
 import unittest
@@ -74,6 +75,10 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             sn_barcode.extract_sn_from_payload("2150087144AGQA001288"),
             "2150087144AGQA001288",
         )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("2150087144AGQC000131"),
+            "2150087144AGQC000131",
+        )
 
     def test_structured_serial_field_payload_extracts_short_sn_without_leading_s(self):
         self.assertEqual(
@@ -146,6 +151,56 @@ class SnBarcodeSelectionTest(unittest.TestCase):
 
         self.assertEqual(model, "AP362E")
         self.assertEqual(raw, "AP362E")
+
+    def test_model_barcode_band_second_scan_can_find_lower_model_code(self):
+        scan2 = _import_scan2()
+        scan2_barcode = sys.modules["barcode"]
+        fake_img = np.full((80, 220, 3), 255, dtype=np.uint8)
+        detected_band = np.full((24, 180), 255, dtype=np.uint8)
+        midband = np.full((70, 220), 255, dtype=np.uint8)
+
+        def fake_small_patch(img_bgr):
+            if img_bgr.shape[0] == detected_band.shape[0]:
+                return {"results": [{"data": "50087289"}]}
+            return {"results": [{"data": "AP162E"}]}
+
+        with mock.patch.object(scan2, "_try_model_from_fast_zxing", return_value=("", "")):
+            with mock.patch.object(
+                scan2,
+                "_scan_barcode_sources",
+                return_value=[{"source": "model", "data": "50087289"}],
+            ):
+                with mock.patch.object(scan2, "_read_image", return_value=fake_img):
+                    with mock.patch.object(scan2.cv2, "cvtColor", side_effect=lambda img, *_args, **_kwargs: img, create=True):
+                        with mock.patch.object(scan2.cv2, "COLOR_GRAY2BGR", 2, create=True):
+                            with mock.patch.object(scan2_barcode, "auto_rotate_to_horizontal", side_effect=lambda img: img, create=True):
+                                with mock.patch.object(
+                                    scan2_barcode,
+                                    "crop_detected_barcode_band",
+                                    return_value=detected_band,
+                                    create=True,
+                                ):
+                                    with mock.patch.object(
+                                        scan2_barcode,
+                                        "crop_bar_band",
+                                        return_value=midband,
+                                        create=True,
+                                    ):
+                                        with mock.patch.object(
+                                            scan2_barcode,
+                                            "decode_cli_sharp_variants",
+                                            return_value=[],
+                                            create=True,
+                                        ):
+                                            with mock.patch.object(
+                                                scan2,
+                                                "decode_small_patch",
+                                                side_effect=fake_small_patch,
+                                            ):
+                                                model, raw = scan2.try_model_from_barcode("model.png")
+
+        self.assertEqual(model, "AP162E")
+        self.assertEqual(raw, "AP162E")
 
     def test_model_barcode_skips_band_fallback_after_direct_hit(self):
         scan2 = _import_scan2()

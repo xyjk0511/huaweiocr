@@ -1281,12 +1281,29 @@ def _scan_model_barcode_band_entries(img_path: str) -> list[dict]:
     entries = []
     seen = set()
     sharp_decoder = getattr(barcode_module, "decode_cli_sharp_variants", None)
-    if not sharp_decoder:
-        return entries
+
+    for source, band in bands:
+        results = []
+        if sharp_decoder:
+            try:
+                results = sharp_decoder(band, source, {"limit": 24, "calls": 0})
+            except Exception:
+                results = []
+        for item in results:
+            data = item.get("data", "") if isinstance(item, dict) else ""
+            if not data or data in seen:
+                continue
+            seen.add(data)
+            entries.append({"source": source, "data": data})
 
     for source, band in bands:
         try:
-            results = sharp_decoder(band, source, {"limit": 24, "calls": 0})
+            if len(band.shape) == 2:
+                band_bgr = cv2.cvtColor(band, cv2.COLOR_GRAY2BGR)
+            else:
+                band_bgr = band
+            info = decode_small_patch(band_bgr)
+            results = info.get("results", []) if isinstance(info, dict) else []
         except Exception:
             results = []
         for item in results:
