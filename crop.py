@@ -1,4 +1,5 @@
 import concurrent.futures
+import hashlib
 import os
 import sys
 import json
@@ -35,6 +36,30 @@ def _log(msg: str, level: str = "info") -> None:
             LOG_SINK(msg)
         else:
             print(msg)
+
+
+def crop_progress_log_enabled() -> bool:
+    raw = os.environ.get("CROP_PROGRESS_LOG")
+    if raw is None:
+        return bool(LOG_SINK)
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _crop_label_name(path: str) -> str:
+    return os.path.splitext(os.path.basename(str(path or "")))[0]
+
+
+def _stage2_result_summary(result: dict | None) -> str:
+    if not result:
+        return "未保留"
+    hits = []
+    if result.get("part_no_path"):
+        hits.append("PartNo")
+    if result.get("model_path"):
+        hits.append("Model")
+    if result.get("sn_path"):
+        hits.append("SN")
+    return "命中 " + "/".join(hits) if hits else "未保留"
 
 def load_dotenv(path=".env"):
     paths = []
@@ -74,6 +99,7 @@ API_KEY = os.environ.get("API_KEY", "")
 
 # 模型1：裁剪大标签（你原来类似 "huawei-2ha7t/7"）
 MODEL1_ID = "huawei-2ha7t/7"
+MODEL1_HARDCASE_SUPPLEMENT_ID = "huawei-2ha7t-hardcase/1"
 MODEL1_LABEL_CLASS = "huawei_label"   # 如果你的大标签类名不是这个，就改成你Roboflow里的class名
 
 # 模型2：裁剪字段（你说的新模型 sn_model / sn_model 2）
@@ -85,6 +111,7 @@ MODEL2_SN_CLASS = "sn"                # 你的字段类名
 
 INPUT_DIR = "new_images"
 STAGE1_DIR = "stage1_labels"          # 所有小图都放这里（扁平文件夹）
+STAGE1_PREVIEW_DIR = "stage1_previews"
 STAGE2_DIR = "stage2_fields"
 OUT_MODEL_DIR = os.path.join(STAGE2_DIR, "model")
 OUT_SN_DIR = os.path.join(STAGE2_DIR, "sn")
@@ -93,7 +120,9 @@ MANIFEST_PATH = os.path.join(STAGE2_DIR, "manifest.jsonl")
 FAILED_DIR = os.path.join(STAGE2_DIR, "failed")
 DEFAULT_INPUT_DIR = INPUT_DIR
 DEFAULT_STAGE1_DIR = STAGE1_DIR
+DEFAULT_STAGE1_PREVIEW_DIR = STAGE1_PREVIEW_DIR
 DEFAULT_STAGE2_DIR = STAGE2_DIR
+LABEL_ID_ORIGINAL_PATHS = {}
 
 def _refresh_output_paths():
     global OUT_MODEL_DIR, OUT_SN_DIR, OUT_PART_NO_DIR, MANIFEST_PATH, FAILED_DIR, TMP_DIR
@@ -105,13 +134,15 @@ def _refresh_output_paths():
     TMP_DIR = os.path.join(STAGE1_DIR, "_tmp_infer")
 
 def configure_paths(input_dir=None, out_dir=None):
-    global INPUT_DIR, STAGE1_DIR, STAGE2_DIR
+    global INPUT_DIR, STAGE1_DIR, STAGE1_PREVIEW_DIR, STAGE2_DIR
     INPUT_DIR = input_dir or DEFAULT_INPUT_DIR
     if out_dir:
         STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
+        STAGE1_PREVIEW_DIR = os.path.join(out_dir, "stage1_previews")
         STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
     else:
         STAGE1_DIR = DEFAULT_STAGE1_DIR
+        STAGE1_PREVIEW_DIR = DEFAULT_STAGE1_PREVIEW_DIR
         STAGE2_DIR = DEFAULT_STAGE2_DIR
     _refresh_output_paths()
 
@@ -128,8 +159,37 @@ def _env_flag_default(name: str, default: bool) -> bool:
     return default
 
 
+def _env_float_default(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def stage2_save_model_crops_enabled() -> bool:
     return _env_flag_default("CROP_STAGE2_SAVE_MODEL", False)
+
+
+def stage1_raw_label_mode_enabled() -> bool:
+    if not _env_flag_default("CROP_STAGE1_USE_RAW_LABEL_DETECTIONS", True):
+        return False
+    backend = inference_backend()
+    return _is_local_inference_backend(backend) or _is_auto_inference_backend(backend)
+
+
+def stage1_keep_all_crops_enabled() -> bool:
+    return _env_flag_default("CROP_STAGE1_KEEP_ALL_CROPS", stage1_raw_label_mode_enabled())
+
+
+def stage1_save_preview_enabled() -> bool:
+    return _env_flag_default("CROP_STAGE1_SAVE_PREVIEWS", True)
+
+
+def stage1_local_direct_source_enabled() -> bool:
+    return _env_flag_default("CROP_STAGE1_LOCAL_DIRECT_SOURCE", True)
 
 # 裁剪/过滤参数（按需微调）
 MIN_CONF_1 = 0.50
@@ -140,6 +200,15 @@ NMS_1 = 0.30
 STAGE1_MIN_ASPECT = 1.35
 STAGE1_MAX_ASPECT = 3.10
 STAGE1_MAX_RED_RATIO = 0.02
+STAGE1_PARTIAL_MIN_ASPECT = 0.65
+STAGE1_PARTIAL_MAX_RED_RATIO = 0.04
+STAGE1_RAW_EDGE_FALSEPOS_MAX_ASPECT = 1.15
+STAGE1_MIN_BOX_AREA_RATIO = 0.02
+STAGE1_RELAXED_MIN_BOX_AREA_RATIO = 0.018
+STAGE1_BACKGROUND_LABEL_FOCUS_MIN = 800.0
+STAGE1_BACKGROUND_LABEL_MAX_ABS_AREA_RATIO = 0.028
+STAGE1_BACKGROUND_LABEL_MAX_REL_MEDIAN_RATIO = 0.45
+STAGE1_BACKGROUND_LABEL_MAX_CONF = 0.55
 STAGE1_TIGHTEN_MIN_AREA_RATIO = 0.10
 STAGE1_TIGHTEN_MAX_AREA_RATIO = 0.92
 STAGE1_TIGHTEN_PAD_X_RATIO = 0.015
@@ -148,6 +217,9 @@ STAGE1_TIGHTEN_PAD_BOTTOM_RATIO = 0.12
 STAGE1_TIGHTEN_PAD_BOTTOM_IMAGE_RATIO = 0.08
 STAGE1_TIGHTEN_MIN_WIDTH_RETAIN_RATIO = 0.65
 STAGE1_FALLBACK_MAX_CROPS = 1
+STAGE1_SUPPLEMENT_MIN_CONF = 0.15
+STAGE1_SUPPLEMENT_BOX_IOU = 0.35
+STAGE1_HARDCASE_SUPPLEMENT_MAX_CROPS = 2
 DEFAULT_LOCAL_MAX_WORKERS = 4
 DEFAULT_CLOUD_MAX_WORKERS = 8
 
@@ -243,13 +315,15 @@ def _prepare_output_dir(path, label, clean=False):
 
 def ensure_dirs(clean=False):
     # 每次启动时清空目录
-    global STAGE1_DIR, STAGE2_DIR
+    global STAGE1_DIR, STAGE1_PREVIEW_DIR, STAGE2_DIR
     STAGE1_DIR = _prepare_output_dir(STAGE1_DIR, "stage1", clean=clean)
+    STAGE1_PREVIEW_DIR = _prepare_output_dir(STAGE1_PREVIEW_DIR, "stage1_preview", clean=clean)
     STAGE2_DIR = _prepare_output_dir(STAGE2_DIR, "stage2", clean=clean)
     _refresh_output_paths()
 
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(STAGE1_DIR, exist_ok=True)
+    os.makedirs(STAGE1_PREVIEW_DIR, exist_ok=True)
     os.makedirs(OUT_MODEL_DIR, exist_ok=True)
     os.makedirs(OUT_SN_DIR, exist_ok=True)
     os.makedirs(OUT_PART_NO_DIR, exist_ok=True)
@@ -286,6 +360,56 @@ def save_png_required(path, bgr, context):
     if not save_png(path, bgr):
         raise RuntimeError(f"Failed to write {context}: {path}")
     return path
+
+
+def stage1_preview_path_for_image(img_path):
+    base = input_label_base(img_path)
+    return os.path.join(STAGE1_PREVIEW_DIR, f"{base}__preview.png")
+
+
+def _stage1_draw_preview_image(img, entries, rotation_deg=0):
+    if img is None:
+        return None
+    annotated = img.copy()
+    for idx, entry in enumerate(entries or [], start=1):
+        box = entry.get("box")
+        if box is None:
+            continue
+        x1, y1, x2, y2 = [int(v) for v in box]
+        conf = float(entry.get("confidence", 0.0))
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 0, 0), 4)
+        text = f"huawei_label {conf:.2f} #{idx}"
+        cv2.putText(
+            annotated,
+            text,
+            (x1, max(36, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.95,
+            (255, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
+    if rotation_deg:
+        cv2.putText(
+            annotated,
+            f"stage1 rotation retry: {rotation_deg} deg",
+            (18, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 128, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    return annotated
+
+
+def _stage1_save_preview_image(img, img_path, entries, rotation_deg=0):
+    if not stage1_save_preview_enabled():
+        return None
+    preview = _stage1_draw_preview_image(img, entries, rotation_deg=rotation_deg)
+    if preview is None:
+        return None
+    return save_png_required(stage1_preview_path_for_image(img_path), preview, "stage1 preview")
 
 def pred_class(p):
     return p.get("class") or p.get("class_name") or ""
@@ -330,6 +454,11 @@ def add_slant_guard_to_box(img, box, max_px, top=True, bottom=True, angle_deg=SL
 
 
 def crop_from_pred(img, p, pad_ratio, slant_guard_max_px=0):
+    box = box_from_pred(img, p, pad_ratio, slant_guard_max_px=slant_guard_max_px)
+    return crop_from_box(img, box)
+
+
+def box_from_pred(img, p, pad_ratio, slant_guard_max_px=0):
     H, W = img.shape[:2]
     x = float(p["x"]); y = float(p["y"])
     w = float(p["width"]); h = float(p["height"])
@@ -346,8 +475,7 @@ def crop_from_pred(img, p, pad_ratio, slant_guard_max_px=0):
     x2 = min(W, x2); y2 = min(H, y2)
     if x2 <= x1 or y2 <= y1:
         return None
-    crop = img[y1:y2, x1:x2]
-    return crop if crop.size else None
+    return (x1, y1, x2, y2)
 
 
 def crop_from_pred_asym(
@@ -383,6 +511,63 @@ def box_from_pred_asym(img, p, pad_x_ratio, pad_top_ratio, pad_bottom_ratio, sla
     x1 = max(0, x1); y1 = max(0, y1)
     x2 = min(W, x2); y2 = min(H, y2)
     return (x1, y1, x2, y2)
+
+
+def box_from_pred_xy_asym(
+    img,
+    p,
+    pad_left_ratio,
+    pad_right_ratio,
+    pad_top_ratio,
+    pad_bottom_ratio,
+    slant_guard_max_px=0,
+):
+    H, W = img.shape[:2]
+    x = float(p["x"]); y = float(p["y"])
+    w = float(p["width"]); h = float(p["height"])
+    slant_guard = slant_guard_px(w, slant_guard_max_px)
+
+    x1 = int(x - w / 2 - w * pad_left_ratio)
+    y1 = int(y - h / 2 - h * pad_top_ratio - slant_guard)
+    x2 = int(x + w / 2 + w * pad_right_ratio)
+    y2 = int(y + h / 2 + h * pad_bottom_ratio + slant_guard)
+
+    x1 = max(0, x1); y1 = max(0, y1)
+    x2 = min(W, x2); y2 = min(H, y2)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def box_iou(box_a, box_b):
+    if box_a is None or box_b is None:
+        return 0.0
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_w = max(0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    if inter <= 0:
+        return 0.0
+    area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(1, (bx2 - bx1) * (by2 - by1))
+    union = area_a + area_b - inter
+    return float(inter) / float(max(1, union))
+
+
+def box_overlap_ratio(box_a, box_b):
+    if box_a is None or box_b is None:
+        return 0.0
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_w = max(0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    if inter <= 0:
+        return 0.0
+    area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(1, (bx2 - bx1) * (by2 - by1))
+    return float(inter) / float(max(1, min(area_a, area_b)))
 
 
 def crop_from_box(img, box):
@@ -653,12 +838,24 @@ def stage1_normalize_label_orientation(img):
     return img
 
 
+def stage1_rotation_retry_angles():
+    raw = os.environ.get("CROP_STAGE1_ROTATION_RETRY")
+    if raw is None:
+        return (180,)
+    value = raw.strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return ()
+    if value in {"1", "true", "yes", "on", "180", "rot180"}:
+        return (180,)
+    if value in {"90", "270", "sideways"}:
+        return (90, 270)
+    if value in {"all", "full", "any"}:
+        return (90, 270, 180)
+    return (180,)
+
+
 def stage1_rotation_retry_enabled():
-    return os.environ.get("CROP_STAGE1_ROTATION_RETRY", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-    }
+    return bool(stage1_rotation_retry_angles())
 
 
 def stage1_rotated_image(img, rotation):
@@ -679,12 +876,234 @@ def _stage1_dark_edge_ratios(img):
     }
 
 
+def _stage1_label_crop_edge_ink_ratios(img):
+    if img is None:
+        return {"top": 0.0, "left": 0.0, "right": 0.0}
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return {"top": 0.0, "left": 0.0, "right": 0.0}
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    dark = gray < 120
+    top_h = max(2, int(h * 0.045))
+    side_w = max(3, int(w * 0.035))
+    edge_guard = min(4, max(1, side_w // 4))
+    upper_h = max(top_h + 1, int(h * 0.76))
+    left_slice = dark[:upper_h, edge_guard : min(w, edge_guard + side_w)]
+    right_x2 = max(0, w - edge_guard)
+    right_x1 = max(0, right_x2 - side_w)
+    right_slice = dark[:upper_h, right_x1:right_x2]
+    return {
+        "top": float(np.count_nonzero(dark[edge_guard : min(h, edge_guard + top_h), :])) / float(max(1, top_h * w)),
+        "left": float(np.count_nonzero(left_slice)) / float(max(1, left_slice.size)),
+        "right": float(np.count_nonzero(right_slice)) / float(max(1, right_slice.size)),
+    }
+
+
 def stage1_has_invalid_edge_contamination(img):
     ratios = _stage1_dark_edge_ratios(img)
     return ratios["right"] > 0.65 and ratios["top"] > 0.35
 
 
-def stage1_is_product_label_crop(img):
+def _stage1_box_touches_image_edge(box, image_shape):
+    if box is None or image_shape is None or len(image_shape) < 2:
+        return False
+    img_h, img_w = image_shape[:2]
+    if img_h <= 0 or img_w <= 0:
+        return False
+    margin_px = max(8, int(min(img_h, img_w) * 0.01))
+    x1, y1, x2, y2 = box
+    return (
+        x1 <= margin_px
+        or y1 <= margin_px
+        or x2 >= (img_w - margin_px)
+        or y2 >= (img_h - margin_px)
+    )
+
+
+def _stage1_pred_ratios(pred, crop_shape):
+    h, w = crop_shape[:2]
+    if h <= 0 or w <= 0:
+        return 0.0, 0.0, 0.0, 0.0
+    return (
+        float(pred.get("x", 0.0)) / float(w),
+        float(pred.get("y", 0.0)) / float(h),
+        float(pred.get("width", 0.0)) / float(w),
+        float(pred.get("height", 0.0)) / float(h),
+    )
+
+
+def _stage1_field_layout_is_plausible(crop_img, model_preds, part_no_preds, sn_preds):
+    if crop_img is None or not hasattr(crop_img, "shape") or len(crop_img.shape) < 2:
+        return False
+    if len(part_no_preds) != 1 or not (1 <= len(sn_preds) <= 2) or len(model_preds) > 1:
+        return False
+
+    part_x, part_y, part_w, part_h = _stage1_pred_ratios(part_no_preds[0], crop_img.shape)
+    if not (
+        0.02 <= part_x <= 0.45
+        and 0.05 <= part_y <= 0.38
+        and 0.08 <= part_w <= 0.42
+        and 0.04 <= part_h <= 0.22
+    ):
+        return False
+
+    if model_preds:
+        model_x, model_y, model_w, model_h = _stage1_pred_ratios(model_preds[0], crop_img.shape)
+        if not (
+            0.02 <= model_x <= 0.42
+            and 0.10 <= model_y <= 0.55
+            and 0.08 <= model_w <= 0.42
+            and 0.04 <= model_h <= 0.22
+        ):
+            return False
+
+    valid_sn = False
+    for pred in sn_preds:
+        sn_x, sn_y, sn_w, sn_h = _stage1_pred_ratios(pred, crop_img.shape)
+        if (
+            0.10 <= sn_x <= 0.65
+            and 0.42 <= sn_y <= 0.82
+            and 0.18 <= sn_w <= 0.78
+            and 0.05 <= sn_h <= 0.24
+        ):
+            valid_sn = True
+            break
+    return valid_sn
+
+
+def _stage1_field_layout_is_relaxed_plausible(crop_img, model_preds, part_no_preds, sn_preds):
+    if crop_img is None or not hasattr(crop_img, "shape") or len(crop_img.shape) < 2:
+        return False
+    if len(part_no_preds) != 1 or not (1 <= len(sn_preds) <= 2) or len(model_preds) > 1:
+        return False
+
+    part_x, part_y, part_w, part_h = _stage1_pred_ratios(part_no_preds[0], crop_img.shape)
+    if not (
+        0.01 <= part_x <= 0.50
+        and 0.00 <= part_y <= 0.42
+        and 0.08 <= part_w <= 0.45
+        and 0.04 <= part_h <= 0.24
+    ):
+        return False
+
+    valid_sn_preds = []
+    for pred in sn_preds:
+        sn_x, sn_y, sn_w, sn_h = _stage1_pred_ratios(pred, crop_img.shape)
+        if (
+            0.08 <= sn_x <= 0.72
+            and 0.34 <= sn_y <= 0.86
+            and 0.18 <= sn_w <= 0.82
+            and 0.05 <= sn_h <= 0.26
+        ):
+            valid_sn_preds.append((sn_x, sn_y, sn_w, sn_h))
+
+    if not valid_sn_preds:
+        return False
+
+    if not any(sn_y >= (part_y + 0.18) for _sn_x, sn_y, _sn_w, _sn_h in valid_sn_preds):
+        return False
+
+    if model_preds:
+        model_x, model_y, model_w, model_h = _stage1_pred_ratios(model_preds[0], crop_img.shape)
+        if not (
+            0.01 <= model_x <= 0.48
+            and max(0.04, part_y - 0.02) <= model_y <= 0.60
+            and 0.08 <= model_w <= 0.45
+            and 0.04 <= model_h <= 0.24
+        ):
+            return False
+        if not any(model_y <= (sn_y + 0.04) for _sn_x, sn_y, _sn_w, _sn_h in valid_sn_preds):
+            return False
+
+    return True
+
+
+def stage1_has_product_field_structure(img):
+    if not _env_flag_default("CROP_STAGE1_REQUIRE_FIELD_STRUCTURE", True):
+        return True
+    if img is None or not hasattr(img, "shape") or len(img.shape) < 2:
+        return False
+    h, w = img.shape[:2]
+    if h < 80 or w < 140:
+        return False
+    boxes = _barcode_like_boxes_in_region(
+        img,
+        0,
+        int(h * 0.08),
+        w,
+        int(h * 0.95),
+        min_run_h=max(14, int(h * 0.035)),
+        min_span_w=max(110, int(w * 0.18)),
+        row_trans_threshold=0.055,
+        active_threshold=0.25,
+    )
+    return bool(boxes)
+
+
+def _stage1_focus_score(img):
+    if img is None or not hasattr(img, "shape") or len(img.shape) < 2:
+        return 0.0
+    h, w = img.shape[:2]
+    if h < 12 or w < 12:
+        return 0.0
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _stage1_should_reject_blurry_small_background_label(
+    box,
+    crop_img,
+    image_shape,
+    confidence=None,
+    reference_box_areas=None,
+):
+    if not _env_flag_default("CROP_STAGE1_FILTER_BACKGROUND_LABELS", True):
+        return False
+    if box is None or crop_img is None or image_shape is None or len(image_shape) < 2:
+        return False
+    if confidence is None:
+        return False
+
+    max_confidence = _env_float_default(
+        "CROP_STAGE1_BACKGROUND_LABEL_MAX_CONF",
+        STAGE1_BACKGROUND_LABEL_MAX_CONF,
+    )
+    if float(confidence) > max_confidence:
+        return False
+
+    img_h, img_w = image_shape[:2]
+    img_area = max(1, img_h * img_w)
+    box_area = max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+    if box_area <= 0:
+        return False
+
+    box_area_ratio = box_area / float(img_area)
+    max_abs_area_ratio = _env_float_default(
+        "CROP_STAGE1_BACKGROUND_LABEL_MAX_ABS_AREA_RATIO",
+        STAGE1_BACKGROUND_LABEL_MAX_ABS_AREA_RATIO,
+    )
+    max_rel_median_ratio = _env_float_default(
+        "CROP_STAGE1_BACKGROUND_LABEL_MAX_REL_MEDIAN_RATIO",
+        STAGE1_BACKGROUND_LABEL_MAX_REL_MEDIAN_RATIO,
+    )
+    is_small_abs = box_area_ratio < max_abs_area_ratio
+    is_small_rel = False
+    if reference_box_areas:
+        median_area = float(np.median(reference_box_areas))
+        if median_area > 0:
+            is_small_rel = box_area < (median_area * max_rel_median_ratio)
+    if not (is_small_abs or is_small_rel):
+        return False
+
+    focus_score = _stage1_focus_score(crop_img)
+    min_focus_score = _env_float_default(
+        "CROP_STAGE1_BACKGROUND_LABEL_FOCUS_MIN",
+        STAGE1_BACKGROUND_LABEL_FOCUS_MIN,
+    )
+    return focus_score < min_focus_score
+
+
+def stage1_is_product_label_candidate_crop(img):
     if img is None or not hasattr(img, "shape") or len(img.shape) < 2:
         return False
     h, w = img.shape[:2]
@@ -698,6 +1117,30 @@ def stage1_is_product_label_crop(img):
     if stage1_has_invalid_edge_contamination(img):
         return False
     return stage1_has_product_corner_mark(img)
+
+
+def stage1_is_partial_product_label_crop(img):
+    if img is None or not hasattr(img, "shape") or len(img.shape) < 2:
+        return False
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return False
+    aspect = float(w) / float(h)
+    if aspect < STAGE1_PARTIAL_MIN_ASPECT or aspect > STAGE1_MAX_ASPECT:
+        return False
+    if stage1_red_pixel_ratio(img) > STAGE1_PARTIAL_MAX_RED_RATIO:
+        return False
+    if stage1_has_invalid_edge_contamination(img):
+        return False
+    if not stage1_has_product_corner_mark(img):
+        return False
+    return stage1_has_product_field_structure(img)
+
+
+def stage1_is_product_label_crop(img):
+    if stage1_is_product_label_candidate_crop(img) and stage1_has_product_field_structure(img):
+        return True
+    return stage1_is_partial_product_label_crop(img)
 
 
 def stage1_tighten_label_crop(img):
@@ -1686,6 +2129,92 @@ def part_no_crop_has_complete_1d_barcode(crop_img, min_span_ratio=0.18):
     )
 
 
+def part_no_crop_has_partial_1d_barcode(crop_img, min_span_ratio=0.20):
+    if crop_img is None:
+        return False
+    h, w = crop_img.shape[:2]
+    if h < 24 or w < 80:
+        return False
+
+    boxes = _part_no_barcode_like_boxes_in_region(
+        crop_img,
+        0,
+        0,
+        w,
+        h,
+        min_run_h=max(6, int(h * 0.03)),
+        min_span_w=max(40, int(w * min_span_ratio)),
+        row_trans_threshold=0.08,
+        active_threshold=0.20,
+    )
+    if not boxes:
+        return False
+
+    box = boxes[0]["box"]
+    x1, y1, x2, y2 = box
+    span_w = x2 - x1
+    run_h = y2 - y1
+    if span_w < max(70, int(w * min_span_ratio)):
+        return False
+    if run_h < max(8, int(h * 0.03)):
+        return False
+    if y1 > h * 0.72:
+        return False
+    if y2 < h * 0.12:
+        return False
+    return True
+
+
+def part_no_crop_has_edge_clipped_barcode(crop_img, min_span_ratio=0.16, edge_guard_px=2):
+    if crop_img is None:
+        return False
+    h, w = crop_img.shape[:2]
+    if h < 24 or w < 80:
+        return False
+
+    box = crop_1d_barcode_box(
+        crop_img,
+        min_span_ratio=min_span_ratio,
+        row_trans_threshold=0.07,
+        active_threshold=0.25,
+    )
+    if box is None:
+        bands = _part_no_barcode_like_boxes_in_region(
+            crop_img,
+            0,
+            0,
+            w,
+            h,
+            min_run_h=max(6, int(h * 0.03)),
+            min_span_w=max(40, int(w * min_span_ratio)),
+            row_trans_threshold=0.08,
+            active_threshold=0.20,
+        )
+        if not bands:
+            return False
+        box = bands[0]["box"]
+
+    x1, _y1, x2, _y2 = box
+    edge_guard_x = max(2, int(edge_guard_px))
+    return x1 <= edge_guard_x or x2 >= w - edge_guard_x
+
+
+def part_no_crop_is_structurally_valid(crop_img, allow_partial=False):
+    if crop_img is None:
+        return False
+    if not part_no_crop_has_text_above_barcode(crop_img):
+        return False
+    if part_no_crop_has_lower_neighbor_content(crop_img):
+        return False
+    if part_no_crop_has_edge_clipped_barcode(crop_img):
+        return False
+    if part_no_crop_has_complete_1d_barcode(crop_img, min_span_ratio=0.18):
+        return True
+    if allow_partial and part_no_crop_has_partial_1d_barcode(crop_img, min_span_ratio=0.20):
+        return True
+    return part_no_crop_contains_1d_barcode(crop_img, min_span_ratio=0.16)
+
+
 def pad_part_no_crop_quiet_zone(crop_img):
     if crop_img is None:
         return None
@@ -2047,6 +2576,10 @@ def part_no_polished_crop_is_safe(original_crop, polished_crop):
         return False
     if polished_crop.shape[:2] == original_crop.shape[:2]:
         return False
+    if part_no_crop_has_edge_clipped_barcode(original_crop):
+        return False
+    if part_no_crop_has_edge_clipped_barcode(polished_crop):
+        return False
     if not part_no_crop_has_text_above_barcode(polished_crop):
         return False
     if part_no_crop_has_lower_neighbor_content(polished_crop):
@@ -2288,7 +2821,7 @@ def decode_raw_part_no_crop(crop_img, label_id=""):
         save_png_required(tmp_path, crop_img, "part no scan candidate")
         import scan2 as scan2_module
 
-        codes = scan2_module.read_part_no_barcodes(tmp_path)
+        codes = scan2_module.read_part_no_barcodes(tmp_path, allow_pixel_repair=True)
     except Exception as exc:
         tag = f"{label_id} " if label_id else ""
         _log(f"WARN: Part No扫码失败：{tag}{exc.__class__.__name__}: {exc}", "debug")
@@ -2343,12 +2876,12 @@ def model_crop_has_decodable_barcode(crop_img, label_id=""):
     return bool(decode_model_crop(crop_img, label_id=label_id))
 
 
-def crop_part_no_field(img):
+def crop_part_no_field(img, return_box=False):
     if img is None:
-        return None
+        return (None, None) if return_box else None
     H, W = img.shape[:2]
     if H < 20 or W < 80:
-        return None
+        return (None, None) if return_box else None
 
     boxes = [
         (0, 0, int(W * 0.62), int(H * 0.48)),
@@ -2378,15 +2911,108 @@ def crop_part_no_field(img):
         )
 
     fallback = None
+    fallback_box = None
     for box in boxes:
         part_crop = crop_from_box(img, box)
         if part_crop is None:
             continue
         if fallback is None:
             fallback = part_crop
+            fallback_box = box
         if part_no_crop_has_complete_1d_barcode(part_crop, min_span_ratio=0.18):
-            return part_crop
-    return fallback
+            return (part_crop, box) if return_box else part_crop
+    return (fallback, fallback_box) if return_box else fallback
+
+
+def _stage2_part_no_field_box(img, best_part_no_pred=None):
+    if img is None:
+        return None
+    if best_part_no_pred is not None:
+        detected_box = _stage2_part_no_box_from_pred(img, best_part_no_pred)
+        if detected_box is not None:
+            return detected_box
+    _fallback_crop, fallback_box = crop_part_no_field(img, return_box=True)
+    if fallback_box is None:
+        return None
+    return add_slant_guard_to_box(
+        img,
+        fallback_box,
+        STAGE2_TEXT_SLANT_GUARD_MAX_PX,
+        top=True,
+        bottom=False,
+    )
+
+
+def fallback_model_crop_from_part_no(img, best_part_no_pred=None):
+    if img is None:
+        return None
+    part_no_box = _stage2_part_no_field_box(img, best_part_no_pred)
+    if part_no_box is None:
+        return None
+
+    H, W = img.shape[:2]
+    px1, py1, px2, py2 = part_no_box
+    part_h = max(1, py2 - py1)
+    part_w = max(1, px2 - px1)
+
+    x1 = max(0, int(px1 - max(12, W * 0.018)))
+    x2 = min(W, int(px2 + max(18, W * 0.025)))
+    y1 = max(0, int(py2 - max(2, part_h * 0.04)))
+    y2 = min(H, int(py2 + max(64, part_h * 1.55)))
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    target_y = min(y2 - 1, int(py2 + max(16, part_h * 0.32)))
+    text_box = text_component_line_box_near_y(
+        img,
+        x1,
+        x2,
+        y1,
+        y2,
+        target_y=target_y,
+        min_span_w=max(84, int(part_w * 0.18)),
+        pad_top_min=5,
+        pad_bottom_min=8,
+        pad_y_ratio=0.14,
+    )
+    if text_box is None:
+        return None
+
+    text_pred = {
+        "x": (text_box[0] + text_box[2]) / 2.0,
+        "y": (text_box[1] + text_box[3]) / 2.0,
+        "width": text_box[2] - text_box[0],
+        "height": text_box[3] - text_box[1],
+    }
+    search_y1 = max(text_box[3], int(text_box[3] - max(2, (text_box[3] - text_box[1]) * 0.08)))
+    search_y2 = min(
+        H,
+        max(search_y1 + 1, int(text_box[3] + max(42, part_h * 0.95))),
+    )
+    barcode_box = barcode_like_box_in_region(
+        img,
+        x1,
+        search_y1,
+        x2,
+        search_y2,
+        min_run_h=max(16, int(part_h * 0.20)),
+        min_span_w=max(96, int((x2 - x1) * 0.28)),
+        row_trans_threshold=0.04,
+        active_threshold=0.24,
+    )
+    if barcode_box is None:
+        barcode_box = barcode_like_box_below(img, text_pred)
+    if barcode_box is not None:
+        max_gap = max(12, int((text_box[3] - text_box[1]) * 0.85))
+        if barcode_box[1] - text_box[3] > max_gap:
+            barcode_box = None
+
+    if barcode_box is None:
+        text_only_box = add_slant_guard_to_box(img, text_box, STAGE2_SLANT_GUARD_MAX_PX)
+        return trim_model_text_only_crop(crop_from_box(img, text_only_box))
+
+    field_box = union_boxes(text_box, barcode_box)
+    return crop_from_box(img, add_slant_guard_to_box(img, field_box, STAGE2_SLANT_GUARD_MAX_PX))
 
 
 def _part_no_barcode_like_boxes_in_region(
@@ -2543,6 +3169,29 @@ def _stage2_part_no_box_from_pred(img, best_part_no_pred):
     bx1, by1, bx2, by2 = barcode_box
     bw = bx2 - bx1
     bh = by2 - by1
+    text_box = text_component_line_box_near_y(
+        img,
+        max(0, int(bx1 - max(28, bw * 0.18))),
+        min(W, int(bx2 + max(20, bw * 0.12))),
+        max(0, int(by1 - max(48, h * 1.25, bh * 1.10))),
+        min(H, max(int(by1 + max(4, h * 0.12)), by1 + 1)),
+        target_y=by1 - max(10.0, h * 0.32),
+        min_span_w=max(60, int(min(w, bw) * 0.22)),
+        pad_top_min=3,
+        pad_bottom_min=3,
+        pad_y_ratio=0.16,
+    )
+    if text_box is not None:
+        field_box = _part_no_field_box_from_text_and_barcode(img, text_box, barcode_box)
+        if field_box is not None:
+            return add_slant_guard_to_box(
+                img,
+                field_box,
+                STAGE2_TEXT_SLANT_GUARD_MAX_PX,
+                top=True,
+                bottom=False,
+            )
+
     box = (
         max(0, int(bx1 - max(44, bw * 0.42, W * 0.035))),
         max(0, int(by1 - max(22, bh * 1.35))),
@@ -2890,21 +3539,42 @@ def _box_iou_xywh(a, b):
 
 def list_images(folder):
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-    return sorted(
-        os.path.join(folder, f)
-        for f in os.listdir(folder)
-        if os.path.splitext(f)[1].lower() in exts
-    )
+    images = []
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if os.path.splitext(name)[1].lower() in exts:
+                images.append(os.path.join(dirpath, name))
+    return sorted(images, key=lambda p: os.path.normcase(os.path.relpath(p, folder)))
 
 
 def input_label_base(img_path):
-    return os.path.basename(img_path)
+    try:
+        rel = os.path.relpath(os.path.abspath(img_path), os.path.abspath(INPUT_DIR))
+    except ValueError:
+        rel = os.path.basename(img_path)
+    if rel.startswith(".."):
+        rel = os.path.basename(img_path)
+
+    rel = rel.replace("/", os.sep).replace("\\", os.sep)
+    if os.sep not in rel:
+        base = os.path.basename(img_path)
+    else:
+        safe_rel = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "__", rel).strip(" .")
+        digest = hashlib.sha1(rel.encode("utf-8", errors="ignore")).hexdigest()[:8]
+        base = f"{safe_rel}__{digest}"
+
+    LABEL_ID_ORIGINAL_PATHS[base] = os.path.abspath(img_path)
+    return base
 
 
 def original_path_for_label_id(label_id):
     original_name = str(label_id or "").split("__label_", 1)[0]
     if not original_name:
         return ""
+    mapped = LABEL_ID_ORIGINAL_PATHS.get(original_name)
+    if mapped and os.path.isfile(mapped):
+        return mapped
     candidate = os.path.join(INPUT_DIR, original_name)
     return candidate if os.path.isfile(candidate) else ""
 
@@ -3146,6 +3816,36 @@ def _infer_remote_or_local(tmp_path, model_id):
         )
         return get_inference_client(auto_fallback_backend).infer(tmp_path, model_id=model_id)
 
+
+def _can_use_local_original_path_inference(model_id):
+    if model_id not in {MODEL1_ID, MODEL1_HARDCASE_SUPPLEMENT_ID}:
+        return False
+    if not stage1_local_direct_source_enabled():
+        return False
+    backend = inference_backend()
+    if _is_local_inference_backend(backend):
+        return True
+    if _is_auto_inference_backend(backend):
+        return auto_fallback_backend == "local"
+    return False
+
+
+def _infer_local_original_path_if_supported(original_img_path, model_id):
+    if not _can_use_local_original_path_inference(model_id):
+        return None
+    if not original_img_path or not os.path.isfile(original_img_path):
+        return None
+    client = get_inference_client("local")
+    if not hasattr(client, "supports_original_path_inference"):
+        return None
+    try:
+        if not client.supports_original_path_inference(model_id=model_id):
+            return None
+    except Exception:
+        return None
+    res = client.infer_original_path(original_img_path, model_id=model_id)
+    return (res.get("predictions", []) if isinstance(res, dict) else res) or []
+
 # ⚠️ 修正：TMP_DIR 必须在 ensure_dirs 之后创建，或者在 infer_with_resize 里确保存在
 # 因为 ensure_dirs 会删除 STAGE1_DIR，导致 TMP_DIR 也不存在了
 TMP_DIR = os.path.join(STAGE1_DIR, "_tmp_infer")
@@ -3164,6 +3864,10 @@ def infer_with_resize(original_img_bgr, original_img_path, model_id, max_side=16
     目的：避免 413，把图缩放压缩后再 infer。
     返回：predictions（坐标已映射回 original_img_bgr 的像素坐标系）
     """
+    direct_preds = _infer_local_original_path_if_supported(original_img_path, model_id)
+    if direct_preds is not None:
+        return direct_preds
+
     H, W = original_img_bgr.shape[:2]
     longest = max(H, W)
 
@@ -3253,12 +3957,11 @@ def _stage1_prepare_product_label_crop(crop_img, allow_orientation_variants=Fals
     rotations = (0, 90, 270, 180) if allow_orientation_variants else (0,)
     for rotation in rotations:
         candidate = crop_img if rotation == 0 else rotate_image(crop_img, rotation)
-        if not stage1_is_product_label_crop(candidate):
-            continue
         tightened = stage1_tighten_label_crop(candidate)
         if tightened is not None and stage1_is_product_label_crop(tightened):
-            candidate = tightened
-        return stage1_normalize_label_orientation(candidate)
+            return stage1_normalize_label_orientation(tightened)
+        if stage1_is_product_label_crop(candidate):
+            return stage1_normalize_label_orientation(candidate)
     return None
 
 
@@ -3275,57 +3978,519 @@ def _stage1_has_fallback_field_evidence(crop_img):
     return bool(part_no_preds and sn_preds)
 
 
+def _stage1_has_relaxed_single_label_field_evidence(crop_img):
+    if crop_img is None:
+        return False
+    preds = infer_with_resize(
+        crop_img,
+        "__stage1_relaxed_single_label_field_check__.png",
+        MODEL2_ID,
+        max_side=1600,
+    )
+    model_preds, part_no_preds, sn_preds = _stage2_parse_preds(preds)
+    return _stage1_field_layout_is_relaxed_plausible(crop_img, model_preds, part_no_preds, sn_preds)
+
+
+def _stage1_has_single_label_field_evidence(crop_img):
+    if crop_img is None:
+        return False
+    preds = infer_with_resize(
+        crop_img,
+        "__stage1_single_label_field_check__.png",
+        MODEL2_ID,
+        max_side=1600,
+    )
+    model_preds, part_no_preds, sn_preds = _stage2_parse_preds(preds)
+    return _stage1_field_layout_is_plausible(crop_img, model_preds, part_no_preds, sn_preds)
+
+
+def _stage1_has_relaxed_area_field_evidence(crop_img):
+    if crop_img is None:
+        return False
+    if _stage1_has_single_label_field_evidence(crop_img):
+        return True
+    return _stage1_has_fallback_field_evidence(crop_img)
+
+
+def _stage1_maybe_retry_upward_crop(
+    img,
+    pred,
+    box,
+    crop_img,
+    allow_orientation_variants=False,
+):
+    if img is None or pred is None or box is None or crop_img is None:
+        return box, crop_img
+
+    box_h = max(1, box[3] - box[1])
+    box_w = max(1, box[2] - box[0])
+    expanded_box = box_from_pred_asym(
+        img,
+        pred,
+        PADDING_1,
+        PADDING_1 + 0.16,
+        PADDING_1,
+        slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX,
+    )
+    if expanded_box is None:
+        return box, crop_img
+    if expanded_box[1] >= box[1] - max(10, int(box_h * 0.06)):
+        return box, crop_img
+    if expanded_box[2] - expanded_box[0] > int(box_w * 1.18):
+        return box, crop_img
+
+    expanded_crop = crop_from_box(img, expanded_box)
+    if expanded_crop is None:
+        return box, crop_img
+    expanded_crop = _stage1_prepare_product_label_crop(
+        expanded_crop,
+        allow_orientation_variants=allow_orientation_variants,
+    )
+    if expanded_crop is None:
+        return box, crop_img
+    if not _stage1_has_single_label_field_evidence(expanded_crop):
+        return box, crop_img
+
+    current_single_ok = _stage1_has_single_label_field_evidence(crop_img)
+    if current_single_ok and expanded_crop.shape[0] <= crop_img.shape[0] + max(12, int(crop_img.shape[0] * 0.08)):
+        return box, crop_img
+    return expanded_box, expanded_crop
+
+
+def _stage1_maybe_retry_edge_recovery_crop(
+    img,
+    pred,
+    box,
+    crop_img,
+    allow_orientation_variants=False,
+):
+    if img is None or pred is None or box is None or crop_img is None:
+        return box, crop_img
+
+    edge_ratios = _stage1_label_crop_edge_ink_ratios(crop_img)
+    need_top = edge_ratios["top"] > 0.050
+    need_left = edge_ratios["left"] > 0.110
+    need_right = edge_ratios["right"] > 0.110
+    if not (need_top or need_left or need_right):
+        return box, crop_img
+
+    box_h = max(1, box[3] - box[1])
+    box_w = max(1, box[2] - box[0])
+    expanded_box = box_from_pred_xy_asym(
+        img,
+        pred,
+        PADDING_1 + (0.18 if need_left else 0.04),
+        PADDING_1 + (0.12 if need_right else 0.04),
+        PADDING_1 + (0.24 if need_top else 0.08),
+        PADDING_1 + 0.08,
+        slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX,
+    )
+    if expanded_box is None:
+        return box, crop_img
+    if expanded_box[2] - expanded_box[0] > int(box_w * 1.24):
+        return box, crop_img
+    if expanded_box[3] - expanded_box[1] > int(box_h * 1.30):
+        return box, crop_img
+    if need_left and expanded_box[0] >= box[0] - max(10, int(box_w * 0.06)):
+        return box, crop_img
+    if need_right and expanded_box[2] <= box[2] + max(10, int(box_w * 0.06)):
+        return box, crop_img
+    if need_top and expanded_box[1] >= box[1] - max(10, int(box_h * 0.06)):
+        return box, crop_img
+
+    expanded_crop = crop_from_box(img, expanded_box)
+    if expanded_crop is None:
+        return box, crop_img
+    expanded_crop = _stage1_prepare_product_label_crop(
+        expanded_crop,
+        allow_orientation_variants=allow_orientation_variants,
+    )
+    if expanded_crop is None:
+        return box, crop_img
+    expanded_single_ok = _stage1_has_single_label_field_evidence(expanded_crop)
+    expanded_relaxed_ok = expanded_single_ok
+    if not expanded_relaxed_ok and need_top:
+        expanded_relaxed_ok = (
+            _stage1_has_relaxed_single_label_field_evidence(expanded_crop)
+            and stage1_is_partial_product_label_crop(expanded_crop)
+        )
+    if not expanded_relaxed_ok:
+        return box, crop_img
+
+    current_single_ok = _stage1_has_single_label_field_evidence(crop_img)
+    current_relaxed_ok = current_single_ok
+    if not current_relaxed_ok and need_top:
+        current_relaxed_ok = _stage1_has_relaxed_area_field_evidence(crop_img)
+    if current_single_ok:
+        taller_gain = expanded_crop.shape[0] - crop_img.shape[0]
+        wider_gain = expanded_crop.shape[1] - crop_img.shape[1]
+        if need_top and taller_gain < max(12, int(crop_img.shape[0] * 0.07)):
+            return box, crop_img
+        if (need_left or need_right) and wider_gain < max(14, int(crop_img.shape[1] * 0.05)):
+            return box, crop_img
+    elif current_relaxed_ok and need_top:
+        taller_gain = expanded_crop.shape[0] - crop_img.shape[0]
+        if taller_gain < max(18, int(crop_img.shape[0] * 0.10)):
+            return box, crop_img
+
+    return expanded_box, expanded_crop
+
+
+def _stage1_box_conflicts_with_existing(box, existing_boxes):
+    if box is None:
+        return False
+    overlap_hits = 0
+    box_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+    for existing_box in existing_boxes:
+        if existing_box is None:
+            continue
+        if box_iou(box, existing_box) >= STAGE1_SUPPLEMENT_BOX_IOU:
+            return True
+        overlap_ratio = box_overlap_ratio(box, existing_box)
+        if overlap_ratio >= 0.85:
+            return True
+        existing_area = max(1, (existing_box[2] - existing_box[0]) * (existing_box[3] - existing_box[1]))
+        size_ratio = max(box_area, existing_area) / float(min(box_area, existing_area))
+        if overlap_ratio >= 0.60 and size_ratio >= 1.35:
+            return True
+        if overlap_ratio >= 0.50 and size_ratio >= 1.80:
+            return True
+        if overlap_ratio >= 0.30:
+            overlap_hits += 1
+            if overlap_hits >= 2:
+                return True
+    return False
+
+
+def _stage1_box_aspect(box):
+    if box is None:
+        return 0.0
+    x1, y1, x2, y2 = box
+    width = max(0, x2 - x1)
+    height = max(1, y2 - y1)
+    return float(width) / float(height)
+
+
+def _stage1_should_reject_raw_edge_false_positive(box, image_shape):
+    if box is None or image_shape is None:
+        return False
+    if not _stage1_box_touches_image_edge(box, image_shape):
+        return False
+    max_aspect = _env_float_default(
+        "CROP_STAGE1_RAW_EDGE_FALSEPOS_MAX_ASPECT",
+        STAGE1_RAW_EDGE_FALSEPOS_MAX_ASPECT,
+    )
+    return _stage1_box_aspect(box) < max_aspect
+
+
+def _stage1_hardcase_model_available():
+    if not _env_flag_default("CROP_STAGE1_HARDCASE_MODEL_SUPPLEMENT", True):
+        return False
+    try:
+        from local_yolo import DEFAULT_MODEL_SPECS, model_ids_share_same_path
+    except Exception:
+        return False
+    if model_ids_share_same_path(MODEL1_ID, MODEL1_HARDCASE_SUPPLEMENT_ID):
+        return False
+    spec = DEFAULT_MODEL_SPECS.get(MODEL1_HARDCASE_SUPPLEMENT_ID)
+    return bool(spec and os.path.exists(spec.path))
+
+
+def _stage1_collect_secondary_model_entries(img, existing_boxes):
+    if not _stage1_hardcase_model_available():
+        return [], 0
+
+    secondary_preds = infer_with_resize(
+        img,
+        "__stage1_hardcase_model_supplement__.png",
+        MODEL1_HARDCASE_SUPPLEMENT_ID,
+    )
+    label_preds = sorted(
+        (
+            p
+            for p in (secondary_preds or [])
+            if pred_class(p) == MODEL1_LABEL_CLASS
+            and float(p.get("confidence", 0.0)) >= STAGE1_SUPPLEMENT_MIN_CONF
+        ),
+        key=lambda p: float(p.get("confidence", 0.0)),
+        reverse=True,
+    )
+
+    accepted = []
+    dropped = 0
+    for p in label_preds:
+        box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
+        if _stage1_box_aspect(box) < STAGE1_PARTIAL_MIN_ASPECT:
+            dropped += 1
+            continue
+        if _stage1_box_conflicts_with_existing(box, existing_boxes):
+            continue
+        candidate_entries, candidate_dropped = _stage1_collect_product_label_entries(
+            img,
+            [p],
+            allow_orientation_variants=True,
+            require_single_label_field_evidence=True,
+            max_crops=1,
+        )
+        dropped += candidate_dropped
+        if not candidate_entries:
+            continue
+        entry = candidate_entries[0]
+        accepted.append(entry)
+        if entry.get("box") is not None:
+            existing_boxes.append(entry["box"])
+        if len(accepted) >= STAGE1_HARDCASE_SUPPLEMENT_MAX_CROPS:
+            break
+    return accepted, dropped
+
+
+def _stage1_collect_product_label_entries(
+    img,
+    label_preds,
+    allow_orientation_variants=False,
+    require_field_evidence=False,
+    require_single_label_field_evidence=False,
+    enforce_relaxed_area_evidence=False,
+    max_crops=None,
+):
+    accepted = []
+    dropped = 0
+    accepted_boxes = []
+
+    def _stage1_candidate_has_required_field_evidence(candidate_crop):
+        if candidate_crop is None:
+            return False
+        if require_single_label_field_evidence:
+            if _stage1_has_single_label_field_evidence(candidate_crop):
+                return True
+            return (
+                stage1_is_partial_product_label_crop(candidate_crop)
+                and _stage1_has_relaxed_single_label_field_evidence(candidate_crop)
+            )
+        if enforce_relaxed_area_evidence:
+            return _stage1_has_relaxed_area_field_evidence(candidate_crop)
+        if require_field_evidence:
+            return _stage1_has_fallback_field_evidence(candidate_crop)
+        return True
+
+    for p in sorted(
+        label_preds,
+        key=lambda item: float((item or {}).get("confidence", 0.0)),
+        reverse=True,
+    ):
+        box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
+        crop_img = crop_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
+        if crop_img is None:
+            continue
+        crop_img = _stage1_prepare_product_label_crop(
+            crop_img,
+            allow_orientation_variants=allow_orientation_variants,
+        )
+        if crop_img is None:
+            dropped += 1
+            continue
+        box, crop_img = _stage1_maybe_retry_upward_crop(
+            img,
+            p,
+            box,
+            crop_img,
+            allow_orientation_variants=allow_orientation_variants,
+        )
+        box, crop_img = _stage1_maybe_retry_edge_recovery_crop(
+            img,
+            p,
+            box,
+            crop_img,
+            allow_orientation_variants=allow_orientation_variants,
+        )
+        if box is not None and img is not None:
+            img_h, img_w = img.shape[:2]
+            img_area = max(1, img_h * img_w)
+            box_area = max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+            box_area_ratio = box_area / float(img_area)
+            if box_area_ratio < STAGE1_RELAXED_MIN_BOX_AREA_RATIO:
+                dropped += 1
+                continue
+            if (
+                box_area_ratio < STAGE1_MIN_BOX_AREA_RATIO
+                and not (
+                    enforce_relaxed_area_evidence
+                    or require_field_evidence
+                    or require_single_label_field_evidence
+                )
+            ):
+                dropped += 1
+                continue
+            if _stage1_box_touches_image_edge(box, img.shape):
+                edge_single_ok = _stage1_has_single_label_field_evidence(crop_img)
+                if not edge_single_ok and stage1_is_partial_product_label_crop(crop_img):
+                    edge_single_ok = _stage1_has_relaxed_single_label_field_evidence(crop_img)
+                if not edge_single_ok:
+                    dropped += 1
+                    continue
+        if not _stage1_candidate_has_required_field_evidence(crop_img):
+            dropped += 1
+            continue
+        if _stage1_should_reject_blurry_small_background_label(
+            box,
+            crop_img,
+            img.shape,
+            confidence=float((p or {}).get("confidence", 0.0)),
+            reference_box_areas=[
+                max(0, accepted_box[2] - accepted_box[0]) * max(0, accepted_box[3] - accepted_box[1])
+                for accepted_box in accepted_boxes
+                if accepted_box is not None
+            ],
+        ):
+            dropped += 1
+            continue
+        if _stage1_box_conflicts_with_existing(box, accepted_boxes):
+            dropped += 1
+            continue
+        accepted.append(
+            {
+                "confidence": float(p.get("confidence", 1.0)),
+                "crop": crop_img,
+                "box": box,
+            }
+        )
+        if box is not None:
+            accepted_boxes.append(box)
+
+    if max_crops is not None and len(accepted) > max_crops:
+        accepted = sorted(accepted, key=lambda item: item["confidence"], reverse=True)[:max_crops]
+
+    return accepted, dropped
+
+
 def _stage1_collect_product_label_crops(
     img,
     label_preds,
     allow_orientation_variants=False,
     require_field_evidence=False,
+    require_single_label_field_evidence=False,
+    enforce_relaxed_area_evidence=False,
     max_crops=None,
 ):
+    accepted, dropped = _stage1_collect_product_label_entries(
+        img,
+        label_preds,
+        allow_orientation_variants=allow_orientation_variants,
+        require_field_evidence=require_field_evidence,
+        require_single_label_field_evidence=require_single_label_field_evidence,
+        enforce_relaxed_area_evidence=enforce_relaxed_area_evidence,
+        max_crops=max_crops,
+    )
+    return [item["crop"] for item in accepted], dropped
+
+
+def _stage1_collect_raw_label_entries(img, label_preds):
     accepted = []
-    dropped = 0
-
-    for p in label_preds:
-        crop = crop_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
-        if crop is None:
+    accepted_boxes = []
+    for p in sorted(
+        label_preds,
+        key=lambda item: float((item or {}).get("confidence", 0.0)),
+        reverse=True,
+    ):
+        box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
+        if box is None:
             continue
-        crop = _stage1_prepare_product_label_crop(
-            crop,
-            allow_orientation_variants=allow_orientation_variants,
+        if _stage1_should_reject_raw_edge_false_positive(box, img.shape):
+            continue
+        if _stage1_box_conflicts_with_existing(box, accepted_boxes):
+            continue
+        crop_img = crop_from_box(img, box)
+        if crop_img is None or crop_img.size == 0:
+            continue
+        accepted.append(
+            {
+                "confidence": float((p or {}).get("confidence", 1.0)),
+                "crop": crop_img,
+                "box": box,
+            }
         )
-        if crop is None:
-            dropped += 1
-            continue
-        if require_field_evidence and not _stage1_has_fallback_field_evidence(crop):
-            dropped += 1
-            continue
-        accepted.append((float(p.get("confidence", 1.0)), crop))
-
-    if max_crops is not None and len(accepted) > max_crops:
-        accepted = sorted(accepted, key=lambda item: item[0], reverse=True)[:max_crops]
-
-    return [crop for _conf, crop in accepted], dropped
+        accepted_boxes.append(box)
+    return accepted, 0
 
 
-def _stage1_collect_label_crops(img, raw_preds):
+def _stage1_collect_raw_label_crops(img, raw_preds):
+    label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
+    accepted_entries, dropped = _stage1_collect_raw_label_entries(img, label_preds)
+    return [item["crop"] for item in accepted_entries], dropped
+
+
+def _stage1_collect_raw_entries_from_preds(img, raw_preds):
+    label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
+    return _stage1_collect_raw_label_entries(img, label_preds)
+
+
+def _stage1_collect_label_entries(img, raw_preds):
     label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
     final_preds = nms(label_preds, MIN_CONF_1, NMS_1)
 
-    crops, dropped = _stage1_collect_product_label_crops(img, final_preds)
-    if crops:
-        return crops, dropped
+    accepted_entries, dropped = _stage1_collect_product_label_entries(
+        img,
+        final_preds,
+    )
+    if accepted_entries:
+        existing_boxes = [item["box"] for item in accepted_entries if item.get("box") is not None]
+        supplement_entries = []
+        low_conf_label_preds = sorted(
+            (
+                p
+                for p in label_preds
+                if float(p.get("confidence", 0.0)) >= STAGE1_SUPPLEMENT_MIN_CONF
+            ),
+            key=lambda p: float(p.get("confidence", 0.0)),
+            reverse=True,
+        )
+        for p in low_conf_label_preds:
+            conf = float(p.get("confidence", 0.0))
+            if conf >= MIN_CONF_1:
+                continue
+            box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
+            if _stage1_box_conflicts_with_existing(box, existing_boxes):
+                continue
+            supplement_candidate_entries, supplement_dropped = _stage1_collect_product_label_entries(
+                img,
+                [p],
+                allow_orientation_variants=True,
+                require_single_label_field_evidence=True,
+                max_crops=1,
+            )
+            dropped += supplement_dropped
+            if not supplement_candidate_entries:
+                continue
+            supplement_entry = supplement_candidate_entries[0]
+            supplement_entries.append(supplement_entry)
+            if supplement_entry.get("box") is not None:
+                existing_boxes.append(supplement_entry["box"])
+            if len(supplement_entries) >= STAGE1_FALLBACK_MAX_CROPS:
+                break
+        if supplement_entries:
+            accepted_entries.extend(supplement_entries)
+        secondary_entries, secondary_dropped = _stage1_collect_secondary_model_entries(img, existing_boxes)
+        dropped += secondary_dropped
+        if secondary_entries:
+            accepted_entries.extend(secondary_entries)
+        return accepted_entries, dropped
 
     fallback_preds = nms(label_preds, MIN_CONF_1_FALLBACK, NMS_1)
-    fallback_crops, fallback_dropped = _stage1_collect_product_label_crops(
+    fallback_entries, fallback_dropped = _stage1_collect_product_label_entries(
         img,
         fallback_preds,
         allow_orientation_variants=True,
         require_field_evidence=True,
         max_crops=STAGE1_FALLBACK_MAX_CROPS,
     )
-    if fallback_crops:
-        return fallback_crops, fallback_dropped
-    return crops, dropped
+    if fallback_entries:
+        return fallback_entries, fallback_dropped
+    return [], dropped
+
+
+def _stage1_collect_label_crops(img, raw_preds):
+    accepted_entries, dropped = _stage1_collect_label_entries(img, raw_preds)
+    return [item["crop"] for item in accepted_entries], dropped
 
 
 def stage1_crop_labels(img_path):
@@ -3336,34 +4501,54 @@ def stage1_crop_labels(img_path):
 
     # 先按原图方向推理；若过滤后没有产品标签，再用旋转后的整图重试 stage1。
     preds = infer_with_resize(img, img_path, model_id=MODEL1_ID)
-    label_crops, dropped = _stage1_collect_label_crops(img, preds)
+    entry_collector = _stage1_collect_raw_entries_from_preds if stage1_raw_label_mode_enabled() else _stage1_collect_label_entries
+    label_entries, dropped = entry_collector(img, preds)
     stage1_rotation = 0
+    preview_img = img
 
-    if not label_crops and stage1_rotation_retry_enabled():
-        for rotation in (90, 270, 180):
+    if not label_entries and stage1_rotation_retry_enabled():
+        for rotation in stage1_rotation_retry_angles():
             rotated_img = stage1_rotated_image(img, rotation)
             rotated_preds = infer_with_resize(rotated_img, img_path, model_id=MODEL1_ID)
-            label_crops, rotated_dropped = _stage1_collect_label_crops(rotated_img, rotated_preds)
+            label_entries, rotated_dropped = entry_collector(rotated_img, rotated_preds)
             dropped += rotated_dropped
-            if label_crops:
+            if label_entries:
                 stage1_rotation = rotation
+                preview_img = rotated_img
                 break
 
     base = input_label_base(img_path)
     out_paths = []
 
-    for crop in label_crops:
+    for entry in label_entries:
+        crop = entry.get("crop")
+        if crop is None:
+            continue
         out_name = f"{base}__label_{len(out_paths) + 1}.png"
         out_path = os.path.join(STAGE1_DIR, out_name)
         out_paths.append(save_png_required(out_path, crop, "stage1 label crop"))
+    _stage1_save_preview_image(preview_img, img_path, label_entries, rotation_deg=stage1_rotation)
 
     _log(
         f"标签裁剪：{os.path.basename(img_path)} -> {len(out_paths)} 个标签小图"
-        + (f"（stage1 方向重试 {stage1_rotation}°）" if stage1_rotation else "")
-        + (f"（过滤 {dropped} 个非产品/残缺候选）" if dropped else ""),
+        + (f"（stage1 方向重试 {stage1_rotation}°）" if stage1_rotation else ""),
         "info",
     )
     return out_paths
+
+
+def _remove_stage1_orphan_label(label_path):
+    try:
+        stage1_root = os.path.abspath(STAGE1_DIR)
+        target = os.path.abspath(label_path)
+        if os.path.commonpath([stage1_root, target]) != stage1_root:
+            return False
+        if os.path.isfile(target):
+            os.remove(target)
+            return True
+    except Exception as e:
+        _log(f"警告：删除无效 Stage1 标签裁剪失败 {label_path}: {e}", "warn")
+    return False
 
 # ==================== Stage 2：标签小图 -> model/sn 小块 ====================
 def _stage2_parse_preds(raw_preds):
@@ -3525,16 +4710,60 @@ def _stage2_crop_part_no_from_pred(img, best_part_no_pred):
         if part_no_crop_contains_1d_barcode(crop_p, min_span_ratio=0.16):
             return crop_p
 
-    return candidates[1] if len(candidates) > 1 else None
+    for crop_p in candidates:
+        if crop_p is not None:
+            return crop_p
+    return None
 
 
 def _stage2_crop_part_no(img, best_part_no_pred):
     detected = _stage2_crop_part_no_from_pred(img, best_part_no_pred)
     detected = trim_part_no_crop_before_lower_neighbor(detected)
+    detected_kind = "detector" if detected is not None else ""
     if detected is not None:
         ok = part_no_crop_has_complete_1d_barcode(detected, min_span_ratio=0.18)
-        if ok or part_no_crop_contains_1d_barcode(detected, min_span_ratio=0.16):
-            return detected, "detector", ok
+        if part_no_crop_is_structurally_valid(detected):
+            if ok:
+                return detected, "detector", True
+            if part_no_crop_contains_1d_barcode(detected, min_span_ratio=0.16):
+                detected_kind = "detector"
+        if (
+            part_no_crop_has_text_above_barcode(detected)
+            and not part_no_crop_has_lower_neighbor_content(detected)
+            and part_no_crop_contains_1d_barcode(detected, min_span_ratio=0.12)
+        ):
+            padded_detected = pad_part_no_crop_quiet_zone(detected)
+            if (
+                padded_detected is not None
+                and not part_no_crop_has_lower_neighbor_content(padded_detected)
+                and part_no_crop_contains_1d_barcode(padded_detected, min_span_ratio=0.12)
+            ):
+                padded_ok = part_no_crop_has_complete_1d_barcode(padded_detected, min_span_ratio=0.18)
+                if padded_ok:
+                    return padded_detected, "detector_padded", True
+                detected = padded_detected
+                detected_kind = "detector_padded"
+        if (
+            part_no_crop_has_text_above_barcode(detected)
+            and not part_no_crop_has_edge_clipped_barcode(detected)
+            and
+            part_no_crop_has_partial_1d_barcode(detected, min_span_ratio=0.20)
+            and not part_no_crop_has_lower_neighbor_content(detected)
+        ):
+            partial_detected = pad_part_no_crop_quiet_zone(detected)
+            if partial_detected is not None:
+                detected = partial_detected
+                detected_kind = "detector_partial"
+        if best_part_no_pred is not None and not part_no_crop_has_lower_neighbor_content(detected):
+            h, w = detected.shape[:2]
+            if (
+                h >= 40
+                and w >= 120
+                and part_no_crop_has_text_above_barcode(detected)
+                and not part_no_crop_has_edge_clipped_barcode(detected)
+                and part_no_crop_contains_1d_barcode(detected, min_span_ratio=0.12)
+            ):
+                detected_kind = "detector_field"
 
     fallback = crop_part_no_field(img)
     fallback = trim_part_no_crop_before_lower_neighbor(fallback)
@@ -3542,10 +4771,32 @@ def _stage2_crop_part_no(img, best_part_no_pred):
         fallback,
         min_span_ratio=0.18,
     )
-    if fallback is not None:
+    if fallback is not None and part_no_crop_is_structurally_valid(fallback):
         return fallback, "heuristic", fallback_ok
+    if (
+        fallback is not None
+        and part_no_crop_has_text_above_barcode(fallback)
+        and not part_no_crop_has_lower_neighbor_content(fallback)
+        and part_no_crop_contains_1d_barcode(fallback, min_span_ratio=0.12)
+    ):
+        padded_fallback = pad_part_no_crop_quiet_zone(fallback)
+        if (
+            padded_fallback is not None
+            and not part_no_crop_has_lower_neighbor_content(padded_fallback)
+            and part_no_crop_contains_1d_barcode(padded_fallback, min_span_ratio=0.12)
+        ):
+            padded_ok = part_no_crop_has_complete_1d_barcode(padded_fallback, min_span_ratio=0.18)
+            return padded_fallback, "heuristic_padded", padded_ok
+    if (
+        best_part_no_pred is None
+        and fallback is not None
+        and part_no_crop_has_text_above_barcode(fallback)
+        and not part_no_crop_has_lower_neighbor_content(fallback)
+        and part_no_crop_contains_1d_barcode(fallback, min_span_ratio=0.12)
+    ):
+        return fallback, "heuristic_original_context", fallback_ok
 
-    return detected, "detector" if detected is not None else "", False
+    return detected, detected_kind, False
 
 
 def _stage2_build_candidate(img, raw_preds, rotation):
@@ -3577,6 +4828,13 @@ def _stage2_build_candidate(img, raw_preds, rotation):
             model_crop = direct_crop
             model_kind = "direct"
             model_conf = float(best_model_pred.get("confidence", 0))
+
+    if model_required and model_crop is None:
+        fallback_crop = fallback_model_crop_from_part_no(img, best_part_no_pred)
+        if model_crop_satisfies_target(fallback_crop, img, None):
+            model_crop = fallback_crop
+            model_kind = "fallback_from_part_no"
+            model_conf = 0.0
 
     if model_required and model_crop is None and best_sn_pred is not None:
         fallback_crop = fallback_model_crop_from_sn(img, best_sn_pred)
@@ -3766,7 +5024,16 @@ def stage2_crop_fields(label_img_path):
         fail_path = os.path.join(FAILED_DIR, f"{base}__FAILED.png")
         save_png_required(fail_path, img, "failed label crop")
         return None
-    should_save_part_no_crop = part_no_crop is not None and (bool(part_no_codes) or not part_no_raw_codes)
+    should_save_part_no_crop = part_no_crop is not None and (
+        bool(part_no_codes)
+        or (
+            not part_no_raw_codes
+            and part_no_crop_is_structurally_valid(
+                part_no_crop,
+                allow_partial=selected.get("part_no_kind") == "detector_partial",
+            )
+        )
+    )
     if should_save_part_no_crop:
         pp = os.path.join(OUT_PART_NO_DIR, f"{base}__part_no.png")
         save_png_required(pp, part_no_crop, "part no crop")
@@ -3796,8 +5063,9 @@ def stage2_crop_fields(label_img_path):
 
 
 def _stage2_build_model_only_candidate(img, raw_preds, rotation):
-    model_preds, _part_no_preds, sn_preds = _stage2_parse_preds(raw_preds)
+    model_preds, part_no_preds, sn_preds = _stage2_parse_preds(raw_preds)
     best_model_pred = _stage2_best_pred(model_preds)
+    best_part_no_pred = _stage2_best_pred(part_no_preds)
     best_sn_pred = _stage2_best_pred(sn_preds)
 
     model_crop = None
@@ -3809,6 +5077,13 @@ def _stage2_build_model_only_candidate(img, raw_preds, rotation):
             model_crop = direct_crop
             model_kind = "direct"
             model_conf = float(best_model_pred.get("confidence", 0))
+
+    if model_crop is None:
+        fallback_crop = fallback_model_crop_from_part_no(img, best_part_no_pred)
+        if model_crop_satisfies_target(fallback_crop, img, None):
+            model_crop = fallback_crop
+            model_kind = "fallback_from_part_no"
+            model_conf = 0.0
 
     if model_crop is None and best_sn_pred is not None:
         fallback_crop = fallback_model_crop_from_sn(img, best_sn_pred)
@@ -3897,6 +5172,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
             "ok_any": 0,
             "ok_both": 0,
             "stage1_dir": STAGE1_DIR,
+            "stage1_preview_dir": STAGE1_PREVIEW_DIR,
             "stage2_dir": STAGE2_DIR,
             "manifest_path": MANIFEST_PATH,
         }
@@ -3921,16 +5197,29 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         raise RuntimeError(f"{len(imgs)} 张输入图片没有裁剪出任何标签。")
 
     # Stage2：全部小图 -> model/sn
+    stage1_crop_count = len(all_label_crops)
     ok_any = 0
     ok_both = 0
     model_count = 0
     part_no_count = 0
     sn_count = 0
     manifest_rows = 0
-    stage2_results = _map_ordered(all_label_crops, stage2_crop_fields, stage2_workers)
+    stage2_dropped = 0
+    progress_logs = crop_progress_log_enabled()
+
+    def run_stage2_job(label_path):
+        label_name = _crop_label_name(label_path)
+        result = stage2_crop_fields(label_path)
+        if progress_logs:
+            _log(f"[2/4][字段完成] {label_name} -> {_stage2_result_summary(result)}", "info")
+        return result
+
+    stage2_results = _map_ordered(all_label_crops, run_stage2_job, stage2_workers)
     with open(MANIFEST_PATH, "a", encoding="utf-8") as f:
         for lp, r in zip(all_label_crops, stage2_results):
             if not r:
+                if not stage1_keep_all_crops_enabled() and _remove_stage1_orphan_label(lp):
+                    stage2_dropped += 1
                 continue
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             manifest_rows += 1
@@ -3956,17 +5245,23 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
             elif (not has_sn) and (not has_model_key):
                 shutil.copy2(lp, os.path.join(MISS_BOTH_DIR, os.path.basename(lp)))
 
-    _log(f"\n标签裁剪完成：共生成 {len(all_label_crops)} 个标签小图", "info")
+    _log(f"\n标签裁剪完成：Stage1 原始裁剪 {stage1_crop_count} 个；Stage2 有效保留 {manifest_rows} 个", "info")
+    if stage2_dropped:
+        _log(f"Stage2 过滤并删除 {stage2_dropped} 个无效 Stage1 标签裁剪", "info")
     _log(
         f"字段裁剪统计：至少识别到一个字段 {ok_any} 个；型号线索(型号或PartNo)和SN都识别到 {ok_both} 个；"
         f"model={model_count} part_no={part_no_count} sn={sn_count}",
         "info",
     )
+    if stage1_save_preview_enabled():
+        _log(f"Stage1 带框预览：{STAGE1_PREVIEW_DIR}", "info")
     _log(f"清单文件：{MANIFEST_PATH}", "info")
     _log(f"缺失分类文件夹：{MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
     return {
         "input_images": len(imgs),
-        "label_count": len(all_label_crops),
+        "label_count": manifest_rows,
+        "stage1_crop_count": stage1_crop_count,
+        "stage2_retained_count": manifest_rows,
         "manifest_rows": manifest_rows,
         "ok_any": ok_any,
         "ok_both": ok_both,
@@ -3974,6 +5269,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         "part_no_count": part_no_count,
         "sn_count": sn_count,
         "stage1_dir": STAGE1_DIR,
+        "stage1_preview_dir": STAGE1_PREVIEW_DIR,
         "stage2_dir": STAGE2_DIR,
         "manifest_path": MANIFEST_PATH,
     }

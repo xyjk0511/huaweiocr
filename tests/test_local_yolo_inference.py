@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -14,6 +15,31 @@ import local_yolo
 
 
 class LocalYoloInferenceTests(unittest.TestCase):
+    def _load_local_yolo_module(self, env_updates, existing_paths):
+        module_name = "local_yolo_config_test"
+        module_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "local_yolo.py")
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        normalized_existing = {
+            os.path.normcase(os.path.abspath(path))
+            for path in existing_paths
+        }
+
+        original_exists = os.path.exists
+
+        def fake_exists(path):
+            normalized = os.path.normcase(os.path.abspath(path))
+            if normalized in normalized_existing:
+                return True
+            return original_exists(path)
+
+        with mock.patch.dict(os.environ, env_updates, clear=False):
+            with mock.patch("os.path.exists", side_effect=fake_exists):
+                spec.loader.exec_module(module)
+
+        sys.modules.pop(module_name, None)
+        return module
+
     def _load_huaweiocr_spec_datas(self, cwd):
         hooks = types.ModuleType("PyInstaller.utils.hooks")
         hooks.collect_data_files = lambda *args, **kwargs: []
@@ -191,6 +217,97 @@ class LocalYoloInferenceTests(unittest.TestCase):
             ("model", "partno", "sn"),
         )
 
+    def test_primary_label_model_prefers_yolo26_2class_latest_by_default(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        legacy_path = os.path.join(repo_root, "local_models", "detectors", "label_detector.onnx")
+        latest_path = os.path.join(
+            repo_root,
+            "local_models",
+            "training",
+            "label_detector_yolo26s_960_2class_ignore_v1",
+            "weights",
+            "best.pt",
+        )
+        module = self._load_local_yolo_module(
+            {
+                "LOCAL_YOLO_LABEL_MODEL": "",
+                "LOCAL_YOLO_LABEL_MODEL_PREFER_LATEST": "1",
+            },
+            [legacy_path, latest_path],
+        )
+
+        self.assertEqual(
+            module.get_model_path("huawei-2ha7t/7"),
+            module._normalized_path(latest_path),
+        )
+        self.assertNotIn("huawei-2ha7t-hardcase/1", module.DEFAULT_MODEL_SPECS)
+        self.assertEqual(
+            module.DEFAULT_MODEL_SPECS["huawei-2ha7t/7"].names,
+            ("huawei_label", "shipping_ignore"),
+        )
+
+    def test_primary_label_model_falls_back_to_release_detector_when_latest_is_missing(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        legacy_path = os.path.join(repo_root, "local_models", "detectors", "label_detector.onnx")
+        module = self._load_local_yolo_module(
+            {
+                "LOCAL_YOLO_LABEL_MODEL": "",
+                "LOCAL_YOLO_LABEL_MODEL_PREFER_LATEST": "1",
+                "LOCAL_YOLO_LATEST_LABEL_MODEL": os.path.join(
+                    repo_root,
+                    "local_models",
+                    "training",
+                    "__missing_latest_label_detector__",
+                    "weights",
+                    "best.onnx",
+                ),
+            },
+            [legacy_path],
+        )
+
+        self.assertEqual(
+            module.get_model_path("huawei-2ha7t/7"),
+            module._normalized_path(legacy_path),
+        )
+        self.assertNotIn("huawei-2ha7t-hardcase/1", module.DEFAULT_MODEL_SPECS)
+
+    def test_explicit_hardcase_override_keeps_secondary_supplement_model(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        legacy_path = os.path.join(repo_root, "local_models", "detectors", "label_detector.onnx")
+        latest_path = os.path.join(
+            repo_root,
+            "local_models",
+            "training",
+            "label_detector_yolo26s_960_2class_ignore_v1",
+            "weights",
+            "best.pt",
+        )
+        hardcase_path = os.path.join(
+            repo_root,
+            "local_models",
+            "training",
+            "label_detector_v3s_hardcases_skipcpu",
+            "weights",
+            "best.onnx",
+        )
+        module = self._load_local_yolo_module(
+            {
+                "LOCAL_YOLO_LABEL_MODEL": "",
+                "LOCAL_YOLO_LABEL_MODEL_PREFER_LATEST": "1",
+                "LOCAL_YOLO_HARDCASE_LABEL_MODEL": hardcase_path,
+            },
+            [legacy_path, latest_path, hardcase_path],
+        )
+
+        self.assertEqual(
+            module.get_model_path("huawei-2ha7t/7"),
+            module._normalized_path(latest_path),
+        )
+        self.assertEqual(
+            module.get_model_path("huawei-2ha7t-hardcase/1"),
+            module._normalized_path(hardcase_path),
+        )
+
     def test_decode_yolov8_output_returns_roboflow_style_predictions(self):
         output = np.zeros((1, 6, 10), dtype=np.float32)
         output[0, 0, 0] = 100.0
@@ -225,6 +342,36 @@ class LocalYoloInferenceTests(unittest.TestCase):
         self.assertAlmostEqual(preds[0]["height"], 20.0)
         self.assertAlmostEqual(preds[0]["confidence"], 0.9, places=5)
 
+    def test_decode_yolov8_output_supports_postprocessed_xyxy_onnx_output(self):
+        output = np.array(
+            [
+                [
+                    [110.0, 70.0, 150.0, 90.0, 0.91, 0.0],
+                    [300.0, 185.0, 360.0, 215.0, 0.83, 1.0],
+                    [50.0, 50.0, 50.0, 60.0, 0.99, 0.0],
+                ]
+            ],
+            dtype=np.float32,
+        )
+
+        preds = local_yolo.decode_yolov8_output(
+            output,
+            names=("huawei_label", "shipping_ignore"),
+            original_shape=(640, 640, 3),
+            scale=1.0,
+            pad=(0, 0),
+            conf_threshold=0.25,
+            nms_threshold=0.45,
+        )
+
+        self.assertEqual([p["class"] for p in preds], ["huawei_label", "shipping_ignore"])
+        self.assertAlmostEqual(preds[0]["x"], 130.0)
+        self.assertAlmostEqual(preds[0]["y"], 80.0)
+        self.assertAlmostEqual(preds[0]["width"], 40.0)
+        self.assertAlmostEqual(preds[0]["height"], 20.0)
+        self.assertAlmostEqual(preds[0]["confidence"], 0.91, places=5)
+        self.assertEqual(preds[1]["class_id"], 1)
+
     def test_local_yolo_client_returns_predictions_dict(self):
         class FakeDetector:
             def __init__(self, spec, **_kwargs):
@@ -242,6 +389,26 @@ class LocalYoloInferenceTests(unittest.TestCase):
             client.infer("image.jpg", model_id="model/1"),
             {"predictions": [{"class": "label", "image_path": "image.jpg"}]},
         )
+
+    def test_local_yolo_client_uses_035_default_conf_for_stage1_label_model(self):
+        class FakeDetector:
+            def __init__(self, spec, **kwargs):
+                self.spec = spec
+                self.kwargs = kwargs
+
+            def predict(self, image_path):
+                return [{"class": self.spec.names[0], "image_path": image_path}]
+
+        client = local_yolo.LocalYoloClient(
+            model_specs={
+                "huawei-2ha7t/7": local_yolo.ModelSpec("unused.onnx", ("huawei_label", "shipping_ignore")),
+            },
+            detector_cls=FakeDetector,
+        )
+
+        client.infer("image.jpg", model_id="huawei-2ha7t/7")
+        detector = client.detectors["huawei-2ha7t/7"]
+        self.assertAlmostEqual(detector.kwargs["conf_threshold"], 0.35)
 
     def test_crop_defaults_to_local_backend_without_api_key(self):
         fake_inference_sdk = types.ModuleType("inference_sdk")
