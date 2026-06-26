@@ -15,9 +15,14 @@ import platform
 import traceback
 import ctypes
 import subprocess
+import queue
 from win_subprocess import hide_subprocess_windows
 
 hide_subprocess_windows()
+
+# GUI 默认走 CPU，避免源码版启动时 onnxruntime 反复探测缺失的 CUDA/cuDNN 依赖。
+# 命令行批跑如果显式设置了 LOCAL_YOLO_DEVICE，则仍然以外部设置为准。
+os.environ.setdefault("LOCAL_YOLO_DEVICE", "cpu")
 
 from app_paths import get_resource_path, get_barcode_cli_path
 from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, start_ocr_prewarm_thread
@@ -32,13 +37,69 @@ except ImportError:
 # 尝试导入拖拽支持（可选）
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
-    DND_AVAILABLE = True
+    DND_IMPORT_AVAILABLE = True
 except ImportError:
-    DND_AVAILABLE = False
+    DND_IMPORT_AVAILABLE = False
     DND_FILES = None
     TkinterDnD = None
 # 支持的图片后缀
 SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+def _detect_windows_processor_architecture() -> str:
+    if os.name != "nt":
+        return ""
+
+    class SYSTEM_INFO_UNION(ctypes.Union):
+        _fields_ = [
+            ("dwOemId", ctypes.c_uint32),
+            ("w", ctypes.c_uint16 * 2),
+        ]
+
+    class SYSTEM_INFO(ctypes.Structure):
+        _anonymous_ = ("u",)
+        _fields_ = [
+            ("u", SYSTEM_INFO_UNION),
+            ("dwPageSize", ctypes.c_uint32),
+            ("lpMinimumApplicationAddress", ctypes.c_void_p),
+            ("lpMaximumApplicationAddress", ctypes.c_void_p),
+            ("dwActiveProcessorMask", ctypes.c_size_t),
+            ("dwNumberOfProcessors", ctypes.c_uint32),
+            ("dwProcessorType", ctypes.c_uint32),
+            ("dwAllocationGranularity", ctypes.c_uint32),
+            ("wProcessorLevel", ctypes.c_uint16),
+            ("wProcessorRevision", ctypes.c_uint16),
+        ]
+
+    try:
+        system_info = SYSTEM_INFO()
+        ctypes.windll.kernel32.GetNativeSystemInfo(ctypes.byref(system_info))
+        arch_code = system_info.w[0]
+        if arch_code == 9:
+            return "AMD64"
+        if arch_code == 0:
+            return "x86"
+        if arch_code == 12:
+            return "ARM64"
+    except Exception:
+        pass
+
+    machine = (platform.machine() or "").strip().upper()
+    if machine in {"AMD64", "X86", "ARM64"}:
+        return machine
+    if machine in {"X64", "X86_64"}:
+        return "AMD64"
+    if machine in {"I386", "I686"}:
+        return "x86"
+
+    return "AMD64" if ctypes.sizeof(ctypes.c_void_p) == 8 else "x86"
+
+
+def _prepare_tkdnd_runtime() -> str:
+    arch = _detect_windows_processor_architecture()
+    if os.name == "nt" and arch and not os.environ.get("PROCESSOR_ARCHITECTURE"):
+        os.environ["PROCESSOR_ARCHITECTURE"] = arch
+    return arch
 
 
 def _mask_path_text(text: str) -> str:
@@ -128,6 +189,9 @@ def _self_check():
     lines.append(f"frozen={getattr(sys, 'frozen', False)}")
     lines.append(f"python={sys.version}")
     lines.append(f"platform={platform.platform()}")
+    lines.append(f"platform_machine={platform.machine()}")
+    lines.append(f"processor_arch_env={os.environ.get('PROCESSOR_ARCHITECTURE')}")
+    lines.append(f"tkdnd_arch_guess={_detect_windows_processor_architecture()}")
     lines.append(f"base_dir={base_dir}")
     try:
         cli_path = get_barcode_cli_path()
@@ -184,10 +248,18 @@ def _self_check():
     except Exception:
         pass
 # ============== GUI 主窗体 ==============
-BaseTk = TkinterDnD.Tk if DND_AVAILABLE else tk.Tk
-class App(BaseTk):
+class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.dnd_enabled = False
+        self.dnd_error = ""
+        self.dnd_arch = _prepare_tkdnd_runtime()
+        if DND_IMPORT_AVAILABLE and TkinterDnD is not None:
+            try:
+                TkinterDnD._require(self)
+                self.dnd_enabled = True
+            except Exception as exc:
+                self.dnd_error = str(exc)
         self.title("华为标签识别工具（拖拽或选择图片）")
         self.geometry("900x700")
         # 已选择的图片路径列表
@@ -196,10 +268,18 @@ class App(BaseTk):
         self._scan2_module = None
         self._is_running = False
         self.result_rows = []
+        self._main_thread_ident = threading.get_ident()
+        self._log_queue = queue.SimpleQueue()
+        self._log_poll_interval_ms = 8
+        self._log_max_batch_lines = 10
+        self._log_idle_heartbeat_sec = 0.8
+        self._last_log_monotonic = time.monotonic()
+        self._last_heartbeat_monotonic = 0.0
+        self._last_stage_hint = ""
         # ============ 顶部：拖拽区域 ============
         top_frame = tk.Frame(self)
         top_frame.pack(fill=tk.X, padx=10, pady=10)
-        if DND_AVAILABLE:
+        if self.dnd_enabled:
             self.drop_area = tk.Label(
                 top_frame,
                 text="可以将图片拖拽到上方灰色区域，或点击“从电脑选择图片…”。",
@@ -210,9 +290,12 @@ class App(BaseTk):
                 fg="#555555"
             )
         else:
+            hint = "拖拽不可用，可点击“从电脑选择图片…”。"
+            if not DND_IMPORT_AVAILABLE:
+                hint = "tkinterdnd2 未安装，拖拽不可用（可 pip install tkinterdnd2）"
             self.drop_area = tk.Label(
                 top_frame,
-                text="tkinterdnd2 未安装，拖拽不可用（可 pip install tkinterdnd2）",
+                text=hint,
                 relief="ridge",
                 borderwidth=2,
                 width=60,
@@ -220,7 +303,7 @@ class App(BaseTk):
                 fg="#aa0000"
             )
         self.drop_area.pack(fill=tk.X, expand=True)
-        if DND_AVAILABLE:
+        if self.dnd_enabled:
             # 注册拖拽目标
             self.drop_area.drop_target_register(DND_FILES)
             self.drop_area.dnd_bind("<<Drop>>", self.on_drop)
@@ -285,8 +368,12 @@ class App(BaseTk):
         self.log = scrolledtext.ScrolledText(log_frame, state="disabled", font=("Consolas", 9))
         self.log.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         # 启动时给个提示
-        if not DND_AVAILABLE:
-            self.write_log("提示：未安装 tkinterdnd2，拖拽不可用，如需拖拽请执行：pip install tkinterdnd2")
+        if not self.dnd_enabled:
+            if not DND_IMPORT_AVAILABLE:
+                self.write_log("提示：未安装 tkinterdnd2，拖拽不可用，如需拖拽请执行：pip install tkinterdnd2")
+            else:
+                reason = _mask_path_text(self.dnd_error) if self.dnd_error else "未知原因"
+                self.write_log(f"提示：拖拽组件初始化失败，已自动退回普通窗口模式。原因：{reason}")
         else:
             self.write_log("可以将图片拖拽到上方灰色区域，或点击“从电脑选择图片…”。")
         if CLIP_AVAILABLE:
@@ -294,16 +381,83 @@ class App(BaseTk):
         else:
             self.write_log("提示：未安装 pillow，Ctrl+V 只能尝试粘贴文件路径；要粘贴图片请 pip install pillow")
         self._ocr_prewarm_thread = start_ocr_prewarm_thread(log=self.write_log)
+        self.after(self._log_poll_interval_ms, self._poll_log_queue)
     # ========== 工具函数 ==========
+    def _append_log_lines(self, lines):
+        if not lines:
+            return
+        self.log.configure(state="normal")
+        for line in lines:
+            self.log.insert(tk.END, line + "\n")
+        self.log.see(tk.END)
+        self.log.configure(state="disabled")
+
+    def _poll_log_queue(self):
+        lines = []
+        drained_to_batch_limit = False
+        if hasattr(self, "_log_queue"):
+            max_batch = max(1, int(getattr(self, "_log_max_batch_lines", 24)))
+            while len(lines) < max_batch:
+                try:
+                    lines.append(self._log_queue.get_nowait())
+                except queue.Empty:
+                    break
+            drained_to_batch_limit = len(lines) >= max_batch
+        if lines:
+            App._update_stage_hint(self, lines)
+            self._append_log_lines(lines)
+            self._last_log_monotonic = time.monotonic()
+        try:
+            now = time.monotonic()
+            if (
+                getattr(self, "_is_running", False)
+                and not lines
+                and (now - getattr(self, "_last_log_monotonic", 0.0)) >= getattr(self, "_log_idle_heartbeat_sec", 0.8)
+                and (now - getattr(self, "_last_heartbeat_monotonic", 0.0)) >= getattr(self, "_log_idle_heartbeat_sec", 0.8)
+            ):
+                heartbeat = App._build_idle_heartbeat(self)
+                if heartbeat:
+                    self._append_log_lines([heartbeat])
+                    self._last_heartbeat_monotonic = now
+            backlog = drained_to_batch_limit
+            if hasattr(self, "_log_queue"):
+                qsize = getattr(self._log_queue, "qsize", None)
+                if callable(qsize):
+                    try:
+                        backlog = backlog or qsize() > 0
+                    except Exception:
+                        pass
+            next_delay = 1 if backlog else self._log_poll_interval_ms
+            self.after(next_delay, self._poll_log_queue)
+        except Exception:
+            pass
+
+    def _flush_log_buffer(self):
+        self._poll_log_queue()
+
+    def _update_stage_hint(self, lines):
+        for line in lines:
+            text = str(line or "")
+            if text.startswith("[1/4]") or text.startswith("[2/4]") or text.startswith("[3/4]") or text.startswith("[4/4]"):
+                self._last_stage_hint = text
+            elif text.startswith("[条码开始]") or text.startswith("[条码完成]") or text.startswith("[OCR开始]") or text.startswith("[OCR完成]"):
+                self._last_stage_hint = text
+
+    def _build_idle_heartbeat(self):
+        return None
+
     def write_log(self, text: str):
         """线程安全地往日志窗口里写一行"""
         text = _mask_path_text(text)
-        def _append():
-            self.log.configure(state="normal")
-            self.log.insert(tk.END, text + "\n")
-            self.log.see(tk.END)
-            self.log.configure(state="disabled")
-        self.after(0, _append)
+        if threading.get_ident() == self._main_thread_ident:
+            App._update_stage_hint(self, [text])
+            self._append_log_lines([text])
+            self._last_log_monotonic = time.monotonic()
+            return
+        if hasattr(self, "_log_queue"):
+            self._log_queue.put(text)
+            return
+        self._append_log_lines([text])
     def add_files(self, paths):
         """把选中的文件加入列表（过滤非图片、去重）"""
         added = 0
@@ -475,6 +629,9 @@ class App(BaseTk):
             return
         # 禁用按钮，防止重复点击
         self._is_running = True
+        self._last_log_monotonic = time.monotonic()
+        self._last_heartbeat_monotonic = 0.0
+        self._last_stage_hint = ""
         self.btn_start.config(state="disabled")
         self.write_log("开始执行完整流水线……")
         t = threading.Thread(target=self.run_pipeline, daemon=True)
@@ -520,6 +677,7 @@ class App(BaseTk):
                     out_jsonl=result_jsonl,
                     debug_log=debug_log,
                 )
+                self.write_log("[3/4] 识别完成，正在刷新结果表…")
                 self.after(0, self.load_results_into_table)
             finally:
                 crop_module.set_log_sink(old_crop_sink)
@@ -575,7 +733,10 @@ class App(BaseTk):
                     _display_sn_src(r.get("sn_src", "")),
                 )
                 self.table.insert("", tk.END, values=values)
-        self.after(0, _append)
+        if threading.get_ident() == self._main_thread_ident:
+            _append()
+        else:
+            self.after(0, _append)
 if __name__ == "__main__":
     # Windows 控制台中文支持（可选）
     try:

@@ -19,13 +19,14 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_BODY_PATTERN = r"2[0-9]{9,10}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{6,7}"
+SN20_PREFIX_PATTERN = r"215[0-9]{7,8}"
+SN20_BODY_PATTERN = rf"{SN20_PREFIX_PATTERN}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{{6,7}}"
 SN12_BODY_PATTERN = r"4E[0-9]{2}(?:[0-9]{8}|[A-Z][0-9]{7})"
 SN20_RE = re.compile(rf"({SN20_BODY_PATTERN})")
 SN12_RE = re.compile(rf"({SN12_BODY_PATTERN})")
 SERIAL_FIELD_SN_RE = re.compile(rf"S({SN20_BODY_PATTERN}|{SN12_BODY_PATTERN})(?![0-9A-Z])")
 PURE_LONG_DIGITS_RE = re.compile(r"[0-9]{16,}")
-DIRECT_SCANNED_SN_RE = re.compile(r"2[0-9]{9,10}ES[0-9A-Z]{7}")
+DIRECT_SCANNED_SN_RE = re.compile(rf"{SN20_PREFIX_PATTERN}ES[0-9A-Z]{{7}}")
 
 NON_SN_PREFIX_RE = re.compile(
     r"^(SF|MAC|EAN|UPC|QR|HTTP|HTTPS|PART|PN|MODEL|DESC|ROUTE|WAYBILL|SNMP|IMEI)"
@@ -42,6 +43,7 @@ DEFAULT_DECODERS = ("pyzbar", "zxingcpp")
 DEFAULT_PIXEL_REPAIR_TEMPLATE = "4E26########,###########ER@######,###########ES#######"
 DEFAULT_PIXEL_REPAIR_LENGTHS = "12,20"
 DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE = 0.24
+DEFAULT_PIXEL_REPAIR_MIN_MARGIN = 0.0
 _PIXEL_REPAIR_LOCK = threading.Lock()
 
 
@@ -65,6 +67,25 @@ def _env_float(name: str, default: float, *, min_value: float = 0.0) -> float:
     except ValueError:
         return default
     return max(min_value, value)
+
+
+def _path_has_non_ascii(path: str) -> bool:
+    try:
+        return any(ord(ch) > 127 for ch in os.fspath(path))
+    except Exception:
+        return False
+
+
+def _read_image_unicode_safe(path: str) -> Any:
+    if cv2 is None or np is None or not hasattr(np, "fromfile") or not hasattr(cv2, "imdecode"):
+        return None
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        if data is None:
+            return None
+        return cv2.imdecode(data, getattr(cv2, "IMREAD_COLOR", 1))
+    except Exception:
+        return None
 
 
 def _env_flag_default(name: str, default: bool) -> bool:
@@ -375,18 +396,17 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
 def _read_image(path: str) -> Any:
     if cv2 is None:
         return None
-    img = None
+    if _path_has_non_ascii(path):
+        img = _read_image_unicode_safe(path)
+        if img is not None:
+            return img
     try:
         img = cv2.imread(path, getattr(cv2, "IMREAD_COLOR", 1))
     except Exception:
         img = None
-    if img is not None or np is None or not hasattr(cv2, "imdecode"):
+    if img is not None:
         return img
-    try:
-        data = np.fromfile(path, dtype=np.uint8)
-        return cv2.imdecode(data, getattr(cv2, "IMREAD_COLOR", 1))
-    except Exception:
-        return None
+    return _read_image_unicode_safe(path)
 
 
 def _shape(image: Any) -> tuple[int, int]:
@@ -597,6 +617,33 @@ def _grid_barcode_regions(image: Any, max_regions: int = 8) -> list[tuple[int, i
     return regions
 
 
+def _sn_focus_regions(image: Any) -> list[tuple[int, int, int, int]]:
+    h, w = _shape(image)
+    if not h or not w:
+        return []
+
+    specs = [
+        (0.00, 1.00, 0.10, 0.58),
+        (0.00, 1.00, 0.16, 0.64),
+        (0.02, 0.98, 0.20, 0.68),
+    ]
+    regions: list[tuple[int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for x1f, x2f, y1f, y2f in specs:
+        x1 = int(round(w * x1f))
+        x2 = int(round(w * x2f))
+        y1 = int(round(h * y1f))
+        y2 = int(round(h * y2f))
+        rect = (x1, y1, max(0, x2 - x1), max(0, y2 - y1))
+        if rect[2] < DEFAULT_MIN_BARCODE_WIDTH or rect[3] < max(DEFAULT_MIN_BARCODE_HEIGHT * 3, 72):
+            continue
+        if rect in seen:
+            continue
+        seen.add(rect)
+        regions.append(rect)
+    return regions
+
+
 def _candidate_scales(image: Any) -> list[float]:
     h, w = _shape(image)
     longest = max(h, w)
@@ -618,9 +665,29 @@ def _base_candidate_images(
     seen: set[tuple[str, int, int, int, int]] = set()
     h, w = _shape(image)
     rotations = (90, 270, 0, 180) if h > w else (0, 180, 90, 270)
+    source_lc = str(source).lower()
 
     for base_rotation in rotations:
         oriented = _rotate(image, base_rotation)
+        if source_lc == "sn":
+            focus_index = 1
+            for rect in _sn_focus_regions(oriented):
+                x, y, w, h = rect
+                key = (f"focus:{base_rotation}", x, y, w, h)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    crop = oriented[y:y + h, x:x + w]
+                except Exception:
+                    continue
+                if crop is None or not _shape(crop)[0]:
+                    continue
+                region = f"{source}.rot{base_rotation}.focus.{focus_index}"
+                bases.append((region, crop, base_rotation, rect))
+                if len(bases) >= max_bases:
+                    return bases
+                focus_index += 1
         bases.append((f"{source}.rot{base_rotation}.full", oriented, base_rotation, None))
         if len(bases) >= max_bases:
             return bases
@@ -957,6 +1024,10 @@ def _pixel_repair_decode_path(source: str, path: str) -> tuple[list[DecoderResul
         "SN_BARCODE_REPAIR_ACCEPT_SCORE",
         DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE,
     )
+    min_margin = _env_float(
+        "SN_BARCODE_REPAIR_MIN_MARGIN",
+        DEFAULT_PIXEL_REPAIR_MIN_MARGIN,
+    )
 
     try:
         with _PIXEL_REPAIR_LOCK:
@@ -981,6 +1052,9 @@ def _pixel_repair_decode_path(source: str, path: str) -> tuple[list[DecoderResul
     score = float(getattr(best, "score", 1.0))
     if score > accept_score:
         return [], 1, [f"code128_pixel_repair_score_reject:{score:.6f}"]
+    margin = float(candidates[1].score - best.score) if len(candidates) > 1 else 999.0
+    if margin < min_margin:
+        return [], 1, [f"code128_pixel_repair_margin_reject:{margin:.6f}"]
 
     raw_text = str(getattr(best, "text", "") or "")
     if not extract_sn_from_payload(raw_text):

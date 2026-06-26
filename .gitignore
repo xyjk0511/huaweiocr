@@ -34,3 +34,4 @@ local_models/eval_zip/
 local_models/quality/
 local_models/**/*.pt
 local_models/**/*.onnx
+.worktrees/

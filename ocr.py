@@ -2,6 +2,7 @@ import os
 import json
 import re
 import sys
+import types
 import warnings
 import inspect
 
@@ -44,6 +45,77 @@ def preload_torch_runtime_for_paddle():
 
 preload_torch_runtime_for_paddle()
 
+
+def ensure_torch_import_compat():
+    """
+    PaddleX/modelscope can import torch utilities even on pure OCR paths.
+
+    In the portable CPU build we do not rely on a functional PyTorch runtime.
+    If the bundled environment only exposes a partial/namespace ``torch``
+    package, install a tiny compatibility stub so ``modelscope.utils.torch_utils``
+    can import without pulling the full PyTorch stack into the release.
+    """
+    try:
+        import torch as torch_mod  # type: ignore
+        import torch.multiprocessing  # type: ignore  # noqa: F401
+        from torch import distributed as _dist  # type: ignore  # noqa: F401
+        return torch_mod
+    except Exception:
+        sys.modules.pop("torch", None)
+        sys.modules.pop("torch.multiprocessing", None)
+        sys.modules.pop("torch.distributed", None)
+
+    torch_stub = types.ModuleType("torch")
+    torch_stub.__dict__["__version__"] = "0.0-stub"
+
+    class _CudaStub:
+        @staticmethod
+        def set_device(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def device_count():
+            return 0
+
+        @staticmethod
+        def is_available():
+            return False
+
+    mp_stub = types.ModuleType("torch.multiprocessing")
+    mp_state = {"method": None}
+
+    def _get_start_method(allow_none=False):
+        method = mp_state["method"]
+        return method if (allow_none or method is not None) else "spawn"
+
+    def _set_start_method(method, force=False):
+        if mp_state["method"] is None or force:
+            mp_state["method"] = method
+
+    mp_stub.get_start_method = _get_start_method
+    mp_stub.set_start_method = _set_start_method
+
+    dist_stub = types.ModuleType("torch.distributed")
+    dist_stub.is_available = lambda: False
+    dist_stub.is_initialized = lambda: False
+    dist_stub.get_rank = lambda group=None: 0
+    dist_stub.get_world_size = lambda group=None: 1
+    dist_stub.barrier = lambda: None
+    dist_stub.init_process_group = lambda *args, **kwargs: None
+
+    torch_stub.cuda = _CudaStub()
+    torch_stub.multiprocessing = mp_stub
+    torch_stub.distributed = dist_stub
+    torch_stub.compile = lambda model, **kwargs: model
+
+    sys.modules["torch"] = torch_stub
+    sys.modules["torch.multiprocessing"] = mp_stub
+    sys.modules["torch.distributed"] = dist_stub
+    return torch_stub
+
+
+ensure_torch_import_compat()
+
 import paddle
 from paddleocr import PaddleOCR
 from app_paths import ensure_models_installed, get_resource_path
@@ -67,6 +139,20 @@ OCR_LANG = "en"
 USE_GPU = False
 OCR_PROFILE = os.environ.get("HUAWEIOCR_OCR_PROFILE", "mobile").strip().lower()
 # ===========================================
+
+LOG_SINK = None
+
+
+def set_log_sink(sink) -> None:
+    global LOG_SINK
+    LOG_SINK = sink
+
+
+def _emit_log(message: str) -> None:
+    if LOG_SINK:
+        LOG_SINK(message)
+    else:
+        print(message)
 
 
 def patch_paddlex_dep_checks():
@@ -199,14 +285,14 @@ def init_ocr():
 
     device = "gpu" if USE_GPU else "cpu"
     paddle.set_device(device)
-    print("🔧 正在初始化 PaddleOCR 引擎（lang='{}', device='{}'）...".format(
+    _emit_log("🔧 正在初始化 PaddleOCR 引擎（lang='{}', device='{}'）...".format(
         OCR_LANG, device
     ))
     ocr = PaddleOCR(
         lang=OCR_LANG,
         **_paddleocr_model_kwargs(model_root),
     )
-    print("✅ OCR 引擎初始化完成")
+    _emit_log("✅ OCR 引擎初始化完成")
     return ocr
 
 

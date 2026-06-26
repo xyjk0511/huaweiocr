@@ -2,14 +2,19 @@ import importlib
 import inspect
 import io
 import json
+import math
 import os
+import queue
 import sys
 import tempfile
 import time
+import threading
 import types
 import unittest
 import subprocess
 from unittest import mock
+
+import numpy as np
 
 
 def tearDownModule():
@@ -44,6 +49,9 @@ def _install_crop_import_fakes():
 
     numpy = types.ModuleType("numpy")
     numpy.uint8 = object()
+    numpy.ceil = math.ceil
+    numpy.tan = math.tan
+    numpy.deg2rad = math.radians
     numpy.fromfile = lambda *args, **kwargs: b""
     sys.modules["numpy"] = numpy
 
@@ -239,6 +247,26 @@ class RunAllPathPropagationTest(unittest.TestCase):
             self.assertEqual(summary["output_paths"]["result_jsonl"], calls["out_jsonl"])
             self.assertIsInstance(summary["timing_sec"]["crop"], float)
             self.assertIsInstance(summary["timing_sec"]["scan"], float)
+
+
+class Scan2MapOrderedProgressTest(unittest.TestCase):
+    def test_map_ordered_reports_progress_and_preserves_input_order(self):
+        scan2 = _import_scan2()
+
+        def work(item):
+            time.sleep({1: 0.03, 2: 0.01, 3: 0.02}[item])
+            return item * 10
+
+        progress = []
+        results = scan2._map_ordered(
+            [1, 2, 3],
+            work,
+            workers=3,
+            progress=lambda done, total: progress.append((done, total)),
+        )
+
+        self.assertEqual(results, [10, 20, 30])
+        self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
 
     def test_zero_label_crop_returns_nonzero_without_scanning(self):
         import run_all
@@ -664,6 +692,25 @@ class Scan2ManifestTest(unittest.TestCase):
             "(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level='info')",
         )
 
+    def test_read_image_prefers_unicode_safe_path_for_non_ascii_filename(self):
+        scan2 = _import_scan2()
+        path = r"F:\HuaweiOCR\stage2_fields\sn\滑坳掳.jpg__label_1__sn.png"
+        sentinel = object()
+        scan2.np.uint8 = object()
+
+        with mock.patch.object(scan2.np, "fromfile", return_value=b"123", create=True) as fromfile:
+            with mock.patch.object(scan2.cv2, "imdecode", return_value=sentinel, create=True) as imdecode:
+                with mock.patch.object(
+                    scan2.cv2,
+                    "imread",
+                    side_effect=AssertionError("non-ascii path should bypass cv2.imread first"),
+                    create=True,
+                ):
+                    self.assertIs(scan2._read_image(path), sentinel)
+
+        fromfile.assert_called_once_with(path, dtype=scan2.np.uint8)
+        imdecode.assert_called_once()
+
     def test_manifest_keeps_labels_without_model_or_sn_crops(self):
         scan2 = _import_scan2()
 
@@ -926,6 +973,59 @@ class Scan2ManifestTest(unittest.TestCase):
             self.assertNotIn("S380**8P2T", joined)
             self.assertNotIn("4E25****5849", joined)
 
+    def test_info_log_emits_realtime_barcode_progress(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            model_path = os.path.join(model_dir, "a__label_1__model.png")
+            sn_path = os.path.join(sn_dir, "a__label_1__sn.png")
+            open(model_path, "wb").close()
+            open(sn_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(json.dumps({"label_id": "a__label_1", "model_path": model_path, "sn_path": sn_path}) + "\n")
+
+            logs = []
+            old_sink = scan2.LOG_SINK
+            scan2.set_log_sink(logs.append)
+            try:
+                meta = {"barcode_found": True, "ocr_text_found": False, "barcode_status": "hit"}
+                report = types.SimpleNamespace(status="hit", results=[])
+                with mock.patch.object(scan2, "recognize_model_ocr", return_value=("S380-S8P2T", "raw", "ocr_color")):
+                    with mock.patch.object(scan2, "_recognize_sn_barcode", return_value=("4E25B0105849", "raw", "barcode", meta, report)):
+                        with mock.patch.dict(os.environ, {"SCAN2_MODEL_BARCODE": "0"}, clear=False):
+                            scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=os.path.join(root, "out.jsonl"),
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
+            finally:
+                scan2.set_log_sink(old_sink)
+
+            joined = "\n".join(logs)
+            self.assertIn("[条码完成] a__label_1 SN -> 命中 4E25B0105849（扫描条形码）", joined)
+            self.assertNotIn("[条码开始] a__label_1 SN", joined)
+
+    def test_set_log_sink_is_forwarded_to_loaded_ocr_module(self):
+        scan2 = _import_scan2()
+
+        calls = []
+        fake_ocr = types.SimpleNamespace(set_log_sink=calls.append)
+        old_module = scan2.OCR_MODULE
+        old_sink = scan2.LOG_SINK
+        scan2.OCR_MODULE = fake_ocr
+        try:
+            scan2.set_log_sink("sink-a")
+            self.assertEqual(calls, ["sink-a"])
+        finally:
+            scan2.OCR_MODULE = old_module
+            scan2.set_log_sink(old_sink)
+
     def test_label_crop_barcode_is_used_when_sn_crop_is_missing(self):
         scan2 = _import_scan2()
 
@@ -1152,6 +1252,67 @@ class Scan2ManifestTest(unittest.TestCase):
             self.assertEqual(row["model_src"], "sn_hint")
             self.assertEqual(stats["model_ocr_recoveries"], 0)
 
+    def test_main_falls_back_to_label_ocr_when_model_crop_ocr_misses(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(sn_dir)
+            label_id = "a__label_1"
+            model_path = os.path.join(model_dir, f"{label_id}__model.png")
+            label_path = os.path.join(root, f"{label_id}.png")
+            open(model_path, "wb").close()
+            open(label_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(
+                    json.dumps(
+                        {
+                            "label_id": label_id,
+                            "model_path": model_path,
+                            "label_crop": label_path,
+                        }
+                    )
+                    + "\n"
+                )
+
+            sn_meta = {
+                "barcode_found": False,
+                "ocr_text_found": False,
+                "barcode_status": "miss",
+                "barcode_attempts": 1,
+                "barcode_decoded_count": 0,
+            }
+            sn_report = types.SimpleNamespace(status="miss", results=[])
+            with mock.patch.object(scan2, "recognize_model_barcode", return_value=("", "", "barcode_no_match")):
+                with mock.patch.object(
+                    scan2,
+                    "_recognize_sn_barcode",
+                    return_value=("", "", "missing", sn_meta, sn_report),
+                ):
+                    with mock.patch.object(scan2, "recognize_model_ocr", return_value=("", "noise", "none")) as model_ocr:
+                        with mock.patch.object(
+                            scan2,
+                            "recognize_model_label_ocr",
+                            return_value=("AP162E", "Model: AP162E", "ocr_label"),
+                        ) as label_ocr:
+                            stats = scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=os.path.join(root, "out.jsonl"),
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
+
+            model_ocr.assert_called_once()
+            label_ocr.assert_called_once_with(label_path, label_id=label_id)
+            with open(os.path.join(root, "out.jsonl"), "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+            self.assertEqual(row["model"], "AP162E")
+            self.assertEqual(row["model_src"], "ocr_label")
+            self.assertEqual(stats["model_ocr_recoveries"], 1)
+
     def test_model_recognition_prefers_file_path_ocr(self):
         scan2 = _import_scan2()
 
@@ -1209,9 +1370,30 @@ class CropTempFileTest(unittest.TestCase):
                 original,
             )
 
+    def test_recursive_input_paths_get_safe_label_id_and_original_mapping(self):
+        crop = _import_crop()
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            nested_dir = os.path.join(input_dir, "2026.2.2")
+            os.makedirs(nested_dir)
+            nested = os.path.join(nested_dir, "same.jpg")
+            top_level = os.path.join(input_dir, "top.jpg")
+            for path in (nested, top_level):
+                with open(path, "wb") as f:
+                    f.write(b"image")
+
+            crop.configure_paths(input_dir=input_dir, out_dir=root)
+            self.assertEqual(crop.list_images(input_dir), [nested, top_level])
+
+            nested_base = crop.input_label_base(nested)
+            self.assertNotIn(os.sep, nested_base)
+            self.assertIn("2026.2.2", nested_base)
+            self.assertEqual(crop.original_path_for_label_id(f"{nested_base}__label_1"), nested)
+            self.assertEqual(crop.input_label_base(top_level), "top.jpg")
+
     def test_stage1_uses_extension_in_label_name_to_avoid_same_stem_collision(self):
         crop = _import_crop()
-        fake_img = types.SimpleNamespace(shape=(100, 100, 3), size=1)
+        fake_img = np.zeros((100, 100, 3), dtype=np.uint8)
         pred = {"x": 50, "y": 50, "width": 20, "height": 20, "class": crop.MODEL1_LABEL_CLASS}
 
         with tempfile.TemporaryDirectory() as root:
@@ -1223,14 +1405,95 @@ class CropTempFileTest(unittest.TestCase):
             with mock.patch.object(crop, "read_image", return_value=fake_img):
                 with mock.patch.object(crop, "infer_with_resize", return_value=[pred]):
                     with mock.patch.object(crop, "crop_from_pred", return_value=fake_img):
-                        with mock.patch.object(crop, "stage1_is_product_label_crop", return_value=True):
-                            with mock.patch.object(crop, "save_png_required", side_effect=lambda path, _img, _ctx: path):
-                                out_png = crop.stage1_crop_labels(path_png)
-                                out_jpg = crop.stage1_crop_labels(path_jpg)
+                        with mock.patch.object(crop, "stage1_is_product_label_candidate_crop", return_value=True):
+                            with mock.patch.object(crop, "stage1_tighten_label_crop", return_value=fake_img):
+                                with mock.patch.object(crop, "stage1_is_product_label_crop", return_value=True):
+                                    with mock.patch.object(crop, "save_png_required", side_effect=lambda path, _img, _ctx: path):
+                                        with mock.patch.object(crop, "stage1_save_preview_enabled", return_value=False):
+                                            out_png = crop.stage1_crop_labels(path_png)
+                                            out_jpg = crop.stage1_crop_labels(path_jpg)
 
             self.assertEqual(os.path.basename(out_png[0]), "same.png__label_1.png")
             self.assertEqual(os.path.basename(out_jpg[0]), "same.jpg__label_1.png")
             self.assertNotEqual(os.path.basename(out_png[0]), os.path.basename(out_jpg[0]))
+
+    def test_main_removes_stage1_orphan_when_stage2_rejects_label(self):
+        crop = _import_crop()
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "out")
+            os.makedirs(input_dir)
+            img_path = os.path.join(input_dir, "image_01.jpg")
+            with open(img_path, "wb") as f:
+                f.write(b"image")
+
+            def fake_stage1(_img_path):
+                label_path = os.path.join(crop.STAGE1_DIR, "image_01.jpg__label_1.png")
+                os.makedirs(os.path.dirname(label_path), exist_ok=True)
+                with open(label_path, "wb") as f:
+                    f.write(b"label")
+                return [label_path]
+
+            with mock.patch.object(crop, "crop_worker_count", return_value=1):
+                with mock.patch.object(crop, "stage1_crop_labels", side_effect=fake_stage1):
+                    with mock.patch.object(crop, "stage2_crop_fields", return_value=None):
+                        with mock.patch.object(crop, "stage1_keep_all_crops_enabled", return_value=False):
+                            stats = crop.main(input_dir=input_dir, out_dir=out_dir, clean=True, log_level="error")
+
+            label_path = os.path.join(out_dir, "stage1_labels", "image_01.jpg__label_1.png")
+            self.assertFalse(os.path.exists(label_path))
+            self.assertEqual(stats["label_count"], 0)
+            self.assertEqual(stats["manifest_rows"], 0)
+
+    def test_main_emits_realtime_stage2_progress_logs(self):
+        crop = _import_crop()
+        logs = []
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "out")
+            os.makedirs(input_dir)
+            img_path = os.path.join(input_dir, "image_01.jpg")
+            with open(img_path, "wb") as f:
+                f.write(b"image")
+
+            label_paths = [
+                os.path.join(out_dir, "stage1_labels", "image_01.jpg__label_1.png"),
+                os.path.join(out_dir, "stage1_labels", "image_01.jpg__label_2.png"),
+            ]
+
+            def fake_stage1(_img_path):
+                for label_path in label_paths:
+                    os.makedirs(os.path.dirname(label_path), exist_ok=True)
+                    with open(label_path, "wb") as f:
+                        f.write(b"label")
+                return list(label_paths)
+
+            def fake_stage2(label_path):
+                if label_path.endswith("__label_1.png"):
+                    return {
+                        "label_id": "image_01.jpg__label_1",
+                        "label_crop": label_path,
+                        "model_path": "model.png",
+                        "sn_path": "sn.png",
+                        "part_no_path": None,
+                    }
+                return None
+
+            old_sink = crop.LOG_SINK
+            crop.set_log_sink(logs.append)
+            with mock.patch.dict(os.environ, {"CROP_PROGRESS_LOG": "1"}):
+                with mock.patch.object(crop, "crop_worker_count", return_value=1):
+                    with mock.patch.object(crop, "stage1_crop_labels", side_effect=fake_stage1):
+                        with mock.patch.object(crop, "stage2_crop_fields", side_effect=fake_stage2):
+                            stats = crop.main(input_dir=input_dir, out_dir=out_dir, clean=True, log_level="info")
+            crop.set_log_sink(old_sink)
+
+            joined = "\n".join(logs)
+            self.assertEqual(stats["label_count"], 1)
+            self.assertIn("[2/4][字段完成] image_01.jpg__label_1 -> 命中 Model/SN", joined)
+            self.assertIn("[2/4][字段完成] image_01.jpg__label_2 -> 未保留", joined)
+            self.assertNotIn("[2/4][字段开始] image_01.jpg__label_1", joined)
+            self.assertNotIn("[2/4][字段开始] image_01.jpg__label_2", joined)
 
     def test_save_png_required_raises_when_write_fails(self):
         crop = _import_crop()
@@ -1607,6 +1870,50 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertIn(os.path.join("stage2_fields", "manifest.jsonl"), masked)
         self.assertIn("source: [path]", masked)
         self.assertNotIn(external_path, masked)
+
+    def test_gui_write_log_appends_directly_on_main_thread(self):
+        sys.modules.pop("gui_app", None)
+        import gui_app
+
+        captured = []
+        after_calls = []
+        app = types.SimpleNamespace(
+            _main_thread_ident=threading.get_ident(),
+            _append_log_lines=lambda lines: captured.extend(lines),
+            after=lambda delay, callback=None: after_calls.append((delay, callback)),
+        )
+
+        gui_app.App.write_log(app, "主线程日志")
+
+        self.assertEqual(captured, ["主线程日志"])
+        self.assertEqual(after_calls, [])
+
+    def test_gui_write_log_batches_background_updates(self):
+        sys.modules.pop("gui_app", None)
+        import gui_app
+
+        captured = []
+        scheduled = []
+        app = types.SimpleNamespace()
+        app._main_thread_ident = threading.get_ident()
+        app._log_queue = queue.SimpleQueue()
+        app._log_poll_interval_ms = 50
+        app._append_log_lines = lambda lines: captured.extend(lines)
+        app.after = lambda delay, callback=None: scheduled.append((delay, callback))
+        app._poll_log_queue = lambda: gui_app.App._poll_log_queue(app)
+        app._flush_log_buffer = lambda: gui_app.App._flush_log_buffer(app)
+
+        fake_bg_ident = app._main_thread_ident + 1
+        with mock.patch("threading.get_ident", return_value=fake_bg_ident):
+            gui_app.App.write_log(app, "后台日志1")
+            gui_app.App.write_log(app, "后台日志2")
+
+        self.assertEqual(len(scheduled), 0)
+
+        gui_app.App._flush_log_buffer(app)
+
+        self.assertEqual(captured, ["后台日志1", "后台日志2"])
+        self.assertEqual(len(scheduled), 1)
 
     def _run_gui_pipeline_with_fakes(self, module_name):
         sys.modules.pop(module_name, None)

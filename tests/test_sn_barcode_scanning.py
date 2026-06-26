@@ -38,6 +38,22 @@ class BarcodeDecoderReliabilityTest(unittest.TestCase):
 
         self.assertTrue(any(err.startswith("decoder_unavailable:pyzbar:") for err in errors))
 
+    def test_sn_barcode_read_image_prefers_unicode_safe_path_for_non_ascii_filename(self):
+        path = r"F:\HuaweiOCR\stage2_fields\sn\滑坳掳.jpg__label_1__sn.png"
+        sentinel = object()
+
+        with mock.patch.object(sn_barcode.np, "fromfile", return_value=b"123") as fromfile:
+            with mock.patch.object(sn_barcode.cv2, "imdecode", return_value=sentinel, create=True) as imdecode:
+                with mock.patch.object(
+                    sn_barcode.cv2,
+                    "imread",
+                    side_effect=AssertionError("non-ascii path should bypass cv2.imread first"),
+                ):
+                    self.assertIs(sn_barcode._read_image(path), sentinel)
+
+        fromfile.assert_called_once_with(path, dtype=sn_barcode.np.uint8)
+        imdecode.assert_called_once()
+
     def test_cli_infra_failures_are_reported_separately_from_decoder_miss(self):
         cases = [
             (
@@ -105,6 +121,59 @@ class BarcodeDecoderReliabilityTest(unittest.TestCase):
 
 
 class SnBarcodeSelectionTest(unittest.TestCase):
+    def test_sn_base_candidates_insert_focus_bands_before_full_image(self):
+        img = np.full((240, 640, 3), 255, dtype=np.uint8)
+
+        bases = sn_barcode._base_candidate_images(img, "sn", max_bases=4)
+
+        self.assertGreaterEqual(len(bases), 4)
+        self.assertTrue(bases[0][0].startswith("sn.rot0.focus."))
+        self.assertTrue(bases[1][0].startswith("sn.rot0.focus."))
+        self.assertTrue(bases[2][0].startswith("sn.rot0.focus."))
+        self.assertEqual(bases[3][0], "sn.rot0.full")
+
+    def test_scan_sn_barcodes_tries_sn_focus_band_before_full_ean_noise(self):
+        img = np.full((240, 640, 3), 255, dtype=np.uint8)
+        seen_regions = []
+
+        def fake_decode(candidate):
+            seen_regions.append(candidate.source_region)
+            if ".focus." in candidate.source_region:
+                return [
+                    sn_barcode.DecoderResult(
+                        decoder_name="pyzbar",
+                        raw_text="21500872904ERC000340",
+                        source=candidate.source,
+                        source_region=candidate.source_region,
+                        barcode_type="CODE128",
+                    )
+                ], []
+            if candidate.source_region.endswith(".full"):
+                return [
+                    sn_barcode.DecoderResult(
+                        decoder_name="pyzbar",
+                        raw_text="6901443456987",
+                        source=candidate.source,
+                        source_region=candidate.source_region,
+                        barcode_type="EAN13",
+                    )
+                ], []
+            return [], []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                    with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_decode):
+                        report = sn_barcode.scan_sn_barcodes(
+                            [("sn", "sn.png")],
+                            max_decoder_attempts=1,
+                        )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "21500872904ERC000340")
+        self.assertTrue(seen_regions)
+        self.assertIn(".focus.", seen_regions[0])
+
     def test_code128_visual_verifier_accepts_matching_payload(self):
         bits = barcode_module._code128b_module_bits("AP162E")
         modules = np.repeat(bits, 2)
@@ -188,6 +257,7 @@ class SnBarcodeSelectionTest(unittest.TestCase):
     def test_bad_direct_barcode_payloads_are_not_normalized_into_sn(self):
         self.assertEqual(sn_barcode.extract_sn_from_payload("F'500872904ERB000951"), "")
         self.assertEqual(sn_barcode.extract_sn_from_payload("532570497307251622"), "")
+        self.assertEqual(sn_barcode.extract_sn_from_payload("20457271304ERA904527"), "")
         self.assertEqual(sn_barcode.extract_sn_from_payload("215BROKEN4ERC000382AP"), "")
         self.assertEqual(sn_barcode.extract_sn_from_payload("AASCMAS7SN2150010843"), "")
         self.assertEqual(sn_barcode.extract_sn_from_payload("MSN2150087147LDS4023"), "")
@@ -207,6 +277,7 @@ class SnBarcodeSelectionTest(unittest.TestCase):
 
         self.assertEqual(scan2.extract_sn_from_text("AASCMAS7SN2150010843"), "")
         self.assertEqual(scan2.extract_sn_from_text("MSN2150087147LDS4023"), "")
+        self.assertEqual(scan2.extract_sn_from_text("20457271304ERA904527"), "")
         self.assertEqual(scan2.extract_sn_from_text("4ERA005537EA"), "")
         self.assertEqual(
             scan2.extract_sn_from_text("21500872884ERA007680EAN"),
@@ -219,6 +290,14 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(
             scan2.extract_sn_from_text("SN: 2150087147LDS4024590"),
             "2150087147LDS4024590",
+        )
+        self.assertEqual(
+            scan2.extract_sn_from_text("S/N:21500872884ERB011934 966515"),
+            "21500872884ERB011934",
+        )
+        self.assertEqual(
+            scan2.extract_sn_from_text("S/N : 21500872884ERB011934 515996"),
+            "21500872884ERB011934",
         )
 
     def test_model_barcode_candidate_rejects_sn_payloads(self):
@@ -919,6 +998,30 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         read_barcodes.assert_called_once_with(part_no_crop)
         decode_resized.assert_called()
 
+    def test_part_no_scan_uses_stripe_rescue_after_other_decoders_miss(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            part_no_crop = os.path.join(root, "part_no.png")
+            img = np.full((80, 160, 3), 255, dtype=np.uint8)
+            cv2.imwrite(part_no_crop, img)
+
+            with mock.patch.object(scan2, "read_barcodes", return_value=[]):
+                with mock.patch.object(scan2, "_read_image", return_value=img):
+                    with mock.patch.object(scan2.cv2, "copyMakeBorder", return_value=img, create=True):
+                        with mock.patch.object(scan2.cv2, "resize", return_value=img, create=True):
+                            with mock.patch.object(scan2, "decode_barcodes_with_dbr", return_value=[]):
+                                with mock.patch.object(scan2, "_part_no_pixel_repair", return_value=[]):
+                                    with mock.patch.object(
+                                        scan2,
+                                        "_part_no_stripe_rescue",
+                                        return_value=["50087288"],
+                                    ) as stripe_rescue:
+                                        codes = scan2.read_part_no_barcodes(part_no_crop)
+
+        self.assertEqual(codes, ["50087288"])
+        stripe_rescue.assert_called_once_with(part_no_crop)
+
     def test_non_part_no_scan_does_not_try_upscaled_candidates(self):
         scan2 = _import_scan2()
 
@@ -1246,6 +1349,101 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         model_barcode.assert_called_once_with(model_path, label_id=label_id)
         model_ocr.assert_not_called()
 
+    def test_main_accepts_unknown_model_when_barcode_and_ocr_agree(self):
+        scan2 = _import_scan2()
+
+        with tempfile.TemporaryDirectory() as root:
+            stage2 = os.path.join(root, "stage2_fields")
+            model_dir = os.path.join(stage2, "model")
+            part_no_dir = os.path.join(stage2, "part_no")
+            sn_dir = os.path.join(stage2, "sn")
+            os.makedirs(model_dir)
+            os.makedirs(part_no_dir)
+            os.makedirs(sn_dir)
+            label_id = "xa__label_4"
+            model_path = os.path.join(model_dir, f"{label_id}__model.png")
+            part_no_path = os.path.join(part_no_dir, f"{label_id}__part_no.png")
+            open(model_path, "wb").close()
+            open(part_no_path, "wb").close()
+            with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+                manifest.write(
+                    json.dumps(
+                        {
+                            "label_id": label_id,
+                            "model_path": model_path,
+                            "part_no_path": part_no_path,
+                        }
+                    )
+                    + "\n"
+                )
+
+            map_path = os.path.join(root, "part_no_model_map.json")
+            learned_path = os.path.join(root, "learned_model_codes.json")
+            out_jsonl = os.path.join(root, "out.jsonl")
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SCAN2_PARALLEL": "0",
+                    "SCAN2_SCAN_LABEL_WITHOUT_SN": "0",
+                    "SCAN2_PART_NO_MODEL_MAP_PATH": map_path,
+                    "SCAN2_LEARNED_MODEL_CODES_PATH": learned_path,
+                },
+                clear=False,
+            ):
+                with mock.patch.object(
+                    scan2,
+                    "recognize_model_barcode",
+                    return_value=("", "model:E3; model_band:E3", "barcode_no_match"),
+                ) as model_barcode:
+                    with mock.patch.object(
+                        scan2,
+                        "recognize_model_ocr",
+                        return_value=("", "Model: E3", "none"),
+                    ) as model_ocr:
+                        with mock.patch.object(
+                            scan2,
+                            "try_model_from_part_no_crop",
+                            return_value=("", "part_no:50010842", "part_no_no_match"),
+                        ) as part_no_scan:
+                            stats = scan2.main(
+                                model_dir=model_dir,
+                                sn_dir=sn_dir,
+                                out_jsonl=out_jsonl,
+                                debug_log=os.path.join(root, "debug.log"),
+                            )
+
+            self.assertEqual(stats["model_success"], 1)
+            self.assertEqual(stats["model_consensus_learned"], 1)
+            self.assertEqual(stats["model_part_no_learned"], 1)
+            self.assertGreaterEqual(model_barcode.call_count, 1)
+            self.assertEqual(model_barcode.call_args_list[0], mock.call(model_path, label_id=label_id))
+            self.assertGreaterEqual(model_ocr.call_count, 1)
+            self.assertEqual(
+                model_ocr.call_args_list[0],
+                mock.call(
+                    model_path,
+                    label_id=label_id,
+                    verify_barcode_visual=True,
+                ),
+            )
+            part_no_scan.assert_called()
+
+            with open(out_jsonl, "r", encoding="utf-8") as f:
+                row = json.loads(f.readline())
+            self.assertEqual(row["model"], "E3")
+            self.assertEqual(row["model_src"], "barcode_ocr_consensus")
+            self.assertEqual(row["part_no"], "50010842")
+            self.assertTrue(row["part_no_model_map_updated"])
+
+            with open(map_path, "r", encoding="utf-8") as f:
+                part_no_map = json.load(f)
+            self.assertEqual(part_no_map["50010842"]["model"], "E3")
+
+            with open(learned_path, "r", encoding="utf-8") as f:
+                learned_models = json.load(f)
+            self.assertIn("E3", learned_models)
+
     def test_main_delays_model_crop_when_part_no_barcode_misses(self):
         scan2 = _import_scan2()
 
@@ -1444,6 +1642,75 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
         self.assertTrue(meta["ocr_text_found"])
         self.assertFalse(meta["barcode_found"])
         self.assertNotEqual(sn, "2150087147LDS4023")
+
+    def test_recognize_sn_ocr_does_not_append_waybill_digits(self):
+        scan2 = _import_scan2()
+        report = sn_barcode.SnBarcodeReport(status="parse_failure", attempts=1)
+
+        with mock.patch.object(scan2, "_scan_sn_barcode_report", return_value=report):
+            with mock.patch.object(scan2, "load_for_ocr_color", return_value=object()):
+                with mock.patch.object(
+                    scan2,
+                    "ocr_text_with_details",
+                    side_effect=[
+                        (
+                            "S/N:21500872884ERB011934 966515",
+                            "S/N:21500872884ERB011934966515",
+                            ["S/N:21500872884ERB011934 966515"],
+                        )
+                    ],
+                ):
+                    sn, raw, source, meta = scan2.recognize_sn_ocr_after_barcode(
+                        "sn.png",
+                        label_id="海南.jpg__label_5",
+                        barcode_report=report,
+                        meta={"barcode_found": False, "ocr_text_found": False, "barcode_status": "parse_failure"},
+                    )
+
+        self.assertEqual(sn, "21500872884ERB011934")
+        self.assertEqual(source, "ocr")
+        self.assertTrue(meta["ocr_text_found"])
+        self.assertEqual(raw, "S/N:21500872884ERB011934 966515")
+
+    def test_recognize_sn_ocr_accepts_unknown_value_when_barcode_and_ocr_agree(self):
+        scan2 = _import_scan2()
+        report = sn_barcode.SnBarcodeReport(
+            status="parse_failure",
+            attempts=1,
+            decoded_count=1,
+            results=[
+                sn_barcode.DecoderResult(
+                    "fake",
+                    "SN: ABC12345XYZ9",
+                    "sn",
+                    "sn.orig",
+                )
+            ],
+        )
+
+        with mock.patch.object(scan2, "load_for_ocr_color", return_value=object()):
+            with mock.patch.object(
+                scan2,
+                "ocr_text_with_details",
+                side_effect=[
+                    (
+                        "SN: ABC12345XYZ9",
+                        "SN: ABC12345XYZ9",
+                        ["SN: ABC12345XYZ9"],
+                    )
+                ],
+            ):
+                sn, raw, source, meta = scan2.recognize_sn_ocr_after_barcode(
+                    "sn.png",
+                    label_id="x__label_1",
+                    barcode_report=report,
+                    meta={"barcode_found": True, "ocr_text_found": False, "barcode_status": "parse_failure"},
+                )
+
+        self.assertEqual(sn, "ABC12345XYZ9")
+        self.assertEqual(raw, "SN: ABC12345XYZ9")
+        self.assertEqual(source, "barcode_ocr_consensus")
+        self.assertTrue(meta["ocr_text_found"])
 
     def test_recognize_sn_barcode_hit_skips_ocr_prefix_junk(self):
         scan2 = _import_scan2()

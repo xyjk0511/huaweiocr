@@ -66,11 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _list_images(folder: str) -> list[str]:
-    return [
-        os.path.join(folder, f)
-        for f in os.listdir(folder)
-        if os.path.splitext(f)[1].lower() in SUPPORTED_INPUT_EXTS
-    ]
+    images: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if os.path.splitext(name)[1].lower() in SUPPORTED_INPUT_EXTS:
+                images.append(os.path.join(dirpath, name))
+    return sorted(images, key=lambda p: os.path.normcase(os.path.relpath(p, folder)))
 
 
 def _jsonable(value):

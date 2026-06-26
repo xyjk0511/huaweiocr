@@ -1,5 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
+
+sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
@@ -34,6 +37,7 @@ datas += [
 ]
 datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
 datas += collect_data_files('Cython', includes=['Utility/**'])
+datas += collect_data_files('tkinterdnd2', includes=['tkdnd/**'])
 datas += copy_metadata('opencv-contrib-python')
 datas += copy_metadata('pyclipper')
 datas += copy_metadata('python-bidi')
@@ -52,7 +56,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['torch', 'torchvision'],
     noarchive=False,
     optimize=0,
 )

@@ -7,9 +7,16 @@ import concurrent.futures
 import threading
 import time
 import numpy as np
+from pathlib import Path
 from barcode import decode_small_patch
 from app_paths import ensure_models_installed, get_user_data_dir
-from sn_barcode import SN12_RE, SN20_RE, extract_sn_from_payload, scan_sn_barcodes
+from sn_barcode import (
+    SN12_BODY_PATTERN,
+    SN12_RE,
+    SN20_RE,
+    extract_sn_from_payload,
+    scan_sn_barcodes,
+)
 
 # Simple log gating for CLI usage.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
@@ -22,6 +29,11 @@ def set_log_level(level: str) -> None:
 def set_log_sink(sink) -> None:
     global LOG_SINK
     LOG_SINK = sink
+    if OCR_MODULE is not None and hasattr(OCR_MODULE, "set_log_sink"):
+        try:
+            OCR_MODULE.set_log_sink(sink)
+        except Exception:
+            pass
 
 def _log(msg: str, level: str = "info") -> None:
     levels = {"debug": 10, "info": 20, "warn": 30, "error": 40}
@@ -49,6 +61,9 @@ SN_TARGET_WIDTHS = [1000, 1400, 1800]
 SN_MAX_SCALE = 4.0
 PART_NO_TARGET_WIDTHS = [650, 900, 1200]
 PART_NO_MAX_SCALE = 4.0
+PART_NO_PIXEL_REPAIR_MAX_SCORE = float(os.environ.get("SCAN2_PART_NO_PIXEL_REPAIR_MAX_SCORE", "0.17"))
+PART_NO_PIXEL_REPAIR_MIN_MARGIN = float(os.environ.get("SCAN2_PART_NO_PIXEL_REPAIR_MIN_MARGIN", "0.010"))
+PART_NO_STRIPE_RESCUE_ENABLED = os.environ.get("SCAN2_PART_NO_STRIPE_RESCUE", "1").strip().lower() not in {"0", "false", "no"}
 SCAN_BARCODE_MAX_AUTO_WORKERS = 8
 SCAN_OCR_MAX_AUTO_WORKERS = 1
 
@@ -56,6 +71,7 @@ os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+PART_NO_PAYLOAD_RE = re.compile(r"(?:^|[^0-9A-Z])((?:500|980)\d{5})(?=[^0-9A-Z]|[A-Z]{2,}|$)", re.I)
 
 def configure_paths(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None):
     global MODEL_CROP_DIR, SN_CROP_DIR, PART_NO_CROP_DIR, OUT_JSONL, DEBUG_LOG_PATH
@@ -82,6 +98,8 @@ def display_source(value: str) -> str:
     src = str(value or "")
     if src == "barcode":
         return "扫描条形码"
+    if src == "barcode_ocr_consensus":
+        return "条码+文字识别一致"
     if src == "barcode_visual":
         return "条形码视觉校验"
     if src in {"ocr_file", "ocr_color", "ocr_bin", "ocr_top"}:
@@ -137,6 +155,11 @@ def _load_ocr_module():
         import ocr as ocr_module
 
         OCR_MODULE = ocr_module
+        if hasattr(OCR_MODULE, "set_log_sink"):
+            try:
+                OCR_MODULE.set_log_sink(LOG_SINK)
+            except Exception:
+                pass
     return OCR_MODULE
 
 
@@ -348,37 +371,134 @@ def scan_part_no_first_enabled() -> bool:
     return _env_flag_default("SCAN2_PART_NO_FIRST", True)
 
 
-def _map_ordered(items, fn, workers: int):
+def scan_progress_log_enabled() -> bool:
+    raw = os.environ.get("SCAN2_PROGRESS_LOG")
+    if raw is None or str(raw).strip() == "":
+        return bool(LOG_SINK)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _scan_job_label(kind: str, key: str) -> str:
+    kind = str(kind or "")
+    if kind == "part_no_model":
+        return f"{key} PartNo->型号"
+    if kind == "model":
+        return f"{key} 型号"
+    if kind == "sn":
+        return f"{key} SN"
+    return f"{key} {kind}"
+
+
+def _barcode_job_result_summary(kind: str, result) -> str:
+    if kind == "part_no_model":
+        model_code, _raw, src = result
+        if model_code:
+            return f"命中 {model_code}（{display_source(src)}）"
+        return f"未命中（{display_source(src)}）"
+    if kind == "model":
+        model_code, _raw, src = result
+        if model_code:
+            return f"命中 {model_code}（{display_source(src)}）"
+        return f"未命中（{display_source(src)}）"
+    sn_code, _raw, src, _meta, _report = result
+    if sn_code:
+        return f"命中 {sn_code}（{display_source(src)}）"
+    return f"未命中（{display_source(src)}）"
+
+
+def _ocr_job_result_summary(kind: str, result) -> str:
+    if kind == "model":
+        model_code, _raw, src = result
+        if model_code:
+            return f"命中 {model_code}（{display_source(src)}）"
+        return f"未命中（{display_source(src)}）"
+    sn_code, _raw, src, _meta = result
+    if sn_code:
+        return f"命中 {sn_code}（{display_source(src)}）"
+    return f"未命中（{display_source(src)}）"
+
+
+def _progress_logger(prefix: str):
+    last_done = {"value": 0}
+
+    def _inner(done: int, total: int) -> None:
+        done = int(done or 0)
+        total = int(total or 0)
+        if done <= last_done["value"]:
+            return
+        last_done["value"] = done
+        _log(f"{prefix} {done}/{total}", "info")
+
+    return _inner
+
+
+def _map_ordered(items, fn, workers: int, progress=None):
     items = list(items)
     if workers <= 1 or len(items) <= 1:
-        return [fn(item) for item in items]
+        total = len(items)
+        results = []
+        for index, item in enumerate(items, 1):
+            results.append(fn(item))
+            if progress:
+                progress(index, total)
+        return results
 
     max_workers = min(workers, len(items))
+    results = [None] * len(items)
+    done = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(fn, item) for item in items]
-        return [future.result() for future in futures]
+        future_to_index = {
+            executor.submit(fn, item): index
+            for index, item in enumerate(items)
+        }
+        for future in concurrent.futures.as_completed(future_to_index):
+            index = future_to_index[future]
+            results[index] = future.result()
+            done += 1
+            if progress:
+                progress(done, len(items))
+        return results
 
 
-def _map_ocr_ordered(items, fn, workers: int):
+def _map_ocr_ordered(items, fn, workers: int, progress=None):
     global OCR_THREAD_LOCAL_MODE
     old_mode = OCR_THREAD_LOCAL_MODE
     OCR_THREAD_LOCAL_MODE = workers > 1
     try:
-        return _map_ordered(items, fn, workers)
+        return _map_ordered(items, fn, workers, progress=progress)
     finally:
         OCR_THREAD_LOCAL_MODE = old_mode
 
 
 # ===================== UTILS =====================
-def _read_image(path, flags=cv2.IMREAD_COLOR):
-    img = cv2.imread(path, flags)
-    if img is not None:
-        return img
+def _path_has_non_ascii(path) -> bool:
+    try:
+        return any(ord(ch) > 127 for ch in os.fspath(path))
+    except Exception:
+        return False
+
+
+def _read_image_unicode_safe(path, flags):
+    if np is None or not hasattr(np, "fromfile") or not hasattr(cv2, "imdecode"):
+        return None
     try:
         data = np.fromfile(path, dtype=np.uint8)
+        if data is None:
+            return None
         return cv2.imdecode(data, flags)
     except Exception:
         return None
+
+
+def _read_image(path, flags=cv2.IMREAD_COLOR):
+    if _path_has_non_ascii(path):
+        img = _read_image_unicode_safe(path, flags)
+        if img is not None:
+            return img
+    img = cv2.imread(path, flags)
+    if img is not None:
+        return img
+    return _read_image_unicode_safe(path, flags)
 
 def load_and_preprocess(path, roi_bottom=False):
     img = _read_image(path, cv2.IMREAD_COLOR)
@@ -480,21 +600,96 @@ def read_barcodes(img_path: str) -> list[str]:
     return list(dict.fromkeys(lines))
 
 
-def read_part_no_barcodes(img_path: str) -> list[str]:
-    lines = read_barcodes(img_path)
-    if lines:
-        return lines
+def _lines_contain_part_no(lines: list[str]) -> bool:
+    return any(PART_NO_PAYLOAD_RE.search(str(line or "").upper()) for line in lines or [])
+
+
+def _part_no_pixel_repair(img_path: str) -> list[str]:
+    if os.environ.get("SCAN2_PART_NO_PIXEL_REPAIR", "1").strip().lower() in {"0", "false", "no"}:
+        return []
+    try:
+        import linear_barcode_repair as repair
+
+        results, _profiles, _strategy = repair.decode_image(
+            Path(img_path),
+            mode="digits",
+            lengths_arg="8",
+            accept_score=PART_NO_PIXEL_REPAIR_MAX_SCORE,
+            max_profiles=8,
+        )
+    except Exception as exc:
+        _log(f"PartNo像素恢复失败：{exc.__class__.__name__}: {exc}", "debug")
+        return []
+
+    if not results:
+        return []
+    best = results[0]
+    text = str(best.text or "").strip()
+    if not PART_NO_PAYLOAD_RE.fullmatch(text):
+        return []
+    margin = float(results[1].score - best.score) if len(results) > 1 else 999.0
+    if best.score > PART_NO_PIXEL_REPAIR_MAX_SCORE:
+        return []
+    if margin < PART_NO_PIXEL_REPAIR_MIN_MARGIN:
+        return []
+    return [text]
+
+
+def _part_no_stripe_rescue(img_path: str) -> list[str]:
+    if not PART_NO_STRIPE_RESCUE_ENABLED:
+        return []
+
+    try:
+        import part_no_barcode_rescue as rescue
+    except Exception as exc:
+        _log(f"PartNo条纹恢复模块加载失败：{exc.__class__.__name__}: {exc}", "debug")
+        return []
 
     img = _read_image(img_path, cv2.IMREAD_COLOR)
     if img is None:
         return []
 
-    h, w = img.shape[:2]
-    if h <= 0 or w <= 0:
+    try:
+        results = rescue.decode_part_no_candidates(img, lengths=(8,), charset="digits", max_profiles=8)
+    except Exception as exc:
+        _log(f"PartNo条纹恢复失败：{exc.__class__.__name__}: {exc}", "debug")
         return []
 
-    seen = set()
-    out = []
+    valid = []
+    for item in results:
+        text = str(getattr(item, "text", "") or "").strip()
+        if PART_NO_PAYLOAD_RE.fullmatch(text):
+            valid.append(item)
+
+    if not valid:
+        return []
+
+    best = valid[0]
+    margin = float(valid[1].score - best.score) if len(valid) > 1 else 999.0
+    if best.score > PART_NO_PIXEL_REPAIR_MAX_SCORE:
+        return []
+    if margin < PART_NO_PIXEL_REPAIR_MIN_MARGIN:
+        return []
+    return [str(best.text)]
+
+
+def read_part_no_barcodes(img_path: str, *, allow_pixel_repair: bool = True) -> list[str]:
+    lines = read_barcodes(img_path)
+    if lines and not allow_pixel_repair:
+        return lines
+    if _lines_contain_part_no(lines):
+        return lines
+
+    img = _read_image(img_path, cv2.IMREAD_COLOR)
+    if img is None:
+        return lines
+
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return lines
+
+    seen = set(lines)
+    out = list(lines)
     views = []
 
     pad_x = max(24, int(w * 0.14))
@@ -552,8 +747,21 @@ def read_part_no_barcodes(img_path: str) -> list[str]:
                 continue
             seen.add(code)
             out.append(code)
-        if out:
+        if _lines_contain_part_no(out):
             break
+
+    if allow_pixel_repair and not _lines_contain_part_no(out):
+        repaired = _part_no_pixel_repair(img_path)
+        for code in repaired:
+            if code and code not in seen:
+                seen.add(code)
+                out.append(code)
+    if allow_pixel_repair and not _lines_contain_part_no(out):
+        rescued = _part_no_stripe_rescue(img_path)
+        for code in rescued:
+            if code and code not in seen:
+                seen.add(code)
+                out.append(code)
 
     return out
 
@@ -561,7 +769,7 @@ def read_part_no_barcodes(img_path: str) -> list[str]:
 # ========= MODEL RULES =========
 
 MODEL_LINE_RE = re.compile(
-    r"MODEL[:：]?\s*([A-Z0-9\-]{3,32})",
+    r"MODEL[:：]?\s*([A-Z0-9\-]{2,32})",
     re.I,
 )
 S380_S8P2T_RE = re.compile(r"S380\W*S8P2T", re.I)
@@ -590,6 +798,9 @@ PART_NO_MODEL_MAP = {
 PART_NO_MODEL_MAP_LOCK = threading.Lock()
 PART_NO_MODEL_MAP_CACHE_PATH = None
 PART_NO_MODEL_MAP_CACHE = {}
+LEARNED_MODEL_CODES_LOCK = threading.Lock()
+LEARNED_MODEL_CODES_CACHE_PATH = None
+LEARNED_MODEL_CODES_CACHE = set()
 KNOWN_MODEL_CODES = set(PART_NO_MODEL_MAP.values())
 KNOWN_MODEL_CODES_UPPER = {code.upper() for code in KNOWN_MODEL_CODES}
 MODEL_CODE_ACCEPT_RE = re.compile(
@@ -608,6 +819,13 @@ def part_no_model_map_path() -> str:
     if override:
         return os.path.abspath(override)
     return os.path.join(get_user_data_dir(), "part_no_model_map.json")
+
+
+def learned_model_codes_path() -> str:
+    override = os.environ.get("SCAN2_LEARNED_MODEL_CODES_PATH", "").strip()
+    if override:
+        return os.path.abspath(override)
+    return os.path.join(get_user_data_dir(), "learned_model_codes.json")
 
 
 def extract_part_numbers_from_text(text: str) -> list[str]:
@@ -682,6 +900,92 @@ def get_part_no_model_map() -> dict[str, str]:
     mapping = dict(PART_NO_MODEL_MAP)
     mapping.update(_load_extra_part_no_model_map())
     return mapping
+
+
+def _coerce_learned_model_codes(raw) -> set[str]:
+    values = []
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, dict):
+        values = raw.keys()
+    out = set()
+    for value in values:
+        model = normalize_model(str(value or ""))
+        if model and _unknown_model_candidate_is_reasonable(model):
+            out.add(model)
+    return out
+
+
+def _load_learned_model_codes() -> set[str]:
+    global LEARNED_MODEL_CODES_CACHE_PATH, LEARNED_MODEL_CODES_CACHE
+    path = learned_model_codes_path()
+    with LEARNED_MODEL_CODES_LOCK:
+        if LEARNED_MODEL_CODES_CACHE_PATH == path:
+            return set(LEARNED_MODEL_CODES_CACHE)
+
+        codes = set()
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    codes = _coerce_learned_model_codes(json.load(f))
+            except Exception as exc:
+                append_debug(f"[LEARNED_MODEL][LOAD_ERROR] {path}: {exc.__class__.__name__}: {exc}")
+                codes = set()
+
+        LEARNED_MODEL_CODES_CACHE_PATH = path
+        LEARNED_MODEL_CODES_CACHE = set(codes)
+        return set(codes)
+
+
+def get_learned_model_codes() -> set[str]:
+    return _load_learned_model_codes()
+
+
+def save_learned_model_code(model: str, label_id: str = "", source: str = "") -> bool:
+    global LEARNED_MODEL_CODES_CACHE_PATH, LEARNED_MODEL_CODES_CACHE
+    model = normalize_model(model)
+    if not model or not _unknown_model_candidate_is_reasonable(model):
+        return False
+    if model in KNOWN_MODEL_CODES or model.upper() in KNOWN_MODEL_CODES_UPPER:
+        return False
+
+    path = learned_model_codes_path()
+    with LEARNED_MODEL_CODES_LOCK:
+        codes = set()
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    codes = _coerce_learned_model_codes(json.load(f))
+            except Exception:
+                codes = set()
+        if model in codes:
+            return False
+        codes.add(model)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".learned_model_codes.",
+            suffix=".json",
+            dir=os.path.dirname(path),
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(sorted(codes), f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+        LEARNED_MODEL_CODES_CACHE_PATH = None
+        LEARNED_MODEL_CODES_CACHE = set()
+        append_debug(
+            f"[LEARNED_MODEL][SAVE] label={label_id or '-'} model={model} source={source or '-'} path={path}"
+        )
+        return True
 
 
 def first_part_no_from_chunks(*chunks) -> str:
@@ -805,6 +1109,24 @@ def normalize_model(code: str) -> str:
     return c
 
 
+def _unknown_model_candidate_is_reasonable(code: str) -> bool:
+    c = normalize_model(code)
+    cu = c.upper()
+    if not c:
+        return False
+    if len(cu) < 2 or len(cu) > 24:
+        return False
+    if not re.search(r"\d", cu):
+        return False
+    if any(word in cu for word in BAD_MODEL_WORDS):
+        return False
+    if extract_sn_from_payload(cu) or SN20_RE.search(cu) or SN12_RE.search(cu):
+        return False
+    if PART_NO_RE.fullmatch(cu) or re.fullmatch(r"[0-9]{6,}", cu):
+        return False
+    return True
+
+
 def model_code_is_plausible(code: str) -> bool:
     if not code:
         return False
@@ -812,14 +1134,16 @@ def model_code_is_plausible(code: str) -> bool:
     cu = c.upper()
     if c in KNOWN_MODEL_CODES or cu in KNOWN_MODEL_CODES_UPPER:
         return True
+    if c in get_learned_model_codes():
+        return True
     if any(word in cu for word in ("DESC", "MODEL", "CHINA", "MAC")):
         return False
     if _env_flag_default("SCAN2_ALLOW_UNKNOWN_MODELS", False):
-        return bool(MODEL_CODE_ACCEPT_RE.fullmatch(cu))
+        return bool(MODEL_CODE_ACCEPT_RE.fullmatch(cu)) or _unknown_model_candidate_is_reasonable(cu)
     return False
 
 
-def extract_model_from_text(text: str) -> str:
+def extract_model_candidate_from_text(text: str, *, allow_unknown: bool = False) -> str:
     if not text:
         return ""
 
@@ -832,10 +1156,10 @@ def extract_model_from_text(text: str) -> str:
     if m:
         raw = m.group(1)
         model = normalize_model(raw)
-        if model_code_is_plausible(model):
+        if model_code_is_plausible(model) or (allow_unknown and _unknown_model_candidate_is_reasonable(model)):
             return model
 
-    tokens = re.findall(r"[A-Z][A-Z0-9\-]{2,}", t)
+    tokens = re.findall(r"[A-Z][A-Z0-9\-]{1,}", t)
     cand = []
     for tok in tokens:
         tok_clean = tok.strip("-")
@@ -851,9 +1175,13 @@ def extract_model_from_text(text: str) -> str:
     cand.sort(key=lambda s: (-len(s), not s.startswith(("A", "S"))))
     for best in cand:
         model = normalize_model(best)
-        if model_code_is_plausible(model):
+        if model_code_is_plausible(model) or (allow_unknown and _unknown_model_candidate_is_reasonable(model)):
             return model
     return ""
+
+
+def extract_model_from_text(text: str) -> str:
+    return extract_model_candidate_from_text(text, allow_unknown=False)
 
 
 def extract_model_from_ocr_result(text: str, concat: str) -> str:
@@ -862,13 +1190,43 @@ def extract_model_from_ocr_result(text: str, concat: str) -> str:
     return extract_model_from_text(text) or extract_model_from_text(concat)
 
 
+def extract_unknown_model_candidate(text: str) -> str:
+    return extract_model_candidate_from_text(text, allow_unknown=True)
+
+
 # ========= SN RULES =========
 
 def _clean_code(s: str) -> str:
     return re.sub(r"[^0-9A-Z]", "", s.upper())
 
 
+SN_OCR_BOUNDED_RES = (
+    re.compile(r"(215[0-9]{7,8}(?:ER[A-Z]?|AGQ[A-Z])[0-9]{6})(?![0-9A-Z])"),
+    re.compile(r"(215[0-9]{7,8}(?:LDR[A-Z]?|LDS|SRA)[0-9]{7})(?![0-9A-Z])"),
+    re.compile(r"(215[0-9]{7,8}ES[0-9A-Z]{7})(?![0-9A-Z])"),
+    re.compile(rf"({SN12_BODY_PATTERN})(?![0-9A-Z])"),
+)
+UNKNOWN_SN_NON_PREFIX_RE = re.compile(
+    r"^(SF|MAC|EAN|UPC|QR|HTTP|HTTPS|PART|PN|MODEL|DESC|ROUTE|WAYBILL|SNMP|IMEI)"
+)
+
+
+def _extract_sn_from_ocr_text_bounds(text: str) -> str:
+    raw = (text or "").upper()
+    if not raw:
+        return ""
+    for pattern in SN_OCR_BOUNDED_RES:
+        match = pattern.search(raw)
+        if match:
+            return _clean_code(match.group(1))
+    return ""
+
+
 def extract_sn_from_text(text: str) -> str:
+    sn = _extract_sn_from_ocr_text_bounds(text)
+    if sn:
+        return sn
+
     s = _clean_code(text)
     sn = extract_sn_from_payload(s)
     if sn:
@@ -887,6 +1245,34 @@ def extract_sn_from_text(text: str) -> str:
 
 def extract_sn_from_barcode_candidate(text: str) -> str:
     return extract_sn_from_payload(text)
+
+
+def _extract_unknown_sn_candidates(text: str) -> list[str]:
+    raw = str(text or "").upper()
+    if not raw:
+        return []
+    out = []
+    seen = set()
+    for token in re.findall(r"[A-Z0-9][A-Z0-9\-]{7,31}", raw):
+        cleaned = _clean_code(token)
+        while cleaned.startswith("SN"):
+            cleaned = cleaned[2:]
+        for prefix in ("SERIALNO", "SERIAL", "SNO"):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):]
+        if not cleaned or cleaned in seen:
+            continue
+        if len(cleaned) < 8 or len(cleaned) > 24:
+            continue
+        if not re.search(r"[A-Z]", cleaned) or not re.search(r"\d", cleaned):
+            continue
+        if UNKNOWN_SN_NON_PREFIX_RE.match(cleaned):
+            continue
+        if extract_sn_from_payload(cleaned) or SN20_RE.search(cleaned) or SN12_RE.search(cleaned):
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out
 
 
 def filter_sn_lines(lines: list[str]) -> list[str]:
@@ -1423,6 +1809,44 @@ def recognize_model_ocr(model_path: str, label_id: str = "", verify_barcode_visu
     return "", text, "none"
 
 
+def recognize_model_label_ocr(label_path: str, label_id: str = ""):
+    tag = f"{label_id} " if label_id else ""
+    append_debug(f"[MODEL][LABEL_OCR] {tag}{os.path.basename(label_path)}")
+    text, concat, texts = ocr_text_with_details(label_path)
+    append_sensitive_debug(f"[MODEL][LABEL_OCR_FILE] {tag}{os.path.basename(label_path)} | {text!r}")
+    append_sensitive_debug(
+        f"[MODEL][LABEL_OCR_FILE][TEXTS] {tag}{os.path.basename(label_path)} | "
+        f"{json.dumps(texts, ensure_ascii=False)}"
+    )
+    model_code = extract_model_from_ocr_result(text, concat)
+    if model_code:
+        return model_code, text or concat, "ocr_label"
+
+    color_img = load_for_ocr_color(label_path)
+    if color_img is not None:
+        text, concat, texts = ocr_text_with_details(color_img)
+        append_sensitive_debug(f"[MODEL][LABEL_OCR_COLOR] {tag}{os.path.basename(label_path)} | {text!r}")
+        append_sensitive_debug(
+            f"[MODEL][LABEL_OCR_COLOR][TEXTS] {tag}{os.path.basename(label_path)} | "
+            f"{json.dumps(texts, ensure_ascii=False)}"
+        )
+        model_code = extract_model_from_ocr_result(text, concat)
+        if model_code:
+            return model_code, text or concat, "ocr_label_color"
+
+    img = load_and_preprocess(label_path, roi_bottom=False)
+    text, concat, texts = ocr_text_with_details(img)
+    append_sensitive_debug(f"[MODEL][LABEL_OCR_BIN] {tag}{os.path.basename(label_path)} | {text!r}")
+    append_sensitive_debug(
+        f"[MODEL][LABEL_OCR_BIN][TEXTS] {tag}{os.path.basename(label_path)} | "
+        f"{json.dumps(texts, ensure_ascii=False)}"
+    )
+    model_code = extract_model_from_ocr_result(text, concat)
+    if model_code:
+        return model_code, text or concat, "ocr_label_bin"
+    return "", text or concat, "label_none"
+
+
 def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = False):
     tag = f"{label_id} " if label_id else ""
     append_debug(f"[MODEL] {tag}{os.path.basename(model_path)}")
@@ -1475,6 +1899,27 @@ def _sn_barcode_failure_result(barcode_report, barcode_raw: str, meta: dict, has
     if has_sn_path:
         return "", "", "barcode_decoder_miss", meta
     return "", "", "none", meta
+
+
+def _unknown_sn_candidate_from_barcode_report(barcode_report) -> str:
+    if barcode_report is None:
+        return ""
+    candidates = []
+    for result in getattr(barcode_report, "results", []) or []:
+        candidates.extend(_extract_unknown_sn_candidates(getattr(result, "raw_text", "")))
+    for candidate in candidates:
+        return candidate
+    return ""
+
+
+def _unknown_sn_consensus(barcode_report, *texts: str) -> str:
+    barcode_candidate = _unknown_sn_candidate_from_barcode_report(barcode_report)
+    if not barcode_candidate:
+        return ""
+    for text in texts:
+        if barcode_candidate in _extract_unknown_sn_candidates(text):
+            return barcode_candidate
+    return ""
 
 
 def _recognize_sn_barcode(
@@ -1565,9 +2010,12 @@ def recognize_sn_ocr_after_barcode(
     append_sensitive_debug(f"[SN][OCR_COLOR][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
     if text or concat:
         meta["ocr_text_found"] = True
-    sn = extract_sn_from_text(concat or text)
+    sn = extract_sn_from_text(text) or extract_sn_from_text(concat or text)
     if sn:
         return sn, text, "ocr", meta
+    sn = _unknown_sn_consensus(barcode_report, text, concat)
+    if sn:
+        return sn, text or concat, "barcode_ocr_consensus", meta
 
     img = load_and_preprocess(sn_path, roi_bottom=True)
     text, concat, texts = ocr_text_with_details(img)
@@ -1576,17 +2024,23 @@ def recognize_sn_ocr_after_barcode(
     append_sensitive_debug(f"[SN][OCR_BIN][TEXTS] {tag}{os.path.basename(sn_path)} | {json.dumps(texts, ensure_ascii=False)}")
     if text or concat:
         meta["ocr_text_found"] = True
-    sn = extract_sn_from_text(concat or text)
+    sn = extract_sn_from_text(text) or extract_sn_from_text(concat or text)
     if sn:
         return sn, text, "ocr_bin", meta
+    sn = _unknown_sn_consensus(barcode_report, text, concat)
+    if sn:
+        return sn, text or concat, "barcode_ocr_consensus", meta
 
     top_text, top_concat = ocr_sn_top_text(sn_path)
     append_sensitive_debug(f"[SN][OCR_TOP] {tag}{os.path.basename(sn_path)} | text={top_text!r} concat={top_concat!r}")
     if top_text or top_concat:
         meta["ocr_text_found"] = True
-    sn = extract_sn_from_text(top_concat or top_text)
+    sn = extract_sn_from_text(top_text) or extract_sn_from_text(top_concat or top_text)
     if sn:
         return sn, top_text, "ocr_top", meta
+    sn = _unknown_sn_consensus(barcode_report, top_text, top_concat)
+    if sn:
+        return sn, top_text or top_concat, "barcode_ocr_consensus", meta
 
     if barcode_report.results:
         return _sn_barcode_failure_result(barcode_report, barcode_raw, meta, has_sn_path=True)
@@ -1792,6 +2246,43 @@ def maybe_save_learned_part_no_model(
     return False
 
 
+def _extract_model_candidate_from_barcode_raw(raw: str) -> str:
+    for part in str(raw or "").split(";"):
+        candidate = part.split(":", 1)[-1].strip() if ":" in part else part.strip()
+        model = extract_unknown_model_candidate(candidate)
+        if model:
+            return model
+    return extract_unknown_model_candidate(raw)
+
+
+def _accept_model_barcode_ocr_consensus(
+    key: str,
+    barcode_raw: str,
+    ocr_raw: str,
+    part_no_by_key: dict,
+    part_no_map_updates: set,
+    stats: dict,
+) -> tuple[str, str, str]:
+    barcode_model = _extract_model_candidate_from_barcode_raw(barcode_raw)
+    ocr_model = extract_unknown_model_candidate(ocr_raw)
+    if not barcode_model or not ocr_model or normalize_model(barcode_model) != normalize_model(ocr_model):
+        return "", "", ""
+
+    learned_model = normalize_model(barcode_model)
+    learned = save_learned_model_code(learned_model, label_id=key, source="barcode_ocr_consensus")
+    if learned:
+        stats["model_consensus_learned"] = int(stats.get("model_consensus_learned", 0)) + 1
+    if maybe_save_learned_part_no_model(
+        part_no_by_key,
+        part_no_map_updates,
+        key,
+        learned_model,
+        "barcode_ocr_consensus",
+    ):
+        stats["model_part_no_learned"] += 1
+    return learned_model, f"[BARCODE_OCR_CONSENSUS] {learned_model}", "barcode_ocr_consensus"
+
+
 def assign_part_no_model_result(
     model_results: dict,
     part_no_key_groups: dict,
@@ -1839,6 +2330,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         "model_barcode_hits": 0,
         "model_part_no_hits": 0,
         "model_part_no_learned": 0,
+        "model_consensus_learned": 0,
         "model_deferred_crops": 0,
         "model_barcode_hit_rate": 0.0,
         "model_ocr_recoveries": 0,
@@ -1917,6 +2409,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     sn_results = {}
     sn_reports = {}
     part_no_first = scan_part_no_first_enabled()
+    progress_logs = scan_progress_log_enabled()
 
     for key in keys:
         item = records[key]
@@ -1938,8 +2431,9 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
     def run_barcode_job(job):
         kind, key, item = job
+        job_label = _scan_job_label(kind, key)
         if kind == "part_no_model":
-            return (
+            result = (
                 kind,
                 key,
                 try_model_from_part_no_crop(
@@ -1948,12 +2442,18 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     use_ocr=False,
                 ),
             )
+            if progress_logs:
+                _log(f"[条码完成] {job_label} -> {_barcode_job_result_summary(kind, result[2])}", "info")
+            return result
         if kind == "model":
-            return (
+            result = (
                 kind,
                 key,
                 recognize_model_barcode(item["model_path"], label_id=key),
             )
+            if progress_logs:
+                _log(f"[条码完成] {job_label} -> {_barcode_job_result_summary(kind, result[2])}", "info")
+            return result
         if item.get("original_image_path"):
             append_debug(f"[SN] {key} original image barcode fallback disabled")
         label_path = ""
@@ -1963,7 +2463,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     label_path = item.get("label_crop", "")
             elif scan_label_without_sn:
                 label_path = item.get("label_crop", "")
-        return (
+        result = (
             kind,
             key,
             _recognize_sn_barcode(
@@ -1973,8 +2473,16 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 original_path="",
             ),
         )
+        if progress_logs:
+            _log(f"[条码完成] {job_label} -> {_barcode_job_result_summary(kind, result[2])}", "info")
+        return result
 
-    for kind, key, result in _map_ordered(first_barcode_jobs, run_barcode_job, barcode_workers):
+    for kind, key, result in _map_ordered(
+        first_barcode_jobs,
+        run_barcode_job,
+        barcode_workers,
+        progress=None,
+    ):
         item = records[key]
         if kind == "part_no_model":
             model_code, model_raw, model_src = result
@@ -2121,7 +2629,12 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         elif item.get("part_no_path") and (ocr_fallback or part_no_ocr_fallback):
             ocr_jobs.append(("model", key, item, None))
 
-    for kind, key, result in _map_ordered(model_barcode_jobs, run_barcode_job, barcode_workers):
+    for kind, key, result in _map_ordered(
+        model_barcode_jobs,
+        run_barcode_job,
+        barcode_workers,
+        progress=None,
+    ):
         item = records[key]
         if kind != "model":
             continue
@@ -2169,29 +2682,45 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 if part_model:
                     model_results[key] = (part_model, part_raw, part_source)
                     continue
-                if not item.get("model_path") or not model_ocr_allowed:
+                if (
+                    not model_ocr_allowed
+                    or (not item.get("model_path") and not item.get("label_crop"))
+                ):
                     continue
             pending_ocr_jobs.append(job)
         ocr_jobs = pending_ocr_jobs
 
     def run_ocr_job(job):
         kind, key, item, barcode_report = job
+        job_label = _scan_job_label(kind, key)
         if kind == "model":
-            if not item.get("model_path"):
-                return kind, key, ("", "", "missing")
-            return (
-                kind,
-                key,
-                recognize_model_ocr(
+            model_result = ("", "", "missing")
+            if item.get("model_path"):
+                model_result = recognize_model_ocr(
                     item["model_path"],
                     label_id=key,
                     verify_barcode_visual=model_barcode,
-                ),
-            )
+                )
+            if (
+                (not model_result[0] or not model_code_is_plausible(model_result[0]))
+                and item.get("label_crop")
+            ):
+                label_result = recognize_model_label_ocr(
+                    item["label_crop"],
+                    label_id=key,
+                )
+                if label_result[0] and model_code_is_plausible(label_result[0]):
+                    model_result = label_result
+                elif not model_result[0] and label_result[1]:
+                    model_result = label_result
+            result = (kind, key, model_result)
+            if progress_logs:
+                _log(f"[OCR完成] {job_label} -> {_ocr_job_result_summary(kind, result[2])}", "info")
+            return result
         current = sn_results.get(key, ("", "", "missing", {}))
         sn_meta = current[3] if len(current) > 3 else {}
         sn_ocr_path = item.get("sn_path") or item.get("label_crop", "")
-        return (
+        result = (
             kind,
             key,
             recognize_sn_ocr_after_barcode(
@@ -2201,10 +2730,30 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 meta=sn_meta,
             ),
         )
+        if progress_logs:
+            _log(f"[OCR完成] {job_label} -> {_ocr_job_result_summary(kind, result[2])}", "info")
+        return result
 
-    for kind, key, result in _map_ocr_ordered(ocr_jobs, run_ocr_job, ocr_workers):
+    for kind, key, result in _map_ocr_ordered(
+        ocr_jobs,
+        run_ocr_job,
+        ocr_workers,
+        progress=None,
+    ):
         if kind == "model":
             model_code, model_raw, model_src = result
+            if not model_code:
+                consensus_model, consensus_raw, consensus_src = _accept_model_barcode_ocr_consensus(
+                    key,
+                    model_barcode_misses.get(key, ("", ""))[0],
+                    model_raw,
+                    part_no_by_key,
+                    part_no_map_updates,
+                    stats,
+                )
+                if consensus_model:
+                    result = (consensus_model, consensus_raw, consensus_src)
+                    model_code, model_raw, model_src = result
             if (
                 not model_code_is_plausible(model_code)
                 and records.get(key, {}).get("part_no_path")
