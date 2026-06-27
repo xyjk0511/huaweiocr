@@ -5,6 +5,8 @@ import sys
 import types
 import warnings
 import inspect
+import importlib.machinery
+from contextlib import nullcontext
 
 from win_subprocess import hide_subprocess_windows
 
@@ -65,8 +67,89 @@ def ensure_torch_import_compat():
         sys.modules.pop("torch.multiprocessing", None)
         sys.modules.pop("torch.distributed", None)
 
+    def _stub_spec(name: str, *, is_package: bool = False):
+        return importlib.machinery.ModuleSpec(name, loader=None, is_package=is_package)
+
+    class _TorchValueStub:
+        def __init__(self, name="torch.stub"):
+            self._name = name
+
+        def __call__(self, *args, **kwargs):
+            return self
+
+        def __getattr__(self, name):
+            return _TorchValueStub(f"{self._name}.{name}")
+
+        def __bool__(self):
+            return False
+
+        def __iter__(self):
+            return iter(())
+
+        def __repr__(self):
+            return f"<_TorchValueStub {self._name}>"
+
+    class _TorchTensorStub:
+        def __init__(self, *args, device="cpu", **kwargs):
+            self.device = device
+            self.shape = ()
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            class _ArrayStub:
+                @staticmethod
+                def tobytes():
+                    return b""
+
+            return _ArrayStub()
+
+        def parameters(self):
+            return []
+
+    class _TorchDeviceStub:
+        def __init__(self, name="cpu"):
+            self.type = str(name)
+
+        def __str__(self):
+            return self.type
+
+    class _TorchModuleStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def parameters(self):
+            return []
+
+        def to(self, *args, **kwargs):
+            return self
+
+        def eval(self):
+            return self
+
+        def train(self, mode=True):
+            return self
+
+        def compile(self, **kwargs):
+            return self
+
+    def _tensor_factory(*args, **kwargs):
+        return _TorchTensorStub(*args, **kwargs)
+
+    def _module_getattr(name):
+        if name and name[0].isupper():
+            return _TorchModuleStub
+        return _TorchValueStub(f"torch.nn.{name}")
+
+    def _value_getattr(name):
+        return _TorchValueStub(f"torch.{name}")
+
     torch_stub = types.ModuleType("torch")
     torch_stub.__dict__["__version__"] = "0.0-stub"
+    torch_stub.__package__ = "torch"
+    torch_stub.__spec__ = _stub_spec("torch", is_package=True)
+    torch_stub.__path__ = []
 
     class _CudaStub:
         @staticmethod
@@ -82,6 +165,8 @@ def ensure_torch_import_compat():
             return False
 
     mp_stub = types.ModuleType("torch.multiprocessing")
+    mp_stub.__package__ = "torch"
+    mp_stub.__spec__ = _stub_spec("torch.multiprocessing")
     mp_state = {"method": None}
 
     def _get_start_method(allow_none=False):
@@ -96,6 +181,8 @@ def ensure_torch_import_compat():
     mp_stub.set_start_method = _set_start_method
 
     dist_stub = types.ModuleType("torch.distributed")
+    dist_stub.__package__ = "torch"
+    dist_stub.__spec__ = _stub_spec("torch.distributed")
     dist_stub.is_available = lambda: False
     dist_stub.is_initialized = lambda: False
     dist_stub.get_rank = lambda group=None: 0
@@ -103,14 +190,63 @@ def ensure_torch_import_compat():
     dist_stub.barrier = lambda: None
     dist_stub.init_process_group = lambda *args, **kwargs: None
 
+    nn_stub = types.ModuleType("torch.nn")
+    nn_stub.__package__ = "torch"
+    nn_stub.__spec__ = _stub_spec("torch.nn", is_package=True)
+    nn_stub.__path__ = []
+    nn_stub.Module = _TorchModuleStub
+    nn_stub.Linear = _TorchModuleStub
+    nn_stub.__getattr__ = _module_getattr
+
+    nn_functional_stub = types.ModuleType("torch.nn.functional")
+    nn_functional_stub.__package__ = "torch.nn"
+    nn_functional_stub.__spec__ = _stub_spec("torch.nn.functional")
+    nn_functional_stub.__getattr__ = lambda name: _TorchValueStub(f"torch.nn.functional.{name}")
+
+    nn_utils_stub = types.ModuleType("torch.nn.utils")
+    nn_utils_stub.__package__ = "torch.nn"
+    nn_utils_stub.__spec__ = _stub_spec("torch.nn.utils", is_package=True)
+    nn_utils_stub.__path__ = []
+
+    nn_utils_rnn_stub = types.ModuleType("torch.nn.utils.rnn")
+    nn_utils_rnn_stub.__package__ = "torch.nn.utils"
+    nn_utils_rnn_stub.__spec__ = _stub_spec("torch.nn.utils.rnn")
+    nn_utils_rnn_stub.pad_sequence = lambda *args, **kwargs: _TorchTensorStub()
+
+    nn_utils_stub.rnn = nn_utils_rnn_stub
+    nn_stub.functional = nn_functional_stub
+    nn_stub.utils = nn_utils_stub
+
     torch_stub.cuda = _CudaStub()
     torch_stub.multiprocessing = mp_stub
     torch_stub.distributed = dist_stub
+    torch_stub.nn = nn_stub
+    torch_stub.Tensor = _TorchTensorStub
+    torch_stub.ByteTensor = _TorchTensorStub
+    torch_stub.LongTensor = _TorchTensorStub
+    torch_stub.device = _TorchDeviceStub
+    torch_stub.uint8 = "uint8"
+    torch_stub.int64 = "int64"
+    torch_stub.tensor = _tensor_factory
+    torch_stub.empty = _tensor_factory
+    torch_stub.zeros = _tensor_factory
+    torch_stub.ones = _tensor_factory
+    torch_stub.full = _tensor_factory
+    torch_stub.arange = _tensor_factory
+    torch_stub.cat = _tensor_factory
+    torch_stub.manual_seed = lambda *args, **kwargs: None
+    torch_stub.no_grad = nullcontext
     torch_stub.compile = lambda model, **kwargs: model
+    torch_stub.__getattr__ = _value_getattr
+    torch_stub.cuda.manual_seed_all = lambda *args, **kwargs: None
 
     sys.modules["torch"] = torch_stub
     sys.modules["torch.multiprocessing"] = mp_stub
     sys.modules["torch.distributed"] = dist_stub
+    sys.modules["torch.nn"] = nn_stub
+    sys.modules["torch.nn.functional"] = nn_functional_stub
+    sys.modules["torch.nn.utils"] = nn_utils_stub
+    sys.modules["torch.nn.utils.rnn"] = nn_utils_rnn_stub
     return torch_stub
 
 

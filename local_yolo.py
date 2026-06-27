@@ -411,7 +411,11 @@ class LocalYoloDetector:
         return self._predict_impl(image_path)
 
     def supports_original_path_inference(self):
-        return os.path.splitext(self.path)[1].lower() == ".pt"
+        # Both local backends can read the source image path directly.
+        # Restricting ONNX to the temp-JPG fallback costs recall on some edge
+        # cases in the packaged app because the extra recompression changes the
+        # detector input unnecessarily.
+        return os.path.splitext(self.path)[1].lower() in {".pt", ".onnx"}
 
     def _predict_with_onnx(self, image_path):
         bgr = _read_image(image_path)
@@ -495,7 +499,11 @@ class LocalYoloClient:
         if raw_global is not None:
             return float(raw_global)
         if model_id in {"huawei-2ha7t/7", "huawei-2ha7t-hardcase/1"}:
-            return float(os.environ.get("LOCAL_YOLO_LABEL_CONF", "0.35"))
+            spec = self.model_specs.get(model_id)
+            default_label_conf = "0.35"
+            if spec and str(spec.path or "").lower().endswith(".onnx"):
+                default_label_conf = "0.25"
+            return float(os.environ.get("LOCAL_YOLO_LABEL_CONF", default_label_conf))
         if model_id == "sn_model/9":
             return float(os.environ.get("LOCAL_YOLO_FIELD_CONF", "0.25"))
         return 0.25

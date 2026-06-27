@@ -390,7 +390,7 @@ class LocalYoloInferenceTests(unittest.TestCase):
             {"predictions": [{"class": "label", "image_path": "image.jpg"}]},
         )
 
-    def test_local_yolo_client_uses_035_default_conf_for_stage1_label_model(self):
+    def test_local_yolo_client_uses_025_default_conf_for_stage1_label_onnx_model(self):
         class FakeDetector:
             def __init__(self, spec, **kwargs):
                 self.spec = spec
@@ -402,6 +402,26 @@ class LocalYoloInferenceTests(unittest.TestCase):
         client = local_yolo.LocalYoloClient(
             model_specs={
                 "huawei-2ha7t/7": local_yolo.ModelSpec("unused.onnx", ("huawei_label", "shipping_ignore")),
+            },
+            detector_cls=FakeDetector,
+        )
+
+        client.infer("image.jpg", model_id="huawei-2ha7t/7")
+        detector = client.detectors["huawei-2ha7t/7"]
+        self.assertAlmostEqual(detector.kwargs["conf_threshold"], 0.25)
+
+    def test_local_yolo_client_uses_035_default_conf_for_stage1_label_pt_model(self):
+        class FakeDetector:
+            def __init__(self, spec, **kwargs):
+                self.spec = spec
+                self.kwargs = kwargs
+
+            def predict(self, image_path):
+                return [{"class": self.spec.names[0], "image_path": image_path}]
+
+        client = local_yolo.LocalYoloClient(
+            model_specs={
+                "huawei-2ha7t/7": local_yolo.ModelSpec("unused.pt", ("huawei_label", "shipping_ignore")),
             },
             detector_cls=FakeDetector,
         )

@@ -491,6 +491,85 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
 
 
 class PaddleOcrModelKwargsTest(unittest.TestCase):
+    def test_torch_compat_stub_exposes_import_spec(self):
+        for name in (
+            "ocr",
+            "paddle",
+            "paddleocr",
+            "app_paths",
+            "torch",
+            "torch.multiprocessing",
+            "torch.distributed",
+            "torch.nn",
+            "torch.nn.functional",
+            "torch.nn.utils",
+            "torch.nn.utils.rnn",
+        ):
+            sys.modules.pop(name, None)
+
+        torch = types.ModuleType("torch")
+        sys.modules["torch"] = torch
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+        paddleocr.PaddleOCR = type("DummyPaddleOCR", (), {})
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
+        sys.modules["app_paths"] = app_paths
+
+        import ocr
+
+        torch_stub = sys.modules["torch"]
+        self.assertIsNotNone(torch_stub.__spec__)
+        self.assertEqual(torch_stub.__spec__.name, "torch")
+        self.assertTrue(torch_stub.__spec__.submodule_search_locations is not None)
+        self.assertEqual(importlib.util.find_spec("torch").name, "torch")
+        self.assertEqual(importlib.util.find_spec("torch.multiprocessing").name, "torch.multiprocessing")
+        self.assertEqual(importlib.util.find_spec("torch.distributed").name, "torch.distributed")
+        self.assertEqual(importlib.util.find_spec("torch.nn").name, "torch.nn")
+        self.assertEqual(importlib.util.find_spec("torch.nn.functional").name, "torch.nn.functional")
+        self.assertEqual(importlib.util.find_spec("torch.nn.utils.rnn").name, "torch.nn.utils.rnn")
+        self.assertIs(torch_stub.nn.Module, torch_stub.nn.Linear)
+        self.assertIs(torch_stub.Tensor, torch_stub.ByteTensor)
+        self.assertIsInstance(torch_stub.tensor(), torch_stub.Tensor)
+        self.assertTrue(callable(torch_stub.nn.utils.rnn.pad_sequence))
+        self.assertTrue(callable(torch_stub.no_grad))
+
+    def test_torch_compat_stub_allows_modelscope_torch_utils_import(self):
+        if importlib.util.find_spec("modelscope.utils.torch_utils") is None:
+            self.skipTest("modelscope is not installed")
+
+        for name in list(sys.modules):
+            if name == "ocr" or name in ("paddle", "paddleocr", "app_paths") or name.startswith("torch") or name.startswith("modelscope"):
+                sys.modules.pop(name, None)
+
+        sys.modules["torch"] = types.ModuleType("torch")
+
+        paddle = types.ModuleType("paddle")
+        paddle.set_device = lambda _device: None
+        sys.modules["paddle"] = paddle
+
+        paddleocr = types.ModuleType("paddleocr")
+        paddleocr.PaddleOCR = type("DummyPaddleOCR", (), {})
+        sys.modules["paddleocr"] = paddleocr
+
+        app_paths = types.ModuleType("app_paths")
+        app_paths.ensure_models_installed = lambda: None
+        app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
+        sys.modules["app_paths"] = app_paths
+
+        import ocr
+
+        torch_utils = importlib.import_module("modelscope.utils.torch_utils")
+        self.assertTrue(hasattr(torch_utils, "is_on_same_device"))
+        self.assertIs(sys.modules["torch"].nn.Module, sys.modules["torch"].nn.Linear)
+
     def test_local_model_dirs_include_matching_model_names(self):
         for name in ("ocr", "paddle", "paddleocr", "app_paths"):
             sys.modules.pop(name, None)
