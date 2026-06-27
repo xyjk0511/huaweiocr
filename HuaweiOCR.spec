@@ -31,6 +31,8 @@ datas = [
     ('bundle\\BarcodeReaderCLI\\bin\\curl-ca-bundle.crt', 'BarcodeReaderCLI\\bin'),
     ('bundle\\BarcodeReaderCLI\\bin\\inlite-barcode-reader-license-agreement.pdf', 'BarcodeReaderCLI\\bin'),
 ]
+if os.path.isfile('.env'):
+    datas.append(('.env', '.'))
 datas += [
     (path, LOCAL_DETECTOR_TARGET)
     for path in REQUIRED_LOCAL_DETECTORS
