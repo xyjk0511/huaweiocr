@@ -20,7 +20,10 @@ from tests.test_locked_output_dirs import _import_scan2
 class BarcodeDecoderReliabilityTest(unittest.TestCase):
     def test_barcode_module_import_survives_missing_pyzbar(self):
         module_name = "barcode_without_pyzbar_test"
-        module_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "barcode.py")
+        # barcode.py 已是别名垫片，导入期行为要从实现文件本身验证。
+        module_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "huaweiocr", "barcode", "generic.py"
+        )
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         module = importlib.util.module_from_spec(spec)
 

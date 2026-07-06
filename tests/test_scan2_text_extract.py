@@ -9,12 +9,16 @@ import unittest
 def tearDownModule():
     for name in (
         "app_paths",
+        "huaweiocr.io.paths_runtime",
         "barcode",
+        "huaweiocr.barcode.generic",
         "cv2",
         "numpy",
         "ocr",
+        "huaweiocr.detect.ocr_engine",
         "scan2",
         "sn_barcode",
+        "huaweiocr.barcode.sn",
     ):
         sys.modules.pop(name, None)
 
@@ -60,6 +64,7 @@ def _import_scan2():
         os.environ.pop(name, None)
     sys.modules.pop("scan2", None)
     sys.modules.pop("sn_barcode", None)
+    sys.modules.pop("huaweiocr.barcode.sn", None)
     _install_scan2_import_fakes()
     return importlib.import_module("scan2")
 

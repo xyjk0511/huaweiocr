@@ -12,7 +12,7 @@ fake_inference_sdk = types.ModuleType("inference_sdk")
 fake_inference_sdk.InferenceHTTPClient = object
 sys.modules.setdefault("inference_sdk", fake_inference_sdk)
 
-import crop
+import crop  # noqa: E402  (fake inference_sdk must be registered before importing crop)
 
 
 def draw_1d_barcode(img, x1, y1, x2, y2, step=4, bar_width=2):
@@ -2087,7 +2087,7 @@ class CropFieldPaddingTests(unittest.TestCase):
             "class": crop.MODEL1_LABEL_CLASS,
             "confidence": 0.18,
         }
-        field_preds = [
+        field_preds = [  # noqa: F841  (documents the fixture; pre-existing)
             {"class": crop.MODEL2_PART_NO_CLASS, "x": 85, "y": 45, "width": 150, "height": 36},
             {"class": crop.MODEL2_SN_CLASS, "x": 180, "y": 90, "width": 170, "height": 42},
         ]
@@ -2688,7 +2688,7 @@ class CropFieldPaddingTests(unittest.TestCase):
             "class": crop.MODEL1_LABEL_CLASS,
             "confidence": 0.81,
         }
-        single_label_field_preds = [
+        single_label_field_preds = [  # noqa: F841  (documents the fixture; pre-existing)
             {"class": crop.MODEL2_PART_NO_CLASS, "x": 85, "y": 45, "width": 150, "height": 36},
             {"class": crop.MODEL2_SN_CLASS, "x": 180, "y": 90, "width": 170, "height": 42},
         ]

@@ -1,23 +1,12 @@
-import os
+"""Compatibility shim: canonical implementation lives in huaweiocr.io.envutil.
 
+The module object is aliased (not re-exported) so attribute access,
+monkeypatching, and module identity all hit the real implementation.
+The import below is a static statement (not importlib) so PyInstaller's
+static analysis collects the implementation package into frozen builds.
+"""
+import sys
 
-def env_flag_default(name, default):
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
+import huaweiocr.io.envutil as _impl
 
-
-def env_float_default(name, default):
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return default
+sys.modules[__name__] = _impl

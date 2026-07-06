@@ -20,7 +20,9 @@ import numpy as np
 def tearDownModule():
     for name in (
         "app_paths",
+        "huaweiocr.io.paths_runtime",
         "barcode",
+        "huaweiocr.barcode.generic",
         "crop",
         "cv2",
         "gui_app",
@@ -28,12 +30,14 @@ def tearDownModule():
         "gui_pipeline",
         "numpy",
         "ocr",
+        "huaweiocr.detect.ocr_engine",
         "paddle",
         "paddleocr",
         "pyzbar",
         "pyzbar.pyzbar",
         "scan2",
         "win_subprocess",
+        "huaweiocr.io.win_subprocess",
     ):
         sys.modules.pop(name, None)
 
@@ -153,6 +157,7 @@ def _install_barcode_import_fakes():
 
 def _import_barcode():
     sys.modules.pop("barcode", None)
+    sys.modules.pop("huaweiocr.barcode.generic", None)
     _install_barcode_import_fakes()
     return importlib.import_module("barcode")
 
@@ -494,9 +499,11 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
     def test_torch_compat_stub_exposes_import_spec(self):
         for name in (
             "ocr",
+            "huaweiocr.detect.ocr_engine",
             "paddle",
             "paddleocr",
             "app_paths",
+            "huaweiocr.io.paths_runtime",
             "torch",
             "torch.multiprocessing",
             "torch.distributed",
@@ -546,7 +553,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             self.skipTest("modelscope is not installed")
 
         for name in list(sys.modules):
-            if name == "ocr" or name in ("paddle", "paddleocr", "app_paths") or name.startswith("torch") or name.startswith("modelscope"):
+            if name in ("ocr", "huaweiocr.detect.ocr_engine", "paddle", "paddleocr", "app_paths", "huaweiocr.io.paths_runtime") or name.startswith("torch") or name.startswith("modelscope"):
                 sys.modules.pop(name, None)
 
         sys.modules["torch"] = types.ModuleType("torch")
@@ -571,7 +578,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         self.assertIs(sys.modules["torch"].nn.Module, sys.modules["torch"].nn.Linear)
 
     def test_local_model_dirs_include_matching_model_names(self):
-        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+        for name in ("ocr", "huaweiocr.detect.ocr_engine", "paddle", "paddleocr", "app_paths", "huaweiocr.io.paths_runtime"):
             sys.modules.pop(name, None)
 
         paddle = types.ModuleType("paddle")
@@ -628,7 +635,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         self.assertTrue(kwargs["textline_orientation_model_dir"].endswith("PP-LCNet_x1_0_textline_ori"))
 
     def test_fast_profile_prefers_mobile_recognition_model(self):
-        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+        for name in ("ocr", "huaweiocr.detect.ocr_engine", "paddle", "paddleocr", "app_paths", "huaweiocr.io.paths_runtime"):
             sys.modules.pop(name, None)
 
         paddle = types.ModuleType("paddle")
@@ -663,7 +670,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         self.assertTrue(kwargs["text_recognition_model_dir"].endswith("en_PP-OCRv5_mobile_rec"))
 
     def test_server_profile_prefers_server_recognition_model(self):
-        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+        for name in ("ocr", "huaweiocr.detect.ocr_engine", "paddle", "paddleocr", "app_paths", "huaweiocr.io.paths_runtime"):
             sys.modules.pop(name, None)
 
         paddle = types.ModuleType("paddle")
@@ -698,7 +705,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         self.assertTrue(kwargs["text_recognition_model_dir"].endswith("PP-OCRv5_server_rec"))
 
     def test_local_source_model_root_falls_back_to_bundle_models(self):
-        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+        for name in ("ocr", "huaweiocr.detect.ocr_engine", "paddle", "paddleocr", "app_paths", "huaweiocr.io.paths_runtime"):
             sys.modules.pop(name, None)
 
         paddle = types.ModuleType("paddle")
@@ -723,7 +730,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
                 self.assertEqual(ocr._local_model_root_fallback(), bundle_root)
 
     def test_ocr_import_disables_packaged_onednn_executor_path(self):
-        for name in ("ocr", "paddle", "paddleocr", "app_paths"):
+        for name in ("ocr", "huaweiocr.detect.ocr_engine", "paddle", "paddleocr", "app_paths", "huaweiocr.io.paths_runtime"):
             sys.modules.pop(name, None)
 
         for name in (
@@ -1914,6 +1921,7 @@ class GuiPipelineTest(unittest.TestCase):
         sys.modules.pop("gui_app", None)
         sys.modules.pop("numpy", None)
         sys.modules.pop("app_paths", None)
+        sys.modules.pop("huaweiocr.io.paths_runtime", None)
         import gui_app
 
         self.assertEqual(gui_app._display_model_src("barcode"), "扫描条形码")
@@ -1925,6 +1933,7 @@ class GuiPipelineTest(unittest.TestCase):
         sys.modules.pop("crop", None)
         sys.modules.pop("scan2", None)
         sys.modules.pop("barcode", None)
+        sys.modules.pop("huaweiocr.barcode.generic", None)
         sys.modules.pop("cv2", None)
         sys.modules.pop("numpy", None)
         sys.modules.pop("pyzbar", None)
@@ -2155,6 +2164,7 @@ class BarcodeCliBudgetTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows process flags only")
     def test_global_subprocess_patch_hides_check_output_children(self):
         sys.modules.pop("win_subprocess", None)
+        sys.modules.pop("huaweiocr.io.win_subprocess", None)
         import win_subprocess
 
         original_popen = subprocess.Popen
@@ -2271,10 +2281,12 @@ class Scan2DebugLogTest(unittest.TestCase):
 class AppPathsInstallTest(unittest.TestCase):
     def setUp(self):
         sys.modules.pop("app_paths", None)
+        sys.modules.pop("huaweiocr.io.paths_runtime", None)
         self._real_app_paths = importlib.import_module("app_paths")
 
     def tearDown(self):
         sys.modules.pop("app_paths", None)
+        sys.modules.pop("huaweiocr.io.paths_runtime", None)
         sys.modules["app_paths"] = self._real_app_paths
 
     def test_override_root_refuses_to_replace_unmarked_external_child(self):
