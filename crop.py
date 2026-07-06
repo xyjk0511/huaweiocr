@@ -11,6 +11,17 @@ import threading
 import time
 from collections import Counter
 import numpy as np
+from huaweiocr.core.geometry import (
+    SLANT_GUARD_ANGLE_DEG,
+    box_iou,
+    box_overlap_ratio,
+    crop_from_box,
+    expand_box_pixels,
+    pred_class,
+    slant_guard_px,
+    to_xywh_topleft,
+    union_boxes,
+)
 from envutil import env_flag_default as _env_flag_default
 from envutil import env_float_default as _env_float_default
 
@@ -260,7 +271,6 @@ PADDING_2_MODEL_INSIDE_BARCODE_BOTTOM = 0.47
 PADDING_2_SN_X = 0.06
 PADDING_2_SN_TOP = 0.05
 PADDING_2_SN_BOTTOM = -0.04
-SLANT_GUARD_ANGLE_DEG = 6.0
 STAGE1_SLANT_GUARD_MAX_PX = 36
 STAGE2_SLANT_GUARD_MAX_PX = 18
 STAGE2_TEXT_SLANT_GUARD_MAX_PX = 8
@@ -419,26 +429,6 @@ def _stage1_save_preview_image(img, img_path, entries, rotation_deg=0):
         return None
     return save_png_required(stage1_preview_path_for_image(img_path), preview, "stage1 preview")
 
-def pred_class(p):
-    return p.get("class") or p.get("class_name") or ""
-
-def to_xywh_topleft(p):
-    x = float(p["x"])
-    y = float(p["y"])
-    w = float(p["width"])
-    h = float(p["height"])
-    x1 = int(x - w/2)
-    y1 = int(y - h/2)
-    return x1, y1, int(w), int(h)
-
-
-def slant_guard_px(width, max_px, angle_deg=SLANT_GUARD_ANGLE_DEG, min_px=2):
-    if max_px <= 0 or width <= 0:
-        return 0
-    guard = int(np.ceil(float(width) * np.tan(np.deg2rad(angle_deg)) * 0.5))
-    return max(0, min(int(max_px), max(int(min_px), guard)))
-
-
 def add_slant_guard_to_box(img, box, max_px, top=True, bottom=True, angle_deg=SLANT_GUARD_ANGLE_DEG):
     if box is None or max_px <= 0:
         return box
@@ -560,60 +550,6 @@ def box_from_pred_xy_asym(
     if x2 <= x1 or y2 <= y1:
         return None
     return (x1, y1, x2, y2)
-
-
-def box_iou(box_a, box_b):
-    if box_a is None or box_b is None:
-        return 0.0
-    ax1, ay1, ax2, ay2 = box_a
-    bx1, by1, bx2, by2 = box_b
-    inter_w = max(0, min(ax2, bx2) - max(ax1, bx1))
-    inter_h = max(0, min(ay2, by2) - max(ay1, by1))
-    inter = inter_w * inter_h
-    if inter <= 0:
-        return 0.0
-    area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
-    area_b = max(1, (bx2 - bx1) * (by2 - by1))
-    union = area_a + area_b - inter
-    return float(inter) / float(max(1, union))
-
-
-def box_overlap_ratio(box_a, box_b):
-    if box_a is None or box_b is None:
-        return 0.0
-    ax1, ay1, ax2, ay2 = box_a
-    bx1, by1, bx2, by2 = box_b
-    inter_w = max(0, min(ax2, bx2) - max(ax1, bx1))
-    inter_h = max(0, min(ay2, by2) - max(ay1, by1))
-    inter = inter_w * inter_h
-    if inter <= 0:
-        return 0.0
-    area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
-    area_b = max(1, (bx2 - bx1) * (by2 - by1))
-    return float(inter) / float(max(1, min(area_a, area_b)))
-
-
-def crop_from_box(img, box):
-    if box is None:
-        return None
-    x1, y1, x2, y2 = box
-    if x2 <= x1 or y2 <= y1:
-        return None
-    crop = img[y1:y2, x1:x2]
-    return crop if crop.size else None
-
-
-def expand_box_pixels(img, box, pad_x=0, pad_y=0):
-    if box is None:
-        return None
-    H, W = img.shape[:2]
-    x1, y1, x2, y2 = box
-    return (
-        max(0, int(x1 - pad_x)),
-        max(0, int(y1 - pad_y)),
-        min(W, int(x2 + pad_x)),
-        min(H, int(y2 + pad_y)),
-    )
 
 
 def stage1_red_pixel_ratio(img):
@@ -1236,18 +1172,6 @@ def stage1_tighten_label_crop(img):
         return img
     tightened = crop_from_box(img, box)
     return tightened if tightened is not None else img
-
-
-def union_boxes(*boxes):
-    boxes = [b for b in boxes if b is not None and b[2] > b[0] and b[3] > b[1]]
-    if not boxes:
-        return None
-    return (
-        min(b[0] for b in boxes),
-        min(b[1] for b in boxes),
-        max(b[2] for b in boxes),
-        max(b[3] for b in boxes),
-    )
 
 
 def expand_box_from_pred_asym(
