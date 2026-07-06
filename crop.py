@@ -10,6 +10,8 @@ import tempfile
 import threading
 import time
 import numpy as np
+from envutil import env_flag_default as _env_flag_default
+from envutil import env_float_default as _env_float_default
 
 try:
     from inference_sdk import InferenceHTTPClient
@@ -145,29 +147,6 @@ def configure_paths(input_dir=None, out_dir=None):
         STAGE1_PREVIEW_DIR = DEFAULT_STAGE1_PREVIEW_DIR
         STAGE2_DIR = DEFAULT_STAGE2_DIR
     _refresh_output_paths()
-
-
-def _env_flag_default(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _env_float_default(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return default
-
 
 def stage2_save_model_crops_enabled() -> bool:
     return _env_flag_default("CROP_STAGE2_SAVE_MODEL", False)

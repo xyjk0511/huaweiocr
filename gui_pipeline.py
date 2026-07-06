@@ -4,18 +4,7 @@ import json
 import os
 import shutil
 import threading
-
-
-def _env_flag_default(name, default):
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
+from envutil import env_flag_default as _env_flag_default
 
 
 def load_pipeline_modules():

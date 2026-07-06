@@ -10,6 +10,7 @@ import numpy as np
 from pathlib import Path
 from barcode import decode_small_patch
 from app_paths import ensure_models_installed, get_user_data_dir
+from envutil import env_flag_default as _env_flag_default
 from sn_barcode import (
     SN12_BODY_PATTERN,
     SN12_RE,
@@ -297,18 +298,6 @@ def start_debug_run():
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_flag_default(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def raw_result_fields_are_masked() -> bool:
