@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import Counter
 import numpy as np
 from envutil import env_flag_default as _env_flag_default
 from envutil import env_float_default as _env_float_default
@@ -20,6 +21,8 @@ except ImportError:
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
 LOG_SINK = None
+STAGE1_REJECT_COUNTS = Counter()
+STAGE1_REJECT_COUNTS_LOCK = threading.Lock()
 
 def set_log_level(level: str) -> None:
     global LOG_LEVEL
@@ -49,6 +52,32 @@ def crop_progress_log_enabled() -> bool:
 
 def _crop_label_name(path: str) -> str:
     return os.path.splitext(os.path.basename(str(path or "")))[0]
+
+
+def reset_stage1_reject_counts():
+    with STAGE1_REJECT_COUNTS_LOCK:
+        STAGE1_REJECT_COUNTS.clear()
+
+
+def record_stage1_reject(reason: str, crop_img=None, img_path: str = "", index: int = 0):
+    safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(reason or "unknown")).strip("._")
+    if not safe_reason:
+        safe_reason = "unknown"
+    with STAGE1_REJECT_COUNTS_LOCK:
+        STAGE1_REJECT_COUNTS[safe_reason] += 1
+        reason_count = STAGE1_REJECT_COUNTS[safe_reason]
+
+    if LOG_LEVEL != "debug" or crop_img is None:
+        return
+
+    try:
+        source_base = _crop_label_name(img_path) or "unknown"
+        safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_base).strip("._") or "unknown"
+        reject_dir = os.path.join(FAILED_DIR, "stage1_rejects", safe_reason)
+        filename = f"{safe_base}__{int(index):04d}__{reason_count:06d}.png"
+        save_png(os.path.join(reject_dir, filename), crop_img)
+    except Exception:
+        pass
 
 
 def _stage2_result_summary(result: dict | None) -> str:
@@ -394,9 +423,12 @@ def pred_class(p):
     return p.get("class") or p.get("class_name") or ""
 
 def to_xywh_topleft(p):
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
-    x1 = int(x - w/2); y1 = int(y - h/2)
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
+    x1 = int(x - w/2)
+    y1 = int(y - h/2)
     return x1, y1, int(w), int(h)
 
 
@@ -439,8 +471,10 @@ def crop_from_pred(img, p, pad_ratio, slant_guard_max_px=0):
 
 def box_from_pred(img, p, pad_ratio, slant_guard_max_px=0):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     pad_w = w * pad_ratio
     pad_h = h * pad_ratio
     slant_guard = slant_guard_px(w, slant_guard_max_px)
@@ -450,8 +484,10 @@ def box_from_pred(img, p, pad_ratio, slant_guard_max_px=0):
     x2 = int(x + w/2 + pad_w)
     y2 = int(y + h/2 + pad_h + slant_guard)
 
-    x1 = max(0, x1); y1 = max(0, y1)
-    x2 = min(W, x2); y2 = min(H, y2)
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(W, x2)
+    y2 = min(H, y2)
     if x2 <= x1 or y2 <= y1:
         return None
     return (x1, y1, x2, y2)
@@ -478,8 +514,10 @@ def crop_from_pred_asym(
 
 def box_from_pred_asym(img, p, pad_x_ratio, pad_top_ratio, pad_bottom_ratio, slant_guard_max_px=0):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     slant_guard = slant_guard_px(w, slant_guard_max_px)
 
     x1 = int(x - w/2 - w * pad_x_ratio)
@@ -487,8 +525,10 @@ def box_from_pred_asym(img, p, pad_x_ratio, pad_top_ratio, pad_bottom_ratio, sla
     x2 = int(x + w/2 + w * pad_x_ratio)
     y2 = int(y + h/2 + h * pad_bottom_ratio + slant_guard)
 
-    x1 = max(0, x1); y1 = max(0, y1)
-    x2 = min(W, x2); y2 = min(H, y2)
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(W, x2)
+    y2 = min(H, y2)
     return (x1, y1, x2, y2)
 
 
@@ -502,8 +542,10 @@ def box_from_pred_xy_asym(
     slant_guard_max_px=0,
 ):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     slant_guard = slant_guard_px(w, slant_guard_max_px)
 
     x1 = int(x - w / 2 - w * pad_left_ratio)
@@ -511,8 +553,10 @@ def box_from_pred_xy_asym(
     x2 = int(x + w / 2 + w * pad_right_ratio)
     y2 = int(y + h / 2 + h * pad_bottom_ratio + slant_guard)
 
-    x1 = max(0, x1); y1 = max(0, y1)
-    x2 = min(W, x2); y2 = min(H, y2)
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(W, x2)
+    y2 = min(H, y2)
     if x2 <= x1 or y2 <= y1:
         return None
     return (x1, y1, x2, y2)
@@ -636,7 +680,6 @@ def _stage1_corner_mark_score(img, x1_ratio, y1_ratio, x2_ratio, y2_ratio):
         return score
 
     _, _, stats, _ = components
-    roi_area = float(max(1, roi.shape[0] * roi.shape[1]))
     for i in range(1, len(stats)):
         _, _, cw, ch, area = stats[i]
         if cw < 8 or ch < 8:
@@ -1220,8 +1263,10 @@ def expand_box_from_pred_asym(
     if box is None:
         return None
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     top = int(y - h / 2 - h * pad_top)
     if pad_top <= 0:
         top = box[1]
@@ -1237,8 +1282,10 @@ def expand_box_from_pred_asym(
 
 def barcode_like_box_below(img, p):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
 
     x1 = int(x - w/2)
     x2 = int(x + w/2)
@@ -1433,8 +1480,10 @@ def model_pred_has_lower_barcode(img, p):
 
 def model_barcode_box_inside_pred(img, p):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     x1 = max(0, int(x - w/2))
     y1 = max(0, int(y - h/2))
     x2 = min(W, int(x + w/2))
@@ -1535,8 +1584,10 @@ def model_barcode_box_near_pred(img, p, text_box=None):
 
 def model_text_box_above_barcode(img, p, barcode_box):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     x1 = max(0, int(x - w/2 - w * PADDING_2_MODEL_TEXT_X))
     x2 = min(W, int(x + w/2 + w * PADDING_2_MODEL_TEXT_X))
     sy1 = max(0, int(y - h/2))
@@ -1695,8 +1746,10 @@ def text_component_line_box_near_y(
 
 def model_text_line_box(img, p):
     H, W = img.shape[:2]
-    x = float(p["x"]); y = float(p["y"])
-    w = float(p["width"]); h = float(p["height"])
+    x = float(p["x"])
+    y = float(p["y"])
+    w = float(p["width"])
+    h = float(p["height"])
     x1 = int(x - w/2 - w * PADDING_2_MODEL_TEXT_X)
     x2 = int(x + w/2 + w * PADDING_2_MODEL_TEXT_X)
     target_y = y + h * 0.10
@@ -1718,8 +1771,10 @@ def model_text_line_box(img, p):
     y = y + h * 0.14
     y1 = int(y - line_h / 2)
     y2 = int(y + line_h / 2)
-    x1 = max(0, x1); y1 = max(0, y1)
-    x2 = min(W, x2); y2 = min(H, y2)
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(W, x2)
+    y2 = min(H, y2)
     return add_slant_guard_to_box(img, (x1, y1, x2, y2), STAGE2_TEXT_SLANT_GUARD_MAX_PX)
 
 
@@ -4175,7 +4230,7 @@ def _stage1_hardcase_model_available():
     return bool(spec and os.path.exists(spec.path))
 
 
-def _stage1_collect_secondary_model_entries(img, existing_boxes):
+def _stage1_collect_secondary_model_entries(img, existing_boxes, img_path=""):
     if not _stage1_hardcase_model_available():
         return [], 0
 
@@ -4197,12 +4252,14 @@ def _stage1_collect_secondary_model_entries(img, existing_boxes):
 
     accepted = []
     dropped = 0
-    for p in label_preds:
+    for candidate_index, p in enumerate(label_preds, start=1):
         box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
         if _stage1_box_aspect(box) < STAGE1_PARTIAL_MIN_ASPECT:
             dropped += 1
+            record_stage1_reject("aspect", img_path=img_path, index=candidate_index)
             continue
         if _stage1_box_conflicts_with_existing(box, existing_boxes):
+            record_stage1_reject("hardcase_box_conflict", img_path=img_path, index=candidate_index)
             continue
         candidate_entries, candidate_dropped = _stage1_collect_product_label_entries(
             img,
@@ -4210,6 +4267,7 @@ def _stage1_collect_secondary_model_entries(img, existing_boxes):
             allow_orientation_variants=True,
             require_single_label_field_evidence=True,
             max_crops=1,
+            img_path=img_path,
         )
         dropped += candidate_dropped
         if not candidate_entries:
@@ -4231,10 +4289,12 @@ def _stage1_collect_product_label_entries(
     require_single_label_field_evidence=False,
     enforce_relaxed_area_evidence=False,
     max_crops=None,
+    img_path="",
 ):
     accepted = []
     dropped = 0
     accepted_boxes = []
+    candidate_index = 0
 
     def _stage1_candidate_has_required_field_evidence(candidate_crop):
         if candidate_crop is None:
@@ -4257,16 +4317,20 @@ def _stage1_collect_product_label_entries(
         key=lambda item: float((item or {}).get("confidence", 0.0)),
         reverse=True,
     ):
+        candidate_index += 1
         box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
         crop_img = crop_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
         if crop_img is None:
+            record_stage1_reject("crop_failed", img_path=img_path, index=candidate_index)
             continue
+        raw_crop_img = crop_img
         crop_img = _stage1_prepare_product_label_crop(
             crop_img,
             allow_orientation_variants=allow_orientation_variants,
         )
         if crop_img is None:
             dropped += 1
+            record_stage1_reject("prepare_failed", raw_crop_img, img_path=img_path, index=candidate_index)
             continue
         box, crop_img = _stage1_maybe_retry_upward_crop(
             img,
@@ -4289,6 +4353,7 @@ def _stage1_collect_product_label_entries(
             box_area_ratio = box_area / float(img_area)
             if box_area_ratio < STAGE1_RELAXED_MIN_BOX_AREA_RATIO:
                 dropped += 1
+                record_stage1_reject("area_too_small_relaxed", crop_img, img_path=img_path, index=candidate_index)
                 continue
             if (
                 box_area_ratio < STAGE1_MIN_BOX_AREA_RATIO
@@ -4299,6 +4364,7 @@ def _stage1_collect_product_label_entries(
                 )
             ):
                 dropped += 1
+                record_stage1_reject("area_too_small", crop_img, img_path=img_path, index=candidate_index)
                 continue
             if _stage1_box_touches_image_edge(box, img.shape):
                 edge_single_ok = _stage1_has_single_label_field_evidence(crop_img)
@@ -4306,9 +4372,11 @@ def _stage1_collect_product_label_entries(
                     edge_single_ok = _stage1_has_relaxed_single_label_field_evidence(crop_img)
                 if not edge_single_ok:
                     dropped += 1
+                    record_stage1_reject("edge_touch_no_evidence", crop_img, img_path=img_path, index=candidate_index)
                     continue
         if not _stage1_candidate_has_required_field_evidence(crop_img):
             dropped += 1
+            record_stage1_reject("no_field_evidence", crop_img, img_path=img_path, index=candidate_index)
             continue
         if _stage1_should_reject_blurry_small_background_label(
             box,
@@ -4322,9 +4390,11 @@ def _stage1_collect_product_label_entries(
             ],
         ):
             dropped += 1
+            record_stage1_reject("blurry_background", crop_img, img_path=img_path, index=candidate_index)
             continue
         if _stage1_box_conflicts_with_existing(box, accepted_boxes):
             dropped += 1
+            record_stage1_reject("box_conflict", crop_img, img_path=img_path, index=candidate_index)
             continue
         accepted.append(
             {
@@ -4350,6 +4420,7 @@ def _stage1_collect_product_label_crops(
     require_single_label_field_evidence=False,
     enforce_relaxed_area_evidence=False,
     max_crops=None,
+    img_path="",
 ):
     accepted, dropped = _stage1_collect_product_label_entries(
         img,
@@ -4359,27 +4430,36 @@ def _stage1_collect_product_label_crops(
         require_single_label_field_evidence=require_single_label_field_evidence,
         enforce_relaxed_area_evidence=enforce_relaxed_area_evidence,
         max_crops=max_crops,
+        img_path=img_path,
     )
     return [item["crop"] for item in accepted], dropped
 
 
-def _stage1_collect_raw_label_entries(img, label_preds):
+def _stage1_collect_raw_label_entries(img, label_preds, img_path=""):
     accepted = []
     accepted_boxes = []
+    candidate_index = 0
     for p in sorted(
         label_preds,
         key=lambda item: float((item or {}).get("confidence", 0.0)),
         reverse=True,
     ):
+        candidate_index += 1
         box = box_from_pred(img, p, PADDING_1, slant_guard_max_px=STAGE1_SLANT_GUARD_MAX_PX)
         if box is None:
+            record_stage1_reject("raw_box_failed", img_path=img_path, index=candidate_index)
             continue
         if _stage1_should_reject_raw_edge_false_positive(box, img.shape):
+            debug_crop = crop_from_box(img, box) if LOG_LEVEL == "debug" else None
+            record_stage1_reject("raw_edge_false_positive", debug_crop, img_path=img_path, index=candidate_index)
             continue
         if _stage1_box_conflicts_with_existing(box, accepted_boxes):
+            debug_crop = crop_from_box(img, box) if LOG_LEVEL == "debug" else None
+            record_stage1_reject("raw_box_conflict", debug_crop, img_path=img_path, index=candidate_index)
             continue
         crop_img = crop_from_box(img, box)
         if crop_img is None or crop_img.size == 0:
+            record_stage1_reject("raw_crop_failed", img_path=img_path, index=candidate_index)
             continue
         accepted.append(
             {
@@ -4398,18 +4478,19 @@ def _stage1_collect_raw_label_crops(img, raw_preds):
     return [item["crop"] for item in accepted_entries], dropped
 
 
-def _stage1_collect_raw_entries_from_preds(img, raw_preds):
+def _stage1_collect_raw_entries_from_preds(img, raw_preds, img_path=""):
     label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
-    return _stage1_collect_raw_label_entries(img, label_preds)
+    return _stage1_collect_raw_label_entries(img, label_preds, img_path=img_path)
 
 
-def _stage1_collect_label_entries(img, raw_preds):
+def _stage1_collect_label_entries(img, raw_preds, img_path=""):
     label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
     final_preds = nms(label_preds, MIN_CONF_1, NMS_1)
 
     accepted_entries, dropped = _stage1_collect_product_label_entries(
         img,
         final_preds,
+        img_path=img_path,
     )
     if accepted_entries:
         existing_boxes = [item["box"] for item in accepted_entries if item.get("box") is not None]
@@ -4436,6 +4517,7 @@ def _stage1_collect_label_entries(img, raw_preds):
                 allow_orientation_variants=True,
                 require_single_label_field_evidence=True,
                 max_crops=1,
+                img_path=img_path,
             )
             dropped += supplement_dropped
             if not supplement_candidate_entries:
@@ -4448,7 +4530,7 @@ def _stage1_collect_label_entries(img, raw_preds):
                 break
         if supplement_entries:
             accepted_entries.extend(supplement_entries)
-        secondary_entries, secondary_dropped = _stage1_collect_secondary_model_entries(img, existing_boxes)
+        secondary_entries, secondary_dropped = _stage1_collect_secondary_model_entries(img, existing_boxes, img_path=img_path)
         dropped += secondary_dropped
         if secondary_entries:
             accepted_entries.extend(secondary_entries)
@@ -4461,6 +4543,7 @@ def _stage1_collect_label_entries(img, raw_preds):
         allow_orientation_variants=True,
         require_field_evidence=True,
         max_crops=STAGE1_FALLBACK_MAX_CROPS,
+        img_path=img_path,
     )
     if fallback_entries:
         return fallback_entries, fallback_dropped
@@ -4481,7 +4564,7 @@ def stage1_crop_labels(img_path):
     # 先按原图方向推理；若过滤后没有产品标签，再用旋转后的整图重试 stage1。
     preds = infer_with_resize(img, img_path, model_id=MODEL1_ID)
     entry_collector = _stage1_collect_raw_entries_from_preds if stage1_raw_label_mode_enabled() else _stage1_collect_label_entries
-    label_entries, dropped = entry_collector(img, preds)
+    label_entries, dropped = entry_collector(img, preds, img_path=img_path)
     stage1_rotation = 0
     preview_img = img
 
@@ -4489,7 +4572,7 @@ def stage1_crop_labels(img_path):
         for rotation in stage1_rotation_retry_angles():
             rotated_img = stage1_rotated_image(img, rotation)
             rotated_preds = infer_with_resize(rotated_img, img_path, model_id=MODEL1_ID)
-            label_entries, rotated_dropped = entry_collector(rotated_img, rotated_preds)
+            label_entries, rotated_dropped = entry_collector(rotated_img, rotated_preds, img_path=img_path)
             dropped += rotated_dropped
             if label_entries:
                 stage1_rotation = rotation
@@ -5129,6 +5212,7 @@ def stage2_crop_model_from_label(label_img_path, out_path=None):
 
 
 def main(input_dir=None, out_dir=None, log_level="info", clean=False):
+    reset_stage1_reject_counts()
     set_log_level(log_level)
     configure_paths(input_dir=input_dir, out_dir=out_dir)
     ensure_dirs(clean=clean)
@@ -5144,6 +5228,8 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     imgs = list_images(INPUT_DIR)
     if not imgs:
         _log(f"警告：输入文件夹中没有可识别的图片：{INPUT_DIR}", "warn")
+        with STAGE1_REJECT_COUNTS_LOCK:
+            stage1_rejects = dict(STAGE1_REJECT_COUNTS)
         return {
             "input_images": 0,
             "label_count": 0,
@@ -5154,6 +5240,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
             "stage1_preview_dir": STAGE1_PREVIEW_DIR,
             "stage2_dir": STAGE2_DIR,
             "manifest_path": MANIFEST_PATH,
+            "stage1_rejects": stage1_rejects,
         }
 
     # 清空 manifest（每次跑重新生成）
@@ -5236,6 +5323,8 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         _log(f"Stage1 带框预览：{STAGE1_PREVIEW_DIR}", "info")
     _log(f"清单文件：{MANIFEST_PATH}", "info")
     _log(f"缺失分类文件夹：{MISS_SN_DIR} / {MISS_MODEL_DIR}", "info")
+    with STAGE1_REJECT_COUNTS_LOCK:
+        stage1_rejects = dict(STAGE1_REJECT_COUNTS)
     return {
         "input_images": len(imgs),
         "label_count": manifest_rows,
@@ -5251,6 +5340,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         "stage1_preview_dir": STAGE1_PREVIEW_DIR,
         "stage2_dir": STAGE2_DIR,
         "manifest_path": MANIFEST_PATH,
+        "stage1_rejects": stage1_rejects,
     }
 
 if __name__ == "__main__":
