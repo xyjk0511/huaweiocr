@@ -210,7 +210,14 @@ class RunAllPathPropagationTest(unittest.TestCase):
             crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields_run_x")
             crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels_run_x")
             crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: {"label_count": 1, "manifest_rows": 1}
+            crop.main = lambda **kwargs: {
+                "label_count": 1,
+                "manifest_rows": 1,
+                "stage1_dir": crop.STAGE1_DIR,
+                "stage2_dir": crop.STAGE2_DIR,
+                "model_dir": crop.OUT_MODEL_DIR,
+                "sn_dir": crop.OUT_SN_DIR,
+            }
 
             calls = {}
             scan2 = types.ModuleType("scan2")
@@ -349,7 +356,14 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
             crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
             crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
             crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: {"label_count": 1, "manifest_rows": 1}
+            crop.main = lambda **kwargs: {
+                "label_count": 1,
+                "manifest_rows": 1,
+                "stage1_dir": crop.STAGE1_DIR,
+                "stage2_dir": crop.STAGE2_DIR,
+                "model_dir": crop.OUT_MODEL_DIR,
+                "sn_dir": crop.OUT_SN_DIR,
+            }
 
             scan2 = types.ModuleType("scan2")
             scan2.set_log_level = lambda level: None
@@ -423,7 +437,14 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
             crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
             crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
             crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: {"label_count": 1, "manifest_rows": 1}
+            crop.main = lambda **kwargs: {
+                "label_count": 1,
+                "manifest_rows": 1,
+                "stage1_dir": crop.STAGE1_DIR,
+                "stage2_dir": crop.STAGE2_DIR,
+                "model_dir": crop.OUT_MODEL_DIR,
+                "sn_dir": crop.OUT_SN_DIR,
+            }
 
             scan2 = types.ModuleType("scan2")
             scan2.set_log_level = lambda level: None

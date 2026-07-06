@@ -216,13 +216,14 @@ def main() -> int:
         crop_stats = crop.main(input_dir=args.input, out_dir=out_dir, log_level=args.log_level, clean=args.clean)
         t1 = time.perf_counter()
         summary["timing_sec"]["crop"] = _round_seconds(t1 - t0)
+        crop_paths = crop_stats if isinstance(crop_stats, dict) else {}
         summary["crop_stats"] = crop_stats if isinstance(crop_stats, dict) else {"value": crop_stats}
         summary["output_paths"].update(
             {
-                "stage1_dir": getattr(crop, "STAGE1_DIR", ""),
-                "stage2_dir": getattr(crop, "STAGE2_DIR", ""),
-                "model_dir": getattr(crop, "OUT_MODEL_DIR", ""),
-                "sn_dir": getattr(crop, "OUT_SN_DIR", ""),
+                "stage1_dir": crop_paths.get("stage1_dir", ""),
+                "stage2_dir": crop_paths.get("stage2_dir", ""),
+                "model_dir": crop_paths.get("model_dir", ""),
+                "sn_dir": crop_paths.get("sn_dir", ""),
             }
         )
 
@@ -237,8 +238,8 @@ def main() -> int:
 
         print("\n===== [2/2] Barcode + OCR for MODEL/SN =====")
         t2 = time.perf_counter()
-        result_jsonl = os.path.join(crop.STAGE2_DIR, "model_sn_ocr.jsonl")
-        debug_log = os.path.join(crop.STAGE2_DIR, "debug_ocr_barcode.log")
+        result_jsonl = os.path.join(crop_paths["stage2_dir"], "model_sn_ocr.jsonl")
+        debug_log = os.path.join(crop_paths["stage2_dir"], "debug_ocr_barcode.log")
         summary["output_paths"].update(
             {
                 "result_jsonl": result_jsonl,
@@ -246,8 +247,8 @@ def main() -> int:
             }
         )
         stats = scan2.main(
-            model_dir=crop.OUT_MODEL_DIR,
-            sn_dir=crop.OUT_SN_DIR,
+            model_dir=crop_paths["model_dir"],
+            sn_dir=crop_paths["sn_dir"],
             out_jsonl=result_jsonl,
             debug_log=debug_log,
             log_level=args.log_level,
@@ -257,9 +258,9 @@ def main() -> int:
         summary["scan2_stats"] = stats if isinstance(stats, dict) else {"value": stats}
 
         print("\nDone. Outputs:")
-        print(f"  - {crop.STAGE1_DIR}")
-        print(f"  - {crop.OUT_MODEL_DIR}")
-        print(f"  - {crop.OUT_SN_DIR}")
+        print(f"  - {crop_paths['stage1_dir']}")
+        print(f"  - {crop_paths['model_dir']}")
+        print(f"  - {crop_paths['sn_dir']}")
         print(f"  - {result_jsonl}")
         if args.excel_out:
             export_stats = _export_jsonl_to_excel(result_jsonl, args.excel_out)

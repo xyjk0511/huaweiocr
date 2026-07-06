@@ -5163,6 +5163,9 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
             "stage1_dir": STAGE1_DIR,
             "stage1_preview_dir": STAGE1_PREVIEW_DIR,
             "stage2_dir": STAGE2_DIR,
+            "model_dir": OUT_MODEL_DIR,
+            "sn_dir": OUT_SN_DIR,
+            "part_no_dir": OUT_PART_NO_DIR,
             "manifest_path": MANIFEST_PATH,
             "stage1_rejects": stage1_rejects,
         }
@@ -5263,6 +5266,9 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         "stage1_dir": STAGE1_DIR,
         "stage1_preview_dir": STAGE1_PREVIEW_DIR,
         "stage2_dir": STAGE2_DIR,
+        "model_dir": OUT_MODEL_DIR,
+        "sn_dir": OUT_SN_DIR,
+        "part_no_dir": OUT_PART_NO_DIR,
         "manifest_path": MANIFEST_PATH,
         "stage1_rejects": stage1_rejects,
     }
