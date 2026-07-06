@@ -70,4 +70,6 @@ crop 与 scan2 **只通过文件系统交互**（manifest + 图片），互不 i
 - 指标基线：115 图样本集，见 [validation/baseline/README.md](../validation/baseline/README.md)。
   **任何 crop/scan2 改动后必须重跑并保证 model/sn 值逐条相等。**
 - 打包验证：`python -m PyInstaller --noconfirm HuaweiOCR.spec`，
-  检查 dist 产物可启动且 `_internal\.env` 等存在。
+  检查 dist 产物可启动且 `_internal\Cython\Utility\CppSupport.cpp` 存在
+  （构建 venv 必须装有 Cython）。`.env` 自 2026-07 起有意不打包：API 密钥
+  不得随发布包扩散，打包版默认本地 ONNX 后端。

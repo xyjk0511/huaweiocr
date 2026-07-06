@@ -26,7 +26,9 @@ For package changes, build with:
 python -m PyInstaller --noconfirm HuaweiOCR.spec
 ```
 
-Then verify the packaged app starts and that `_internal\.env` plus `_internal\Cython\Utility\CppSupport.cpp` exist when the release depends on them.
+Then verify the packaged app starts and that `_internal\Cython\Utility\CppSupport.cpp` exists (the build venv must have Cython installed, or the spec's collect silently packages nothing).
+
+`.env` is intentionally NOT packaged since 2026-07: the API key must not ship in releases. The packaged app uses the local ONNX backend; Roboflow mode requires setting `API_KEY` via environment variable.
 
 ## Documented Knowledge
 
