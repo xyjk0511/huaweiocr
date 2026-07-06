@@ -1,5 +1,6 @@
 import re
 
+from huaweiocr.core.profile import load_profile
 from sn_barcode import (
     SN12_BODY_PATTERN,
     SN12_RE,
@@ -18,23 +19,10 @@ BAD_MODEL_WORDS = {
     "WAN", "LAN", "BASE", "UPC", "SN", "MAC",
 }
 
-PART_NO_MODEL_MAP = {
-    "50087144": "AP265E",
-    "50087147": "AP362E",
-    "50087149": "AP162E",
-    "50087288": "AP162E",
-    "50087289": "AP162E",
-    "50087290": "AP162E",
-    "50010838": "AR180",
-    "50010843": "AR180Pro",
-    "98012123": "S380-L4P1T",
-    "98012125": "S380-S8P2T",
-    "98012403": "S110-5T",
-    "98012404": "S110-8T",
-    "98012406": "S110-8P1T",
-}
-KNOWN_MODEL_CODES = set(PART_NO_MODEL_MAP.values())
+_PROFILE = load_profile()
+KNOWN_MODEL_CODES = set(_PROFILE["known_model_codes"])
 KNOWN_MODEL_CODES_UPPER = {code.upper() for code in KNOWN_MODEL_CODES}
+PART_NO_MODEL_MAP = dict(_PROFILE["part_no_model_map"])
 MODEL_CODE_ACCEPT_RE = re.compile(
     r"(?:AP[0-9]{3,4}E|AR[0-9]{3,4}(?:PRO)?|S[0-9]{3,4}-[A-Z0-9]+)",
     re.I,
