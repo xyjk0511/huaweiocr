@@ -24,6 +24,7 @@ os.environ.setdefault("LOCAL_YOLO_DEVICE", "cpu")
 from app_paths import get_resource_path, get_barcode_cli_path  # noqa: E402  (env vars must be set before pipeline imports)
 from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, start_ocr_prewarm_thread  # noqa: E402
 from gui_i18n import get_strings  # noqa: E402
+from huaweiocr.io.feedback import build_feedback_package  # noqa: E402
 # 粘贴图片支持（可选）
 try:
     from PIL import ImageGrab, Image
@@ -267,6 +268,7 @@ class App(tk.Tk):
         self._crop_module = None
         self._scan2_module = None
         self._is_running = False
+        self._last_run_dir = ""
         self.result_rows = []
         self._main_thread_ident = threading.get_ident()
         self._log_queue = queue.SimpleQueue()
@@ -326,6 +328,13 @@ class App(tk.Tk):
         btn_clear.pack(side=tk.LEFT, padx=5)
         btn_export = tk.Button(mid_frame, text=self.strings["btn_export_table"], command=self.export_table)
         btn_export.pack(side=tk.RIGHT, padx=5)
+        self.btn_export_feedback = tk.Button(
+            mid_frame,
+            text=self.strings["btn_export_feedback"],
+            command=self.export_feedback,
+            state="disabled",
+        )
+        self.btn_export_feedback.pack(side=tk.RIGHT, padx=5)
         btn_clear_table = tk.Button(mid_frame, text=self.strings["btn_clear_table"], command=self.clear_table)
         btn_clear_table.pack(side=tk.RIGHT, padx=5)
         # ============ 已选择文件列表 ============
@@ -618,6 +627,36 @@ class App(tk.Tk):
             self.write_log(self._format_issue_summary())
         except Exception as e:
             messagebox.showerror(self.strings["export_failed_title"], self.strings["export_save_failed"].format(error=e))
+    def export_feedback(self):
+        """导出本次运行的失败证据 ZIP"""
+        if not self._last_run_dir:
+            messagebox.showinfo(self.strings["no_data_title"], self.strings["feedback_no_run"])
+            return
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"{self.strings['feedback_default_name_prefix']}_{timestamp}.zip"
+        path = filedialog.asksaveasfilename(
+            title=self.strings["feedback_title"],
+            defaultextension=".zip",
+            initialfile=default_name,
+            filetypes=[(self.strings["filetype_zip"], "*.zip"), (self.strings["filetype_all"], "*.*")]
+        )
+        if not path:
+            return
+        try:
+            stats = build_feedback_package(self._last_run_dir, path)
+            miss_total = sum(stats.get("misses", {}).values())
+            messagebox.showinfo(
+                self.strings["feedback_done_title"],
+                self.strings["feedback_done"].format(
+                    files=stats.get("files", 0),
+                    misses=miss_total,
+                    skipped=stats.get("skipped", 0),
+                    path=stats.get("zip_path", path),
+                ),
+            )
+            self.write_log(self.strings["log_feedback_file"].format(path=stats.get("zip_path", path)))
+        except Exception as e:
+            messagebox.showerror(self.strings["feedback_failed_title"], self.strings["feedback_failed"].format(error=e))
     def start_run(self):
 
         """点击“开始识别”按钮"""
@@ -632,6 +671,8 @@ class App(tk.Tk):
         self._last_log_monotonic = time.monotonic()
         self._last_heartbeat_monotonic = 0.0
         self._last_stage_hint = ""
+        self._last_run_dir = ""
+        self.btn_export_feedback.config(state="disabled")
         self.btn_start.config(state="disabled")
         self.write_log(self.strings["log_start_pipeline"])
         t = threading.Thread(target=self.run_pipeline, daemon=True)
@@ -686,6 +727,7 @@ class App(tk.Tk):
             self.write_log(self.strings["stage_complete"])
             self.write_log(self.strings["log_results_file"].format(path=os.path.abspath(scan2_module.OUT_JSONL)))
             self.write_log(self.strings["log_output_folders"].format(stage1=crop_module.STAGE1_DIR, model=crop_module.OUT_MODEL_DIR, sn=crop_module.OUT_SN_DIR))
+            self._last_run_dir = run_dir
             self.after(0, lambda: self.write_log(self._format_issue_summary()))
         except Exception as e:
             detail = _mask_path_text(traceback.format_exc())
@@ -696,6 +738,8 @@ class App(tk.Tk):
             def _finish():
                 self._is_running = False
                 self.btn_start.config(state="normal")
+                if self._last_run_dir:
+                    self.btn_export_feedback.config(state="normal")
             self.after(0, _finish)
     def load_results_into_table(self):
         """读取 scan2 输出 JSONL 并追加到表格"""

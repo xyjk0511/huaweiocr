@@ -2074,6 +2074,8 @@ class GuiPipelineTest(unittest.TestCase):
             app = types.SimpleNamespace(
                 image_paths=[os.path.join(root, "source.png")],
                 btn_start=types.SimpleNamespace(config=lambda **_kwargs: None),
+                btn_export_feedback=types.SimpleNamespace(config=lambda **_kwargs: None),
+                _last_run_dir="",
                 write_log=lambda _text: None,
                 after=lambda _delay, callback=None: callback() if callback else None,
                 load_results_into_table=lambda: None,
