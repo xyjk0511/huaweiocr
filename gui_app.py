@@ -1,13 +1,10 @@
 import os
 import sys
 import threading
-import shutil
 import time
 import datetime
 import json
-import csv
 import re
-import warnings
 import openpyxl
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -24,8 +21,9 @@ hide_subprocess_windows()
 # 命令行批跑如果显式设置了 LOCAL_YOLO_DEVICE，则仍然以外部设置为准。
 os.environ.setdefault("LOCAL_YOLO_DEVICE", "cpu")
 
-from app_paths import get_resource_path, get_barcode_cli_path
-from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, start_ocr_prewarm_thread
+from app_paths import get_resource_path, get_barcode_cli_path  # noqa: E402  (env vars must be set before pipeline imports)
+from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, start_ocr_prewarm_thread  # noqa: E402
+from gui_i18n import get_strings  # noqa: E402
 # 粘贴图片支持（可选）
 try:
     from PIL import ImageGrab, Image
@@ -134,47 +132,48 @@ def _mask_path_text(text: str) -> str:
     return re.sub(r"(?<!\w)/(?:[^/\s]+/)+[^\s|,;\"']+", replace_path, text)
 
 
-def _display_source(value: str) -> str:
+def _display_source(value: str, strings=None) -> str:
     src = str(value or "")
+    s = strings or get_strings("zh")
     if src == "barcode":
-        return "扫描条形码"
+        return s["source_barcode"]
     if src == "ocr_file":
-        return "文字识别"
+        return s["source_ocr"]
     if src == "ocr_color":
-        return "文字识别"
+        return s["source_ocr"]
     if src == "ocr_bin":
-        return "文字识别"
+        return s["source_ocr"]
     if src == "ocr_top":
-        return "文字识别"
+        return s["source_ocr"]
     if src == "ocr_no_match":
-        return "文字识别未匹配"
+        return s["source_ocr_no_match"]
     if src.startswith("ocr"):
-        return "文字识别"
+        return s["source_ocr"]
     if src == "barcode_ambiguous":
-        return "条形码结果冲突"
+        return s["source_barcode_ambiguous"]
     if src == "barcode_parse_fail":
-        return "条形码解析失败"
+        return s["source_barcode_parse_fail"]
     if src == "barcode_quality_reject":
-        return "条形码质量不足"
+        return s["source_barcode_quality_reject"]
     if src == "barcode_decoder_miss":
-        return "未扫到条形码"
+        return s["source_barcode_decoder_miss"]
     if src == "barcode_no_match":
-        return "条形码未匹配"
+        return s["source_barcode_no_match"]
     if src == "missing":
-        return "缺失"
+        return s["source_missing"]
     if src == "none":
-        return "未识别"
+        return s["source_none"]
     if "+sn_hint" in src:
-        return _display_source(src.replace("+sn_hint", "")) + "+SN辅助判断"
+        return _display_source(src.replace("+sn_hint", ""), s) + s["source_sn_hint_suffix"]
     return src
 
 
-def _display_model_src(value: str) -> str:
-    return _display_source(value)
+def _display_model_src(value: str, strings=None) -> str:
+    return _display_source(value, strings)
 
 
-def _display_sn_src(value: str) -> str:
-    return _display_source(value)
+def _display_sn_src(value: str, strings=None) -> str:
+    return _display_source(value, strings)
 
 
 def _self_check():
@@ -249,8 +248,9 @@ def _self_check():
         pass
 # ============== GUI 主窗体 ==============
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, strings=None):
         super().__init__()
+        self.strings = strings or get_strings("zh")
         self.dnd_enabled = False
         self.dnd_error = ""
         self.dnd_arch = _prepare_tkdnd_runtime()
@@ -260,7 +260,7 @@ class App(tk.Tk):
                 self.dnd_enabled = True
             except Exception as exc:
                 self.dnd_error = str(exc)
-        self.title("华为标签识别工具（拖拽或选择图片）")
+        self.title(self.strings["window_title"])
         self.geometry("900x700")
         # 已选择的图片路径列表
         self.image_paths = []
@@ -282,7 +282,7 @@ class App(tk.Tk):
         if self.dnd_enabled:
             self.drop_area = tk.Label(
                 top_frame,
-                text="可以将图片拖拽到上方灰色区域，或点击“从电脑选择图片…”。",
+                text=self.strings["drop_hint_enabled"],
                 relief="ridge",
                 borderwidth=2,
                 width=60,
@@ -290,9 +290,9 @@ class App(tk.Tk):
                 fg="#555555"
             )
         else:
-            hint = "拖拽不可用，可点击“从电脑选择图片…”。"
+            hint = self.strings["drop_hint_disabled"]
             if not DND_IMPORT_AVAILABLE:
-                hint = "tkinterdnd2 未安装，拖拽不可用（可 pip install tkinterdnd2）"
+                hint = self.strings["drop_hint_tkdnd_missing"]
             self.drop_area = tk.Label(
                 top_frame,
                 text=hint,
@@ -319,30 +319,30 @@ class App(tk.Tk):
         # ============ 中间：按钮区域 ============
         mid_frame = tk.Frame(self)
         mid_frame.pack(fill=tk.X, padx=10, pady=5)
-        tk.Label(mid_frame, text="或").pack(side=tk.LEFT, padx=5)
-        btn_choose = tk.Button(mid_frame, text="从电脑选择图片…", command=self.choose_files)
+        tk.Label(mid_frame, text=self.strings["middle_or"]).pack(side=tk.LEFT, padx=5)
+        btn_choose = tk.Button(mid_frame, text=self.strings["btn_select_images"], command=self.choose_files)
         btn_choose.pack(side=tk.LEFT, padx=5)
-        btn_clear = tk.Button(mid_frame, text="清空列表", command=self.clear_list)
+        btn_clear = tk.Button(mid_frame, text=self.strings["btn_clear_list"], command=self.clear_list)
         btn_clear.pack(side=tk.LEFT, padx=5)
-        btn_export = tk.Button(mid_frame, text="导出表格", command=self.export_table)
+        btn_export = tk.Button(mid_frame, text=self.strings["btn_export_table"], command=self.export_table)
         btn_export.pack(side=tk.RIGHT, padx=5)
-        btn_clear_table = tk.Button(mid_frame, text="清空表格", command=self.clear_table)
+        btn_clear_table = tk.Button(mid_frame, text=self.strings["btn_clear_table"], command=self.clear_table)
         btn_clear_table.pack(side=tk.RIGHT, padx=5)
         # ============ 已选择文件列表 ============
-        list_frame = tk.LabelFrame(self, text="已选择的图片")
+        list_frame = tk.LabelFrame(self, text=self.strings["selected_images_title"])
         list_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
         self.listbox = tk.Listbox(list_frame, height=6)
         self.listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         # ============ 识别结果表 ============
-        table_frame = tk.LabelFrame(self, text="识别结果表")
+        table_frame = tk.LabelFrame(self, text=self.strings["results_table_title"])
         table_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
         columns = ("label_id", "model", "sn", "model_src", "sn_src")
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", height=6)
-        self.table.heading("label_id", text="标签ID")
-        self.table.heading("model", text="型号")
-        self.table.heading("sn", text="SN")
-        self.table.heading("model_src", text="型号来源")
-        self.table.heading("sn_src", text="SN来源")
+        self.table.heading("label_id", text=self.strings["col_label_id"])
+        self.table.heading("model", text=self.strings["col_model"])
+        self.table.heading("sn", text=self.strings["col_sn"])
+        self.table.heading("model_src", text=self.strings["col_model_src"])
+        self.table.heading("sn_src", text=self.strings["col_sn_src"])
         self.table.column("label_id", width=140, anchor="w")
         self.table.column("model", width=120, anchor="w")
         self.table.column("sn", width=200, anchor="w")
@@ -357,29 +357,29 @@ class App(tk.Tk):
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
         self.btn_start = tk.Button(
             btn_frame,
-            text="开始识别（裁剪 + 条形码 + 文字识别）",
+            text=self.strings["btn_start"],
             command=self.start_run,
             height=2
         )
         self.btn_start.pack(side=tk.LEFT, padx=5)
         # ============ 日志输出 ============
-        log_frame = tk.LabelFrame(self, text="日志输出")
+        log_frame = tk.LabelFrame(self, text=self.strings["log_title"])
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         self.log = scrolledtext.ScrolledText(log_frame, state="disabled", font=("Consolas", 9))
         self.log.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         # 启动时给个提示
         if not self.dnd_enabled:
             if not DND_IMPORT_AVAILABLE:
-                self.write_log("提示：未安装 tkinterdnd2，拖拽不可用，如需拖拽请执行：pip install tkinterdnd2")
+                self.write_log(self.strings["log_tkdnd_missing"])
             else:
-                reason = _mask_path_text(self.dnd_error) if self.dnd_error else "未知原因"
-                self.write_log(f"提示：拖拽组件初始化失败，已自动退回普通窗口模式。原因：{reason}")
+                reason = _mask_path_text(self.dnd_error) if self.dnd_error else self.strings["unknown_reason"]
+                self.write_log(self.strings["log_tkdnd_init_failed"].format(reason=reason))
         else:
-            self.write_log("可以将图片拖拽到上方灰色区域，或点击“从电脑选择图片…”。")
+            self.write_log(self.strings["log_drop_hint"])
         if CLIP_AVAILABLE:
-            self.write_log("✅ 已启用 Ctrl+V 粘贴：支持粘贴截图/网页复制的图片，也支持粘贴复制的文件。")
+            self.write_log(self.strings["log_clip_enabled"])
         else:
-            self.write_log("提示：未安装 pillow，Ctrl+V 只能尝试粘贴文件路径；要粘贴图片请 pip install pillow")
+            self.write_log(self.strings["log_clip_pillow_missing"])
         self._ocr_prewarm_thread = start_ocr_prewarm_thread(log=self.write_log)
         self.after(self._log_poll_interval_ms, self._poll_log_queue)
     # ========== 工具函数 ==========
@@ -473,7 +473,7 @@ class App(tk.Tk):
             self.listbox.insert(tk.END, p)
             added += 1
         if added > 0:
-            self.write_log(f"添加图片 {added} 个。当前共 {len(self.image_paths)} 个。")
+            self.write_log(self.strings["log_added_images"].format(added=added, total=len(self.image_paths)))
     # ========== 事件回调 ==========
     def on_drop(self, event):
         """拖拽文件到 label 上的回调"""
@@ -505,9 +505,9 @@ class App(tk.Tk):
                 try:
                     obj.save(save_path, "PNG")
                     self.add_files([save_path])
-                    self.write_log(f"已从剪贴板粘贴图片 -> {save_path}")
+                    self.write_log(self.strings["log_pasted_image"].format(path=save_path))
                 except Exception as e:
-                    messagebox.showerror("粘贴失败", f"图片保存失败：{e}")
+                    messagebox.showerror(self.strings["paste_failed_title"], self.strings["paste_save_failed"].format(error=e))
                 return "break"
         # 方案 B：没有 Pillow 时，尝试从 Tk 取文本（一般只对“路径文本”有用）
         try:
@@ -519,15 +519,15 @@ class App(tk.Tk):
             files = self.tk.splitlist(data)
             self.add_files(files)
         else:
-            messagebox.showinfo("剪贴板为空或不支持", "剪贴板里没有可用的图片或文件。\n\n提示：粘贴图片需要安装pillow：pip install pillow")
+            messagebox.showinfo(self.strings["clipboard_empty_title"], self.strings["clipboard_empty_message"])
         return "break"
     def choose_files(self):
         """点击“从电脑选择图片…”的回调"""
         files = filedialog.askopenfilenames(
-            title="选择图片",
+            title=self.strings["choose_images_title"],
             filetypes=[
-                ("图片文件", "*.jpg;*.jpeg;*.png;*.bmp;*.webp"),
-                ("所有文件", "*.*"),
+                (self.strings["filetype_images"], "*.jpg;*.jpeg;*.png;*.bmp;*.webp"),
+                (self.strings["filetype_all"], "*.*"),
             ]
         )
         if not files:
@@ -537,13 +537,13 @@ class App(tk.Tk):
         """清空已选择图片"""
         self.image_paths.clear()
         self.listbox.delete(0, tk.END)
-        self.write_log("已清空图片列表。")
+        self.write_log(self.strings["log_cleared_image_list"])
     # ========== 主流程 ==========
     def clear_table(self):
         """清空识别结果表"""
         self.table.delete(*self.table.get_children())
         self.result_rows = []
-        self.write_log("已清空表格内容。")
+        self.write_log(self.strings["log_cleared_table"])
     def _format_issue_summary(self) -> str:
         """汇总未识别项，便于一眼查看问题样本。"""
         missing_sn = []
@@ -572,34 +572,34 @@ class App(tk.Tk):
                 missing_model.append(label_id)
         lines = []
         if missing_sn:
-            lines.append("未识别出SN：" + "，".join(missing_sn))
+            lines.append(self.strings["issue_missing_sn_prefix"] + self.strings["issue_joiner"].join(missing_sn))
         if missing_model:
-            lines.append("未识别出型号：" + "，".join(missing_model))
+            lines.append(self.strings["issue_missing_model_prefix"] + self.strings["issue_joiner"].join(missing_model))
         if missing_both:
-            lines.append("均未识别出型号和SN：" + "，".join(missing_both))
+            lines.append(self.strings["issue_missing_both_prefix"] + self.strings["issue_joiner"].join(missing_both))
         if not lines:
-            lines.append("未发现缺失项。")
+            lines.append(self.strings["issue_none"])
         return "\n".join(lines)
     def export_table(self):
         """导出结果为 XLSX"""
         if not self.table.get_children():
-            messagebox.showinfo("没有数据", "结果表格为空，无法导出。")
+            messagebox.showinfo(self.strings["no_data_title"], self.strings["no_data_message"])
             return
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"识别结果_{timestamp}.xlsx"
+        default_name = f"{self.strings['export_default_name_prefix']}_{timestamp}.xlsx"
         path = filedialog.asksaveasfilename(
-            title="导出为 Excel",
+            title=self.strings["export_title"],
             defaultextension=".xlsx",
             initialfile=default_name,
-            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")]
+            filetypes=[(self.strings["filetype_excel"], "*.xlsx"), (self.strings["filetype_all"], "*.*")]
         )
         if not path:
             return
-        headers = ("标签ID", "型号", "SN", "型号来源", "SN来源")
+        headers = (self.strings["col_label_id"], self.strings["col_model"], self.strings["col_sn"], self.strings["col_model_src"], self.strings["col_sn_src"])
         try:
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "识别结果"
+            ws.title = self.strings["excel_sheet_title"]
             ws.append(list(headers))
             if self.result_rows:
                 for row in self.result_rows:
@@ -607,25 +607,25 @@ class App(tk.Tk):
                         row.get("label_id", ""),
                         row.get("model", ""),
                         row.get("sn", ""),
-                        _display_model_src(row.get("model_src", "")),
-                        _display_sn_src(row.get("sn_src", "")),
+                        _display_model_src(row.get("model_src", ""), self.strings),
+                        _display_sn_src(row.get("sn_src", ""), self.strings),
                     ])
             else:
                 for item in self.table.get_children():
                     ws.append(list(self.table.item(item, "values")))
             wb.save(path)
-            self.write_log(f"结果文件：{path}")
+            self.write_log(self.strings["log_results_file"].format(path=path))
             self.write_log(self._format_issue_summary())
         except Exception as e:
-            messagebox.showerror("导出失败", f"保存 Excel 失败：{e}")
+            messagebox.showerror(self.strings["export_failed_title"], self.strings["export_save_failed"].format(error=e))
     def start_run(self):
 
         """点击“开始识别”按钮"""
         if self._is_running:
-            messagebox.showwarning("正在运行", "当前识别任务还未完成，请等待本次运行结束。")
+            messagebox.showwarning(self.strings["warn_running_title"], self.strings["warn_running_message"])
             return
         if not self.image_paths:
-            messagebox.showwarning("没有图片", "请先拖拽或选择至少一张图片。")
+            messagebox.showwarning(self.strings["warn_no_images_title"], self.strings["warn_no_images_message"])
             return
         # 禁用按钮，防止重复点击
         self._is_running = True
@@ -633,7 +633,7 @@ class App(tk.Tk):
         self._last_heartbeat_monotonic = 0.0
         self._last_stage_hint = ""
         self.btn_start.config(state="disabled")
-        self.write_log("开始执行完整流水线……")
+        self.write_log(self.strings["log_start_pipeline"])
         t = threading.Thread(target=self.run_pipeline, daemon=True)
         t.start()
     def run_pipeline(self):
@@ -643,8 +643,8 @@ class App(tk.Tk):
                 crop_module, scan2_module = load_pipeline_modules()
             except Exception as exc:
                 msg = _mask_path_text(str(exc))
-                self.write_log(f"❌ 加载文字识别依赖失败：{msg}")
-                self.after(0, lambda msg=msg: messagebox.showerror("加载依赖失败", msg))
+                self.write_log(self.strings["log_dependency_load_failed"].format(msg=msg))
+                self.after(0, lambda msg=msg: messagebox.showerror(self.strings["dependency_load_failed_title"], msg))
                 return
 
             self._crop_module = crop_module
@@ -654,21 +654,21 @@ class App(tk.Tk):
             input_dir = run_dir
             out_dir = run_dir
 
-            self.write_log("[1/4] 准备输入目录")
-            self.write_log(f"已拷贝 {len(copied_records)} 个图片。")
+            self.write_log(self.strings["stage_prepare_input"])
+            self.write_log(self.strings["log_copied_images"].format(count=len(copied_records)))
 
             old_crop_sink = getattr(crop_module, "LOG_SINK", None)
             old_scan_sink = getattr(scan2_module, "LOG_SINK", None)
             crop_module.set_log_sink(self.write_log)
             scan2_module.set_log_sink(self.write_log)
             try:
-                self.write_log("[2/4] 运行裁剪：大图 → 标签小图 → 型号/SN 小图")
+                self.write_log(self.strings["stage_crop"])
                 crop_stats = crop_module.main(input_dir=input_dir, out_dir=out_dir)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
-                    raise RuntimeError("未生成任何标签裁剪图，已停止识别。")
+                    raise RuntimeError(self.strings["error_no_label_crops"])
                 if crop_stats.get("manifest_rows", 0) <= 0:
-                    raise RuntimeError("未生成裁剪清单记录，已停止识别。")
-                self.write_log("[3/4] 运行识别：识别型号 / SN")
+                    raise RuntimeError(self.strings["error_no_manifest_rows"])
+                self.write_log(self.strings["stage_recognize"])
                 result_jsonl = os.path.join(crop_module.STAGE2_DIR, "model_sn_ocr.jsonl")
                 debug_log = os.path.join(crop_module.STAGE2_DIR, "debug_ocr_barcode.log")
                 scan2_module.main(
@@ -677,21 +677,21 @@ class App(tk.Tk):
                     out_jsonl=result_jsonl,
                     debug_log=debug_log,
                 )
-                self.write_log("[3/4] 识别完成，正在刷新结果表…")
+                self.write_log(self.strings["stage_refreshing"])
                 self.after(0, self.load_results_into_table)
             finally:
                 crop_module.set_log_sink(old_crop_sink)
                 scan2_module.set_log_sink(old_scan_sink)
 
-            self.write_log("[4/4] 全部流程完成 ✅")
-            self.write_log(f"结果文件：{os.path.abspath(scan2_module.OUT_JSONL)}")
-            self.write_log(f"裁剪文件夹：{crop_module.STAGE1_DIR}/，{crop_module.OUT_MODEL_DIR}/，{crop_module.OUT_SN_DIR}/")
+            self.write_log(self.strings["stage_complete"])
+            self.write_log(self.strings["log_results_file"].format(path=os.path.abspath(scan2_module.OUT_JSONL)))
+            self.write_log(self.strings["log_output_folders"].format(stage1=crop_module.STAGE1_DIR, model=crop_module.OUT_MODEL_DIR, sn=crop_module.OUT_SN_DIR))
             self.after(0, lambda: self.write_log(self._format_issue_summary()))
         except Exception as e:
             detail = _mask_path_text(traceback.format_exc())
-            self.write_log(f"❌ 出错：{e}")
+            self.write_log(self.strings["error_prefix"].format(error=e))
             self.write_log(detail)
-            self.after(0, lambda msg=_mask_path_text(str(e)): messagebox.showerror("识别失败", msg))
+            self.after(0, lambda msg=_mask_path_text(str(e)): messagebox.showerror(self.strings["recognition_failed_title"], msg))
         finally:
             def _finish():
                 self._is_running = False
@@ -701,11 +701,11 @@ class App(tk.Tk):
         """读取 scan2 输出 JSONL 并追加到表格"""
         scan2_module = self._scan2_module
         if scan2_module is None:
-            self.write_log("⚠️ scan2 尚未加载。")
+            self.write_log(self.strings["warn_scan2_not_loaded"])
             return
         out_path = os.path.abspath(scan2_module.OUT_JSONL)
         if not os.path.isfile(out_path):
-            self.write_log(f"⚠️ 未找到输出文件：{out_path}")
+            self.write_log(self.strings["warn_output_not_found"].format(path=out_path))
             return
         rows = []
         try:
@@ -719,7 +719,7 @@ class App(tk.Tk):
                     except json.JSONDecodeError:
                         continue
         except Exception as e:
-            self.write_log(f"⚠️ 读取结果失败：{e}")
+            self.write_log(self.strings["warn_read_results_failed"].format(error=e))
             return
         self.result_rows = rows
         def _append():
@@ -729,15 +729,15 @@ class App(tk.Tk):
                     r.get("label_id", ""),
                     r.get("model", ""),
                     r.get("sn", ""),
-                    _display_model_src(r.get("model_src", "")),
-                    _display_sn_src(r.get("sn_src", "")),
+                    _display_model_src(r.get("model_src", ""), self.strings),
+                    _display_sn_src(r.get("sn_src", ""), self.strings),
                 )
                 self.table.insert("", tk.END, values=values)
         if threading.get_ident() == self._main_thread_ident:
             _append()
         else:
             self.after(0, _append)
-if __name__ == "__main__":
+def main(lang: str = "zh"):
     # Windows 控制台中文支持（可选）
     try:
         if sys.platform.startswith("win"):
@@ -745,5 +745,9 @@ if __name__ == "__main__":
     except Exception:
         pass
     _self_check()
-    app = App()
+    app = App(strings=get_strings(lang))
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

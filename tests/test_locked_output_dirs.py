@@ -523,7 +523,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
-        import ocr
+        import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         torch_stub = sys.modules["torch"]
         self.assertIsNotNone(torch_stub.__spec__)
@@ -564,7 +564,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
-        import ocr
+        import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         torch_utils = importlib.import_module("modelscope.utils.torch_utils")
         self.assertTrue(hasattr(torch_utils, "is_on_same_device"))
@@ -603,7 +603,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
-        import ocr
+        import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         with tempfile.TemporaryDirectory() as root:
             models = os.path.join(root, "official_models")
@@ -650,7 +650,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         sys.modules["app_paths"] = app_paths
 
         with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_PROFILE": "fast"}, clear=False):
-            import ocr
+            import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         with tempfile.TemporaryDirectory() as root:
             models = os.path.join(root, "official_models")
@@ -685,7 +685,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         sys.modules["app_paths"] = app_paths
 
         with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_PROFILE": "server"}, clear=False):
-            import ocr
+            import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         with tempfile.TemporaryDirectory() as root:
             models = os.path.join(root, "official_models")
@@ -714,7 +714,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
-        import ocr
+        import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         with tempfile.TemporaryDirectory() as root:
             bundle_root = os.path.join(root, "bundle", "models", "official_models")
@@ -748,7 +748,7 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
         app_paths.get_resource_path = lambda *parts: os.path.join(*parts)
         sys.modules["app_paths"] = app_paths
 
-        import ocr
+        import ocr  # noqa: F401  (import succeeding under stubs is the assertion)
 
         self.assertEqual(os.environ["FLAGS_use_mkldnn"], "0")
         self.assertEqual(os.environ["FLAGS_use_onednn"], "0")
@@ -2048,6 +2048,7 @@ class GuiPipelineTest(unittest.TestCase):
                 after=lambda _delay, callback=None: callback() if callback else None,
                 load_results_into_table=lambda: None,
                 _format_issue_summary=lambda: "ok",
+                strings=gui_module.get_strings("zh"),
             )
 
             with mock.patch.object(gui_module, "load_pipeline_modules", return_value=(crop_module, scan2_module)):
@@ -2067,8 +2068,14 @@ class GuiPipelineTest(unittest.TestCase):
                 "scan2_call": scan2_calls[0],
             }
 
+    def test_gui_en_entry_delegates_to_gui_app(self):
+        sys.modules.pop("gui_app_en", None)
+        gui_app_en = importlib.import_module("gui_app_en")
+        self.assertEqual(gui_app_en.main.__module__, "gui_app")
+
     def test_gui_run_pipeline_uses_unique_run_dir_as_crop_out_dir(self):
-        for module_name in ("gui_app", "gui_app_en"):
+        # gui_app_en 自 i18n 合并后是 gui_app 的薄壳，测 gui_app 即覆盖两个入口。
+        for module_name in ("gui_app",):
             with self.subTest(gui=module_name):
                 result = self._run_gui_pipeline_with_fakes(module_name)
 
