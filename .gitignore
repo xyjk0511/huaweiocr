@@ -19,6 +19,7 @@ runs_uploaded_*/
 validation/wechat_*_input/
 validation/wechat_*_run/
 *.jsonl
+!validation/baseline/old_dist_run/*.jsonl
 *.log
 clearimage_cli/**/bin/
 clearimage_cli/**/obj/
