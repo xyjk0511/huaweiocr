@@ -1,0 +1,29 @@
+{
+  "input_dir": "F:\\wechat\\xwechat_files\\wxid_br2nkrs4dgri12_68ec\\msg\\file\\2026-06\\华为出库图_四目录汇总_20260625",
+  "out_dir": "F:\\HuaweiOCR\\runs\\full_threshold_probe_c025",
+  "input_images": 115,
+  "stage1": {
+    "label_count": 500,
+    "images_with_labels": 115,
+    "zero_label_images": 0,
+    "zero_label_image_names": [],
+    "max_labels_per_image": 13
+  },
+  "stage2": {
+    "label_count": 500,
+    "manifest_rows": 500,
+    "has_sn": 500,
+    "has_part_no": 495,
+    "has_model": 0,
+    "has_both": 495,
+    "missing_sn": 0,
+    "missing_part_no": 5,
+    "missing_all": 0,
+    "missing_all_label_names": []
+  },
+  "paths": {
+    "stage1_dir": "F:\\HuaweiOCR\\runs\\full_threshold_probe_c025\\stage1_labels",
+    "stage2_dir": "F:\\HuaweiOCR\\runs\\full_threshold_probe_c025\\stage2_fields",
+    "manifest_path": "F:\\HuaweiOCR\\runs\\full_threshold_probe_c025\\stage2_fields\\manifest.jsonl"
+  }
+}

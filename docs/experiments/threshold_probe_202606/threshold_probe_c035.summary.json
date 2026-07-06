@@ -1,0 +1,29 @@
+{
+  "input_dir": "F:\\HuaweiOCR\\tmp_stage1_threshold_probe",
+  "out_dir": "F:\\HuaweiOCR\\runs\\threshold_probe_c035",
+  "input_images": 6,
+  "stage1": {
+    "label_count": 27,
+    "images_with_labels": 6,
+    "zero_label_images": 0,
+    "zero_label_image_names": [],
+    "max_labels_per_image": 6
+  },
+  "stage2": {
+    "label_count": 27,
+    "manifest_rows": 27,
+    "has_sn": 27,
+    "has_part_no": 27,
+    "has_model": 0,
+    "has_both": 27,
+    "missing_sn": 0,
+    "missing_part_no": 0,
+    "missing_all": 0,
+    "missing_all_label_names": []
+  },
+  "paths": {
+    "stage1_dir": "F:\\HuaweiOCR\\runs\\threshold_probe_c035\\stage1_labels",
+    "stage2_dir": "F:\\HuaweiOCR\\runs\\threshold_probe_c035\\stage2_fields",
+    "manifest_path": "F:\\HuaweiOCR\\runs\\threshold_probe_c035\\stage2_fields\\manifest.jsonl"
+  }
+}
