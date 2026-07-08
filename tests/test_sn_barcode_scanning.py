@@ -883,6 +883,119 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(report.status, "decoder_miss")
         self.assertEqual(report.attempts, 7)
 
+class SnBarcodeFailedPayloadSuppressionTest(unittest.TestCase):
+    def test_repeated_parse_failure_payload_is_reported_and_suppresses_later_decoders(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        payload = "50087149"
+        candidates = [
+            sn_barcode.CandidateImage(img, "sn", f"sn.{index}", "raw")
+            for index in range(5)
+        ]
+        calls = []
+
+        def fake_decode(name):
+            def decode(candidate):
+                calls.append((name, candidate.source_region))
+                return [
+                    sn_barcode.DecoderResult(name, payload, "sn", candidate.source_region)
+                ], []
+            return decode
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar,zxingcpp,cli"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", return_value=candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_decode("pyzbar")):
+                            with mock.patch.object(sn_barcode, "_decode_zxingcpp", side_effect=fake_decode("zxingcpp")):
+                                with mock.patch.object(sn_barcode, "_decode_cli", side_effect=fake_decode("cli")):
+                                    report = sn_barcode.scan_sn_barcodes(
+                                        [("sn", "sn.png")],
+                                        max_decoder_attempts=15,
+                                    )
+
+        self.assertEqual(report.status, "parse_failure")
+        self.assertEqual(report.failed_payloads, [payload])
+        self.assertEqual(report.non_sn_payloads, [payload])
+        self.assertEqual(report.attempts, len(calls))
+        self.assertLess(len(calls), 15)
+        self.assertLessEqual(len(calls), 7)
+        self.assertEqual(calls[:3], [("pyzbar", "sn.0"), ("zxingcpp", "sn.0"), ("cli", "sn.0")])
+        self.assertEqual([name for name, region in calls if region == "sn.1"], ["pyzbar"])
+
+    def test_known_non_sn_payload_skips_first_candidate_and_preserves_budget_for_sn(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        candidates = [
+            sn_barcode.CandidateImage(img, "sn", "sn.0", "raw"),
+            sn_barcode.CandidateImage(img, "sn", "sn.1", "raw"),
+        ]
+        pyzbar_regions = []
+        zxing_regions = []
+
+        def fake_pyzbar(candidate):
+            pyzbar_regions.append(candidate.source_region)
+            raw = "50087149" if candidate.source_region == "sn.0" else "SN:4E25A0170000"
+            return [sn_barcode.DecoderResult("pyzbar", raw, "sn", candidate.source_region)], []
+
+        def fake_zxing(candidate):
+            zxing_regions.append(candidate.source_region)
+            return [sn_barcode.DecoderResult("zxingcpp", "50087149", "sn", candidate.source_region)], []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar,zxingcpp"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", return_value=candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_pyzbar):
+                            with mock.patch.object(sn_barcode, "_decode_zxingcpp", side_effect=fake_zxing):
+                                report = sn_barcode.scan_sn_barcodes(
+                                    [("sn", "sn.png")],
+                                    max_decoder_attempts=2,
+                                    known_non_sn_payloads={"50087149"},
+                                )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "4E25A0170000")
+        self.assertEqual(report.raw_text, "SN:4E25A0170000")
+        self.assertEqual(report.failed_payloads, ["50087149"])
+        self.assertEqual(report.attempts, 2)
+        self.assertEqual(report.decoded_count, 1)
+        self.assertEqual(pyzbar_regions, ["sn.0", "sn.1"])
+        self.assertEqual(zxing_regions, [])
+
+    def test_valid_sn_payload_is_not_suppressed(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        candidates = [sn_barcode.CandidateImage(img, "sn", "sn.0", "raw")]
+        pyzbar_calls = []
+        zxing_calls = []
+
+        def fake_pyzbar(candidate):
+            pyzbar_calls.append(candidate.source_region)
+            return [
+                sn_barcode.DecoderResult("pyzbar", "SN:21500872904ERC000340", "sn", candidate.source_region)
+            ], []
+
+        def fake_zxing(candidate):
+            zxing_calls.append(candidate.source_region)
+            return [], []
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar,zxingcpp"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(sn_barcode, "generate_candidate_images", return_value=candidates):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(sn_barcode, "_decode_pyzbar", side_effect=fake_pyzbar):
+                            with mock.patch.object(sn_barcode, "_decode_zxingcpp", side_effect=fake_zxing):
+                                report = sn_barcode.scan_sn_barcodes(
+                                    [("sn", "sn.png")],
+                                    max_decoder_attempts=2,
+                                    known_non_sn_payloads={"50087149"},
+                                )
+
+        self.assertEqual(report.status, "hit")
+        self.assertEqual(report.sn, "21500872904ERC000340")
+        self.assertEqual(report.failed_payloads, [])
+        self.assertEqual(report.attempts, 1)
+        self.assertEqual(report.decoded_count, 1)
+        self.assertEqual(pyzbar_calls, ["sn.0"])
+        self.assertEqual(zxing_calls, [])
 
 class Scan2BarcodeAccountingTest(unittest.TestCase):
     def test_part_no_text_maps_to_model_template(self):

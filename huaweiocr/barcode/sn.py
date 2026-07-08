@@ -207,6 +207,7 @@ class SnBarcodeReport:
     results: list[DecoderResult] = field(default_factory=list)
     sn_candidates: list[SnCandidate] = field(default_factory=list)
     non_sn_payloads: list[str] = field(default_factory=list)
+    failed_payloads: list[str] = field(default_factory=list)
     ambiguous_sns: list[str] = field(default_factory=list)
     quality_issues: list[dict[str, Any]] = field(default_factory=list)
     decoder_errors: list[str] = field(default_factory=list)
@@ -221,6 +222,7 @@ class SnBarcodeReport:
             "barcode_source_regions": sorted({r.source_region for r in self.results}),
             "barcode_decoder_names": sorted({r.decoder_name for r in self.results}),
             "barcode_non_sn_payloads": self.non_sn_payloads,
+            "barcode_failed_payloads": self.failed_payloads,
             "barcode_ambiguous_sns": self.ambiguous_sns,
             "barcode_quality_issues": self.quality_issues,
             "barcode_decoder_errors": self.decoder_errors,
@@ -356,6 +358,7 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
             results=decoder_results,
             sn_candidates=sn_candidates,
             non_sn_payloads=non_sn_payloads,
+            failed_payloads=non_sn_payloads[:8],
             ambiguous_sns=unique_sns,
         )
 
@@ -381,6 +384,7 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
             results=decoder_results,
             sn_candidates=sn_candidates,
             non_sn_payloads=non_sn_payloads,
+            failed_payloads=non_sn_payloads[:8],
         )
 
     return SnBarcodeReport(
@@ -390,6 +394,7 @@ def select_sn_from_decoder_results(results: Iterable[DecoderResult]) -> SnBarcod
         results=decoder_results,
         sn_candidates=[],
         non_sn_payloads=non_sn_payloads,
+        failed_payloads=non_sn_payloads[:8],
     )
 
 
@@ -1085,6 +1090,7 @@ def scan_sn_barcodes(
     max_decoder_attempts: int | None = None,
     debug_dir: str = "",
     early_exit: bool = True,
+    known_non_sn_payloads: Iterable[str] | None = None,
 ) -> SnBarcodeReport:
     if max_candidates is None:
         max_candidates = _env_int("SN_BARCODE_MAX_CANDIDATES", DEFAULT_MAX_CANDIDATES)
@@ -1096,17 +1102,53 @@ def scan_sn_barcodes(
     decoder_errors: list[str] = []
     attempts = 0
     seen_results: set[tuple[str, str, str]] = set()
+    known_non_sn_clean = {
+        cleaned
+        for cleaned in (_clean_code(value) for value in (known_non_sn_payloads or []))
+        if cleaned
+    }
+    failed_payload_counts: dict[str, int] = {}
+    suppressed_payloads: set[str] = set()
+    failed_payloads: list[str] = []
+    seen_failed_payloads: set[str] = set()
     source_items = [(source, path) for source, path in sources]
     has_primary_sn_source = any(str(source).lower() == "sn" and path for source, path in source_items)
     decoders = _selected_decoders()
 
-    def append_results(results: Iterable[DecoderResult]) -> None:
+    def remember_failed_payload(raw: str) -> None:
+        if raw and raw not in seen_failed_payloads and len(failed_payloads) < 8:
+            seen_failed_payloads.add(raw)
+            failed_payloads.append(raw)
+
+    def append_results(results: Iterable[DecoderResult]) -> tuple[int, int]:
+        kept = 0
+        discarded = 0
         for result in results:
+            raw = result.raw_text or ""
+            cleaned = _clean_code(raw)
+            if cleaned and (cleaned in known_non_sn_clean or cleaned in suppressed_payloads):
+                remember_failed_payload(raw)
+                discarded += 1
+                continue
+            if cleaned and not extract_sn_from_payload(raw):
+                remember_failed_payload(raw)
+                failed_payload_counts[cleaned] = failed_payload_counts.get(cleaned, 0) + 1
+                if failed_payload_counts[cleaned] >= 2:
+                    suppressed_payloads.add(cleaned)
             key = (result.raw_text, result.source_region, result.decoder_name)
             if key in seen_results:
                 continue
             seen_results.add(key)
             all_results.append(result)
+            kept += 1
+        return kept, discarded
+
+    def finish_report(report: SnBarcodeReport) -> SnBarcodeReport:
+        report.failed_payloads = failed_payloads or report.failed_payloads
+        report.quality_issues = quality_issues
+        report.decoder_errors = decoder_errors
+        report.attempts = attempts
+        return report
 
     states: list[dict[str, Any]] = []
 
@@ -1217,17 +1259,16 @@ def scan_sn_barcodes(
                 state["attempts"] += 1
                 decoded, errors = decoder(candidate)
                 decoder_errors.extend(errors)
-                append_results(decoded)
+                kept, discarded = append_results(decoded)
 
                 if early_exit:
                     partial = select_sn_from_decoder_results(all_results)
                     if partial.status in {"hit", "ambiguous"}:
                         finalize_prior_fallbacks(state["order"])
                         partial = select_sn_from_decoder_results(all_results)
-                        partial.attempts = attempts
-                        partial.quality_issues = quality_issues
-                        partial.decoder_errors = decoder_errors
-                        return partial
+                        return finish_report(partial)
+                if decoded and not kept and discarded:
+                    break
 
             if str(state["source"]).lower() == "sn" and not state["fallback_done"]:
                 run_fallback(state)
@@ -1236,18 +1277,13 @@ def scan_sn_barcodes(
                     if partial.status in {"hit", "ambiguous"}:
                         finalize_prior_fallbacks(state["order"])
                         partial = select_sn_from_decoder_results(all_results)
-                        partial.attempts = attempts
-                        partial.quality_issues = quality_issues
-                        partial.decoder_errors = decoder_errors
-                        return partial
+                        return finish_report(partial)
 
         if not progressed:
             break
 
     report = select_sn_from_decoder_results(all_results)
-    report.attempts = attempts
-    report.quality_issues = quality_issues
-    report.decoder_errors = decoder_errors
+    finish_report(report)
     if report.status == "decoder_miss" and quality_issues:
         severe = {"too_small", "blurred", "quiet_zone_missing", "unreadable"}
         if any(severe.intersection(set(item.get("issues", []))) for item in quality_issues):

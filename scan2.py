@@ -1272,10 +1272,31 @@ def _format_barcode_report(report) -> str:
     return "; ".join(parts)
 
 
+def _known_non_sn_payloads_for_item(item: dict, key: str = "", part_no_by_key: dict | None = None) -> set[str]:
+    values = []
+    if part_no_by_key and key:
+        values.append(part_no_by_key.get(key, ""))
+    values.append(item.get("part_no", ""))
+    raw_codes = item.get("part_no_codes") or []
+    if isinstance(raw_codes, str):
+        values.append(raw_codes)
+    elif isinstance(raw_codes, (list, tuple, set)):
+        values.extend(raw_codes)
+
+    payloads = set()
+    for value in values:
+        cleaned = _clean_code(str(value or ""))
+        if cleaned:
+            payloads.add(cleaned)
+        payloads.update(extract_part_numbers_from_text(str(value or "")))
+    return payloads
+
+
 def _scan_sn_barcode_report(
     sources: list[tuple[str, str]],
     label_id: str = "",
     allow_early_exit: bool = True,
+    known_non_sn_payloads=None,
 ):
     return scan_sn_barcodes(
         sources,
@@ -1283,6 +1304,7 @@ def _scan_sn_barcode_report(
         label_id=label_id,
         debug_dir=_debug_candidate_dir(),
         early_exit=allow_early_exit,
+        known_non_sn_payloads=known_non_sn_payloads,
     )
 
 
@@ -1734,6 +1756,7 @@ def _recognize_sn_barcode(
     label_id: str = "",
     label_path: str = "",
     original_path: str = "",
+    known_non_sn_payloads=None,
 ):
     tag = f"{label_id} " if label_id else ""
     append_debug(
@@ -1748,7 +1771,12 @@ def _recognize_sn_barcode(
         original_path=original_path,
     )
 
-    barcode_report = _scan_sn_barcode_report(sources, label_id=label_id, allow_early_exit=True)
+    barcode_report = _scan_sn_barcode_report(
+        sources,
+        label_id=label_id,
+        allow_early_exit=True,
+        known_non_sn_payloads=known_non_sn_payloads,
+    )
     meta = barcode_report.to_meta()
     meta["ocr_text_found"] = False
     barcode_raw = _format_barcode_report(barcode_report)
@@ -1780,12 +1808,14 @@ def recognize_sn_barcode(
     label_id: str = "",
     label_path: str = "",
     original_path: str = "",
+    known_non_sn_payloads=None,
 ):
     return _recognize_sn_barcode(
         sn_path=sn_path,
         label_id=label_id,
         label_path=label_path,
         original_path=original_path,
+        known_non_sn_payloads=known_non_sn_payloads,
     )[:4]
 
 
@@ -1863,6 +1893,7 @@ def recognize_sn(
     label_path: str = "",
     original_path: str = "",
     allow_ocr: bool = True,
+    known_non_sn_payloads=None,
 ):
     tag = f"{label_id} " if label_id else ""
     append_debug(
@@ -1875,6 +1906,7 @@ def recognize_sn(
         label_id=label_id,
         label_path=label_path,
         original_path=original_path,
+        known_non_sn_payloads=known_non_sn_payloads,
     )
     if sn or not allow_ocr or not sn_path:
         return sn, raw, source, meta
@@ -2278,6 +2310,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 label_id=key,
                 label_path=label_path,
                 original_path="",
+                known_non_sn_payloads=_known_non_sn_payloads_for_item(item, key, part_no_by_key),
             ),
         )
         if progress_logs:
@@ -2710,6 +2743,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 "sn_barcode_source_regions": sn_meta.get("barcode_source_regions", []),
                 "sn_barcode_decoder_names": sn_meta.get("barcode_decoder_names", []),
                 "sn_barcode_ambiguous_sns": sn_meta.get("barcode_ambiguous_sns", []),
+                "sn_barcode_failed_payloads": [
+                    _mask_sensitive_text(value) if mask_raw else value
+                    for value in sn_meta.get("barcode_failed_payloads", [])
+                ],
                 "sn_problem": sn_problem,
                 "sn_problem_reason": sn_problem_reason,
             }
