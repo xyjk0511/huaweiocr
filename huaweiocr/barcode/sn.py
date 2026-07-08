@@ -1267,7 +1267,10 @@ def scan_sn_barcodes(
                         finalize_prior_fallbacks(state["order"])
                         partial = select_sn_from_decoder_results(all_results)
                         return finish_report(partial)
-                if decoded and not kept and discarded:
+                # 只对 sn 字段裁剪启用"该候选全是已知错码就跳过剩余解码器"：
+                # 标签大图天然含多个外来条码（EAN/Model/PartNo），跳过会误伤
+                # 尚未尝试的更强解码器（zxingcpp 曾因此漏掉可解的真 SN）。
+                if decoded and not kept and discarded and str(state["source"]).lower() == "sn":
                     break
 
             if str(state["source"]).lower() == "sn" and not state["fallback_done"]:
