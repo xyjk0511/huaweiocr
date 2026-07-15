@@ -2516,6 +2516,16 @@ class CropFieldPaddingTests(unittest.TestCase):
         self.assertEqual(out[0]["box"], expanded_box)
         self.assertIs(out[0]["crop"], expanded_crop)
 
+    @unittest.skipUnless(
+        os.path.exists(
+            os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "local_models", "detectors", "field_detector.onnx",
+            )
+        ),
+        "requires local_models/detectors/field_detector.onnx (gitignored; this test "
+        "reaches real YOLO inference via _stage1_has_relaxed_area_field_evidence)",
+    )
     def test_stage1_collect_accepts_top_recovery_when_relaxed_field_evidence_recovers(self):
         img = np.full((900, 1200, 3), 255, dtype=np.uint8)
         base_crop = np.full((240, 470, 3), 255, dtype=np.uint8)
