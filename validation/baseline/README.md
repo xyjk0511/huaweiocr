@@ -14,7 +14,32 @@
 - `run_summary.20260706_source_rerun.json` — 当前源码同日重跑的 run_summary，
   与参照结果对比：**500/500 label 完全对齐，model/sn 值 0 差异**。
 
-## 验证步骤
+## 自动化命令（推荐）
+
+`tools/check_baseline_regression.py` 把下面的验证步骤 + 判定标准都自动化了：
+
+```powershell
+.venv\Scripts\python.exe tools\check_baseline_regression.py
+```
+
+默认输入 `batch_runs/baseline_input`、输出 `batch_runs/baseline_check_auto`、基线
+`validation/baseline/old_dist_run/model_sn_ocr.jsonl`，跑完打印通过/失败报告并以
+退出码 0/1 收尾（可接入脚本判断）。已自动限流 `CROP_WORKERS=2` / `SCAN2_WORKERS=2`
+（可用同名环境变量覆盖）。
+
+已有一次跑批结果、只想重新比对时用 `--skip-run --out <已有输出目录>`，不再重跑管线：
+
+```powershell
+.venv\Scripts\python.exe tools\check_baseline_regression.py --skip-run --out batch_runs\baseline_check_final
+```
+
+对应的 `tests/test_baseline_regression.py` 里有：
+- 常规单测（比较逻辑本身，无需跑图，纳入 `python -m unittest discover -s tests` / CI）；
+- 一个 opt-in 的全量端到端测试，默认跳过，需要设置
+  `HUAWEIOCR_RUN_BASELINE_REGRESSION=1` 才会真的跑 115 张图（同时要求
+  `batch_runs/baseline_input` 已就位，否则清晰跳过）。
+
+## 手动验证步骤（了解自动化命令具体做了什么，或需要调试时用）
 
 ```powershell
 .venv\Scripts\python.exe run_all.py --input batch_runs/baseline_input --out batch_runs/baseline_check_<日期> --log-level info

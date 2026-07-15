@@ -20,6 +20,19 @@ python -m unittest tests.test_sn_barcode_scanning
 python -m unittest discover -s tests
 ```
 
+For recognition-affecting changes (crop.py/scan2.py), additionally run the
+115-image baseline regression check (opt-in, not part of CI since the source
+photos are gitignored):
+
+```powershell
+$env:HUAWEIOCR_RUN_BASELINE_REGRESSION = "1"
+python -m unittest tests.test_baseline_regression
+# or directly:
+python tools\check_baseline_regression.py
+```
+
+See `validation/baseline/README.md` for how to materialize `batch_runs/baseline_input`.
+
 For package changes, build with:
 
 ```powershell
