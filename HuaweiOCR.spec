@@ -11,6 +11,12 @@ REQUIRED_LOCAL_DETECTORS = (
     os.path.join('local_models', 'detectors', 'label_detector.onnx'),
     os.path.join('local_models', 'detectors', 'field_detector.onnx'),
 )
+REQUIRED_OCR_MODEL_DIRS = (
+    'PP-OCRv5_server_det',
+    'PP-OCRv5_server_rec',
+    'en_PP-OCRv5_mobile_rec',
+    'PP-LCNet_x1_0_textline_ori',
+)
 
 missing_local_detectors = [
     path for path in REQUIRED_LOCAL_DETECTORS if not os.path.isfile(path)
@@ -24,21 +30,46 @@ if missing_local_detectors:
         + " before running PyInstaller."
     )
 
+missing_ocr_model_dirs = [
+    model_dir
+    for model_dir in REQUIRED_OCR_MODEL_DIRS
+    if not os.path.isdir(os.path.join('bundle', 'models', 'official_models', model_dir))
+]
+if missing_ocr_model_dirs:
+    raise FileNotFoundError(
+        "Missing required PaddleOCR model dir(s) for release build: "
+        + ", ".join(missing_ocr_model_dirs)
+        + ". Expected each under bundle\\models\\official_models\\ before running PyInstaller."
+    )
+
 datas = [
-    ('bundle\\models', 'models'),
     ('bundle\\BarcodeReaderCLI\\bin\\BarcodeReaderCLI.exe', 'BarcodeReaderCLI\\bin'),
     ('bundle\\BarcodeReaderCLI\\bin\\curl.exe', 'BarcodeReaderCLI\\bin'),
     ('bundle\\BarcodeReaderCLI\\bin\\curl-ca-bundle.crt', 'BarcodeReaderCLI\\bin'),
     ('bundle\\BarcodeReaderCLI\\bin\\inlite-barcode-reader-license-agreement.pdf', 'BarcodeReaderCLI\\bin'),
 ]
-if os.path.isfile('.env'):
-    datas.append(('.env', '.'))
+datas += [
+    (
+        os.path.join('bundle', 'models', 'official_models', model_dir),
+        os.path.join('models', 'official_models', model_dir),
+    )
+    for model_dir in REQUIRED_OCR_MODEL_DIRS
+]
 datas += [
     (path, LOCAL_DETECTOR_TARGET)
     for path in REQUIRED_LOCAL_DETECTORS
 ]
 datas += collect_data_files('paddlex', includes=['.version', 'configs/**'])
-datas += collect_data_files('Cython', includes=['Utility/**'])
+_cython_datas = collect_data_files('Cython', includes=['Utility/**'])
+if not _cython_datas:
+    raise RuntimeError(
+        "collect_data_files('Cython', includes=['Utility/**']) returned nothing: the "
+        "build venv is missing Cython, so PaddleX runtime files (e.g. "
+        "_internal\\Cython\\Utility\\CppSupport.cpp) would be silently omitted and the "
+        "packaged app would break at runtime. Install build deps first: "
+        "pip install -r requirements.txt (Cython is now pinned there)."
+    )
+datas += _cython_datas
 datas += collect_data_files('tkinterdnd2', includes=['tkdnd/**'])
 datas += copy_metadata('opencv-contrib-python')
 datas += copy_metadata('pyclipper')
@@ -58,7 +89,24 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision'],
+    excludes=[
+        'torch',
+        'torchvision',
+        'playwright',
+        'googleapiclient',
+        'plotly',
+        'pyarrow',
+        'polars',
+        'duckdb',
+        'sklearn',
+        'scipy',
+        'matplotlib',
+        'boto3',
+        'botocore',
+        'imageio_ffmpeg',
+        'llvmlite',
+        'numba',
+    ],
     noarchive=False,
     optimize=0,
 )

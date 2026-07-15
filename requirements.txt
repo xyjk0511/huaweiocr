@@ -13,3 +13,6 @@ pyclipper==1.4.0
 python-bidi==0.6.7
 onnxruntime==1.23.2
 pyinstaller==6.19.0
+# Build-time only: PaddleX needs Cython/Utility/*.cpp collected into the frozen
+# app. HuaweiOCR.spec now fails loudly if Cython is absent (see AGENTS.md).
+Cython==3.2.8

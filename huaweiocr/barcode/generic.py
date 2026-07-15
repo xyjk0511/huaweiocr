@@ -582,7 +582,31 @@ def read_barcodes_cli(img_path: str, decoder_errors=None) -> List[str]:
         _append_decoder_error(decoder_errors, _format_cli_process_error(proc))
         return []
 
-    return [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    # Strip a leading UTF-8 BOM (﻿ survives str.strip()) so the first SN
+    # payload is not silently prefixed with an invisible character.
+    return [
+        stripped
+        for ln in proc.stdout.splitlines()
+        if (stripped := ln.strip().lstrip("﻿").strip())
+    ]
+
+
+def _imwrite_unicode(path: str, img: np.ndarray) -> bool:
+    """Write ``img`` to a possibly non-ASCII ``path``.
+
+    cv2.imwrite is not Unicode-path safe on Windows: for a path under a CJK
+    directory (e.g. a Chinese-username ``%TEMP%``) it returns True while writing
+    nothing. Encode in memory and write the bytes ourselves so CJK temp dirs work.
+    """
+    ext = os.path.splitext(path)[1] or ".png"
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        return False
+    try:
+        buf.tofile(path)
+    except OSError:
+        return False
+    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 def decode_with_cli(img_bgr: np.ndarray, tag: str, decoder_errors=None) -> List[Dict]:
@@ -593,7 +617,7 @@ def decode_with_cli(img_bgr: np.ndarray, tag: str, decoder_errors=None) -> List[
         tmp_path = tmp.name
 
     try:
-        if not cv2.imwrite(tmp_path, img_bgr):
+        if not _imwrite_unicode(tmp_path, img_bgr):
             _append_decoder_error(decoder_errors, "BarcodeReaderCLI_error:temp_write_failed")
             lines = []
         else:

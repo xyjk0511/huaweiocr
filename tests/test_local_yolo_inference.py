@@ -42,7 +42,10 @@ class LocalYoloInferenceTests(unittest.TestCase):
 
     def _load_huaweiocr_spec_datas(self, cwd):
         hooks = types.ModuleType("PyInstaller.utils.hooks")
-        hooks.collect_data_files = lambda *args, **kwargs: []
+        # Non-empty so the spec's Cython-collect guard (which raises when the
+        # build venv lacks Cython) is satisfied; entries carry a distinctive dst
+        # that the detector-bundling assertions below filter out.
+        hooks.collect_data_files = lambda *args, **kwargs: [("stub_data_file", "stub_dest")]
         hooks.collect_dynamic_libs = lambda *args, **kwargs: []
         hooks.copy_metadata = lambda *args, **kwargs: []
 
@@ -98,6 +101,14 @@ class LocalYoloInferenceTests(unittest.TestCase):
             ):
                 with open(os.path.join(detector_dir, filename), "wb") as f:
                     f.write(b"onnx")
+            ocr_models_dir = os.path.join(root, "bundle", "models", "official_models")
+            for model_dir in (
+                "PP-OCRv5_server_det",
+                "PP-OCRv5_server_rec",
+                "en_PP-OCRv5_mobile_rec",
+                "PP-LCNet_x1_0_textline_ori",
+            ):
+                os.makedirs(os.path.join(ocr_models_dir, model_dir))
             with open(os.path.join(root, ".env"), "w", encoding="utf-8") as f:
                 f.write("API_KEY=should-not-bundle\n")
 

@@ -62,6 +62,7 @@
 | SCAN2_ALLOW_UNKNOWN_MODELS | False | 放开型号白名单（新产品导入期可临时开） | scan2.py:1130 |
 | SCAN2_PART_NO_MODEL_MAP_PATH | 空 | 外部 PartNo→Model 映射 JSON（新产品适配通道） | scan2.py:807 |
 | SCAN2_LEARNED_MODEL_CODES_PATH | 空 | 学习型号持久化路径覆盖 | scan2.py:814 |
+| HUAWEIOCR_PRODUCT_PROFILE | 空 | 外部产品知识 profile（product_profile.json，覆盖 PartNo→Model 等知识表；新产品适配通道） | huaweiocr/core/profile.py:40 |
 | SCAN2_PART_NO_MAP_OVERWRITE | False | 允许覆盖已学映射 | scan2.py:1015 |
 | SCAN2_PART_NO_PIXEL_REPAIR / _MAX_SCORE / _MIN_MARGIN | 1 / 0.17 / 0.010 | PartNo 像素修复 | scan2.py:65-66,597 |
 | SCAN2_PART_NO_STRIPE_RESCUE | 1 | PartNo 条纹救援 | scan2.py:67 |

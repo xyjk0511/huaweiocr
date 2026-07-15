@@ -1530,6 +1530,10 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
                             )
 
             self.assertEqual(stats["model_success"], 1)
+            # barcode_ocr_consensus required OCR agreement, so it is an OCR
+            # recovery and must never inflate the barcode hit rate.
+            self.assertEqual(stats["model_barcode_hits"], 0)
+            self.assertEqual(stats["model_ocr_recoveries"], 1)
             self.assertEqual(stats["model_consensus_learned"], 1)
             self.assertEqual(stats["model_part_no_learned"], 1)
             self.assertGreaterEqual(model_barcode.call_count, 1)

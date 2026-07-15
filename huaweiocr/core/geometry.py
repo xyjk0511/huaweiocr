@@ -57,7 +57,16 @@ def box_overlap_ratio(box_a, box_b):
 def crop_from_box(img, box):
     if box is None:
         return None
+    H, W = img.shape[:2]
     x1, y1, x2, y2 = box
+    # Clamp to image bounds. A negative coordinate would otherwise be treated by
+    # numpy as an index "from the end", silently returning a shifted or empty
+    # crop instead of the intended region (positive over-bounds numpy already
+    # clips, so behaviour is unchanged there).
+    x1 = max(0, min(int(x1), W))
+    y1 = max(0, min(int(y1), H))
+    x2 = max(0, min(int(x2), W))
+    y2 = max(0, min(int(y2), H))
     if x2 <= x1 or y2 <= y1:
         return None
     crop = img[y1:y2, x1:x2]

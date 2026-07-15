@@ -1124,12 +1124,28 @@ def build_sn_views(img_bgr):
     return views
 
 
+def _imwrite_unicode(path, img):
+    """cv2.imwrite is not Unicode-path safe on Windows (it returns True but
+    writes nothing under a CJK directory such as a Chinese-username %TEMP%).
+    Encode in memory and write the bytes ourselves so CJK temp dirs work."""
+    ext = os.path.splitext(path)[1] or ".png"
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        return False
+    try:
+        buf.tofile(path)
+    except OSError:
+        return False
+    return os.path.exists(path) and os.path.getsize(path) > 0
+
+
 def decode_barcodes_with_dbr(img_bgr, debug_name=""):
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
 
     try:
-        cv2.imwrite(tmp_path, img_bgr)
+        if not _imwrite_unicode(tmp_path, img_bgr):
+            return []
         return read_barcodes(tmp_path)
     finally:
         if os.path.exists(tmp_path):
@@ -2660,6 +2676,11 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 stats["sn_barcode_attempts"] += int(sn_meta.get("barcode_attempts", 0) or 0)
                 if sn_src == "barcode":
                     stats["sn_barcode_hits"] += 1
+                elif sn_code and sn_src == "barcode_ocr_consensus":
+                    # SN accepted via barcode+OCR agreement: OCR was required, so it
+                    # is a recovery, not a barcode hit — and it must land in a bucket
+                    # rather than silently in neither.
+                    stats["sn_ocr_recoveries"] += 1
                 elif sn_code and sn_src.startswith("ocr") and barcode_status in {
                     "decoder_miss",
                     "parse_failure",
@@ -2715,11 +2736,21 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 stats["model_total"] += 1
                 if model_code:
                     stats["model_success"] += 1
-                if model_src.startswith("barcode"):
+                # OCR-derived model reads must NOT inflate the barcode hit rate:
+                # barcode_visual = model read by OCR then visually correlated;
+                # barcode_ocr_consensus = accepted only via OCR agreement. Both are
+                # OCR recoveries. Only a pure barcode decode is a barcode hit.
+                if model_src.startswith("barcode") and model_src not in (
+                    "barcode_visual",
+                    "barcode_ocr_consensus",
+                ):
                     stats["model_barcode_hits"] += 1
                 elif model_src.startswith("part_no"):
                     stats["model_part_no_hits"] += 1
-                elif model_src.startswith("ocr"):
+                elif model_src.startswith("ocr") or model_src in (
+                    "barcode_visual",
+                    "barcode_ocr_consensus",
+                ):
                     stats["model_ocr_recoveries"] += 1
 
             if model_code == "S380-S8P2T" and sn_code and not sn_code.startswith("4E25A017"):

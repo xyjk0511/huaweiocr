@@ -32,7 +32,7 @@
 | label_id | str | 关联键 |
 | model | str | 最终型号值（空串=未识别） |
 | sn | str | 最终序列号值（空串=未识别） |
-| model_src / sn_src | str | 值的来源；**指标分账依据**。已见枚举：model: `barcode` / `part_no_barcode` / `part_no_hint` / `part_no_ocr` / `ocr_label` / `ocr`；sn: `barcode` / `ocr`。条码类来源计入条码命中率，OCR 类计入恢复，不得混淆 |
+| model_src / sn_src | str | 值的来源；**指标分账依据**。已见枚举：model: `barcode` / `part_no_barcode`（纯条码，计入条码命中）/ `part_no_hint` / `part_no_ocr` / `ocr_label` / `ocr` / `barcode_visual`（型号经 OCR 读出、条码条纹仅视觉校验）/ `barcode_ocr_consensus`（条码原文经 OCR 共识确认）；sn: `barcode` / `ocr` / `barcode_ocr_consensus`。**仅纯条码来源**（`barcode` / `part_no_barcode`）计入条码命中率；含 OCR 的来源（`ocr*` / `barcode_visual` / `barcode_ocr_consensus`）计入 OCR 恢复，不得混淆 |
 | model_raw / sn_raw | str | 原始证据摘要，默认脱敏（`SCAN2_UNSAFE_RAW` 控制） |
 | part_no | str | 该标签的 PartNo 值 |
 | part_no_src | str | PartNo 来源 |
@@ -41,6 +41,7 @@
 | sn_barcode_attempts / sn_barcode_decoded_count | int | 解码尝试/成功次数 |
 | sn_barcode_sources / sn_barcode_source_regions / sn_barcode_decoder_names | list | 命中的候选来源、区域、解码器（label-local 证据审计用） |
 | sn_barcode_ambiguous_sns | list[str] | 多候选歧义时的备选 SN |
+| sn_barcode_failed_payloads | list[str] | 解析失败或被抑制（含已知外来码）的条码原文，默认脱敏（`mask_raw`），仅供诊断 |
 | sn_problem / sn_problem_reason | str | SN 问题分类与原因说明 |
 
 ## run_summary.json（生产者：run_all.py）
