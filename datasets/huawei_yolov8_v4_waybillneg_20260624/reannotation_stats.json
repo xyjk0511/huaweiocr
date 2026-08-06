@@ -1,0 +1,34 @@
+{
+  "dataset": "merged_complete_product_label_yolov8_bbox_v4_with_occlusion_negatives_resplit_28_4_4",
+  "format": "YOLOv8 bbox",
+  "class_name": "product_label",
+  "policy": {
+    "positive": "完整可见的产品标签本体；框覆盖完整产品标签外边界/可见印刷标签区域，不只框 SN/MAC/条码内容区。",
+    "negative": "顺丰/抖音商城等物流面单；被遮挡导致关键字段不可完整读取的残缺产品标签；图像边缘截断标签。",
+    "note": "图片已物理转正并去除 EXIF 方向依赖，labels 与实际像素尺寸一致。"
+  },
+  "splits": [
+    {
+      "split": "train",
+      "images": 28,
+      "boxes": 113,
+      "empty_label_files": 1
+    },
+    {
+      "split": "valid",
+      "images": 4,
+      "boxes": 11,
+      "empty_label_files": 1
+    },
+    {
+      "split": "test",
+      "images": 4,
+      "boxes": 19,
+      "empty_label_files": 0
+    }
+  ],
+  "total_images": 36,
+  "total_boxes": 143,
+  "empty_label_files": 2,
+  "validation_issues": []
+}

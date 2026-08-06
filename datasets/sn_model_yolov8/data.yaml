@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 2
+names: ['model', 'sn']
+
+roboflow:
+  workspace: modelsn
+  project: sn_model
+  version: dataset
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/modelsn/sn_model/dataset/dataset

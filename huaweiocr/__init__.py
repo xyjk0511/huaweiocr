@@ -1,0 +1,1 @@
+"""HuaweiOCR package."""

@@ -1,0 +1,26 @@
+{
+  "train": {
+    "images": 35,
+    "boxes": 129,
+    "empty_negative_images": 1,
+    "new_upload_images": 7
+  },
+  "valid": {
+    "images": 5,
+    "boxes": 12,
+    "empty_negative_images": 1,
+    "new_upload_images": 1
+  },
+  "test": {
+    "images": 5,
+    "boxes": 20,
+    "empty_negative_images": 0,
+    "new_upload_images": 1
+  },
+  "total": {
+    "images": 45,
+    "boxes": 161,
+    "empty_negative_images": 2,
+    "new_upload_images": 9
+  }
+}

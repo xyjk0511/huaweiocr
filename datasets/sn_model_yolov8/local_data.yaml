@@ -1,0 +1,9 @@
+path: F:/HuaweiOCR/datasets/sn_model_yolov8
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 2
+names:
+  - model
+  - sn

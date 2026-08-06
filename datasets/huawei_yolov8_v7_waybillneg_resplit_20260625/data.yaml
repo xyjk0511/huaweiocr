@@ -1,0 +1,6 @@
+path: F:/HuaweiOCR/datasets/huawei_yolov8_v7_waybillneg_resplit_20260625
+train: train/images
+val: valid/images
+test: test/images
+names:
+  0: huawei_label

@@ -1,0 +1,10 @@
+path: F:/HuaweiOCR/datasets/sn_model_yolov8_2_20260620
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 3
+names:
+  - model
+  - partno
+  - sn

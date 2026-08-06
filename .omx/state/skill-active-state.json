@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "active": true,
+  "skill": "autopilot",
+  "keyword": "$autopilot",
+  "phase": "reviewing",
+  "activated_at": "2026-05-08T01:33:43.253Z",
+  "updated_at": "2026-05-28T05:47:16.613Z",
+  "source": "keyword-detector",
+  "input_lock": null
+}

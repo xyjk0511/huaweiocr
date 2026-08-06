@@ -1,0 +1,6 @@
+path: F:/HuaweiOCR/datasets/huawei_yolov8_external_test_20260624
+train: test/images
+val: test/images
+test: test/images
+nc: 1
+names: ['huawei_label']

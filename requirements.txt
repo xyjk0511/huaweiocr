@@ -1,0 +1,18 @@
+inference-sdk==1.2.3
+opencv-contrib-python==4.10.0.84
+numpy==2.2.6  # 2.3.x requires Python >=3.11; pin the 3.10-compatible line the app runs on
+paddlepaddle==3.3.1
+paddleocr==3.4.1
+paddlex==3.4.3
+pyzbar==0.1.9
+zxing-cpp==3.0.0
+openpyxl==3.1.5
+Pillow==11.3.0
+tkinterdnd2==0.4.3
+pyclipper==1.4.0
+python-bidi==0.6.7
+onnxruntime==1.23.2
+pyinstaller==6.19.0
+# Build-time only: PaddleX needs Cython/Utility/*.cpp collected into the frozen
+# app. HuaweiOCR.spec now fails loudly if Cython is absent (see AGENTS.md).
+Cython==3.2.8

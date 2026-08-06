@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['huawei_label']
+
+roboflow:
+  workspace: modelsn
+  project: huawei-2ha7t
+  version: dataset
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/modelsn/huawei-2ha7t/dataset/dataset
