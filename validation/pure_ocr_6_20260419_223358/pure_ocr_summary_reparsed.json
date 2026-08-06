@@ -1,0 +1,9 @@
+{
+  "labels": 33,
+  "model_ocr_nonempty_reparsed": "33/33",
+  "model_exact_vs_barcode_reparsed": "24/24",
+  "sn_ocr_nonempty": "33/33",
+  "sn_exact_vs_barcode": "32/32",
+  "reparsed_jsonl": "D:\\newhuawei\\validation\\pure_ocr_6_20260419_223358\\pure_ocr_results_reparsed.jsonl",
+  "reparsed_csv": "D:\\newhuawei\\validation\\pure_ocr_6_20260419_223358\\pure_ocr_results_reparsed.csv"
+}

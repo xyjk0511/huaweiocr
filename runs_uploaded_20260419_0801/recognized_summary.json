@@ -1,0 +1,959 @@
+{
+  "input_dir": "D:\\newhuawei\\new_images_uploaded_20260419_0801",
+  "output_dir": "D:\\newhuawei\\runs_uploaded_20260419_0801",
+  "pipeline_jsonl": "D:\\newhuawei\\runs_uploaded_20260419_0801\\stage2_fields\\model_sn_ocr_retry.jsonl",
+  "whole_image_ocr_jsonl": "D:\\newhuawei\\runs_uploaded_20260419_0801\\whole_image_ocr.jsonl",
+  "stage1_label_count": 20,
+  "stage2_model_crop_count": 16,
+  "stage2_sn_crop_count": 4,
+  "pipeline_records": [
+    {
+      "label_id": "image_01.jpg__label_1",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "missing",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_2",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_3",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_4",
+      "model": "",
+      "sn": "",
+      "model_raw": " ",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_5",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "missing",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_6",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "missing",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_7",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_01.jpg__label_8",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "missing",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_02.jpg__label_1",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_02.jpg__label_2",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_02.jpg__label_3",
+      "model": "AP162E",
+      "sn": "121500R71434ERA01013",
+      "model_raw": "AP162E",
+      "sn_raw": "SN12***************0133",
+      "model_src": "ocr_color",
+      "sn_src": "ocr"
+    },
+    {
+      "label_id": "image_02.jpg__label_4",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_02.jpg__label_5",
+      "model": "S185-58P11",
+      "sn": "",
+      "model_raw": "S185**8P11 SO00**BPZT 24W1",
+      "sn_raw": "",
+      "model_src": "ocr_color",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_02.jpg__label_6",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_03.jpg__label_1",
+      "model": "AP162E",
+      "sn": "",
+      "model_raw": "Modal: AP162E",
+      "sn_raw": "mI tan:",
+      "model_src": "ocr_color",
+      "sn_src": "ocr_no_match"
+    },
+    {
+      "label_id": "image_03.jpg__label_2",
+      "model": "AP162E",
+      "sn": "21500671494ERA050003",
+      "model_raw": "Model AP162E DENS AP83ET",
+      "sn_raw": "2150************0003 EAN:",
+      "model_src": "ocr_color",
+      "sn_src": "ocr"
+    },
+    {
+      "label_id": "image_03.jpg__label_3",
+      "model": "",
+      "sn": "",
+      "model_raw": " ",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_03.jpg__label_4",
+      "model": "",
+      "sn": "N213008714946MA01007",
+      "model_raw": "",
+      "sn_raw": "LNY N:21***************0075",
+      "model_src": "none",
+      "sn_src": "ocr"
+    },
+    {
+      "label_id": "image_03.jpg__label_5",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    },
+    {
+      "label_id": "image_03.jpg__label_6",
+      "model": "",
+      "sn": "",
+      "model_raw": "",
+      "sn_raw": "",
+      "model_src": "none",
+      "sn_src": "missing"
+    }
+  ],
+  "whole_image_candidates": {
+    "image_01.jpg": {
+      "sf_waybill": [
+        {
+          "value": "SF3260776146675",
+          "score": 0.9997,
+          "rotation": 0,
+          "source_text": "SF3260776146675"
+        }
+      ],
+      "route_code": [
+        {
+          "value": "717-717BE-031",
+          "score": 0.9997,
+          "rotation": 0,
+          "source_text": "717-717BE-031"
+        }
+      ],
+      "long_numeric": [
+        {
+          "value": "15781204150998462",
+          "score": 0.9518,
+          "rotation": 0,
+          "source_text": "15781204150998462"
+        },
+        {
+          "value": "0415781204150998462",
+          "score": 0.9075,
+          "rotation": 180,
+          "source_text": "0415781204150998462"
+        }
+      ],
+      "ap_model": [],
+      "s380_model_candidate": [],
+      "sn_candidate": [
+        {
+          "value": "SF3260776146675",
+          "score": 0.9997,
+          "rotation": 0,
+          "source_text": "SF3260776146675"
+        },
+        {
+          "value": "15781204150998462",
+          "score": 0.9518,
+          "rotation": 0,
+          "source_text": "15781204150998462"
+        },
+        {
+          "value": "0415781204150998462",
+          "score": 0.9075,
+          "rotation": 180,
+          "source_text": "0415781204150998462"
+        },
+        {
+          "value": "MACUCDWCETAE1D",
+          "score": 0.6097,
+          "rotation": 0,
+          "source_text": "MACUCDWCETAE1D"
+        },
+        {
+          "value": "CEANDEFNRABHERR",
+          "score": 0.5234,
+          "rotation": 180,
+          "source_text": "CEANDEFNRABHERR MRRH ARH"
+        },
+        {
+          "value": "CEANDEFNRABHERRMRRHARH",
+          "score": 0.5234,
+          "rotation": 180,
+          "source_text": "CEANDEFNRABHERR MRRH ARH"
+        },
+        {
+          "value": "873494E9A010138",
+          "score": 0.514,
+          "rotation": 180,
+          "source_text": "873494E9A010138"
+        },
+        {
+          "value": "EANTRAEHIRRWEHARN",
+          "score": 0.4673,
+          "rotation": 0,
+          "source_text": "EANTRAEHIRR WEH ARN"
+        },
+        {
+          "value": "CAS3ENNHTNADIQ",
+          "score": 0.4576,
+          "rotation": 0,
+          "source_text": "Cas 3en nh tna Diq"
+        },
+        {
+          "value": "SOEMESOESAERATET",
+          "score": 0.4265,
+          "rotation": 0,
+          "source_text": "SOEMESOESAERATET"
+        },
+        {
+          "value": "MANDOAEJORNASEAW",
+          "score": 0.3725,
+          "rotation": 90,
+          "source_text": "Mand oae J orna se aw"
+        }
+      ],
+      "mac_candidate": [
+        {
+          "value": "MACUCDWCETAE1D",
+          "score": 0.6097,
+          "rotation": 0,
+          "source_text": "MACUCDWCETAE1D"
+        }
+      ],
+      "part_no": []
+    },
+    "image_02.jpg": {
+      "sf_waybill": [
+        {
+          "value": "SF3260450956640",
+          "score": 0.9993,
+          "rotation": 0,
+          "source_text": "SF3260450956640"
+        }
+      ],
+      "route_code": [
+        {
+          "value": "752-752MC-002B",
+          "score": 0.9974,
+          "rotation": 0,
+          "source_text": "752-752MC-002B"
+        }
+      ],
+      "long_numeric": [
+        {
+          "value": "15781533461309840",
+          "score": 0.9347,
+          "rotation": 270,
+          "source_text": "15781533461309840"
+        },
+        {
+          "value": "15866519955519290",
+          "score": 0.3501,
+          "rotation": 90,
+          "source_text": "15866519955519290"
+        }
+      ],
+      "ap_model": [
+        {
+          "value": "AP162E",
+          "score": 0.9521,
+          "rotation": 0,
+          "source_text": "AP162E"
+        }
+      ],
+      "s380_model_candidate": [],
+      "sn_candidate": [
+        {
+          "value": "SF3260450956640",
+          "score": 0.9993,
+          "rotation": 0,
+          "source_text": "SF3260450956640"
+        },
+        {
+          "value": "15781533461309840",
+          "score": 0.9347,
+          "rotation": 270,
+          "source_text": "15781533461309840"
+        },
+        {
+          "value": "SN:21500871434E8A010153",
+          "score": 0.8249,
+          "rotation": 0,
+          "source_text": "SN:21500871434E8A010153"
+        },
+        {
+          "value": "SN121500871434ERA010153",
+          "score": 0.8054,
+          "rotation": 270,
+          "source_text": "SN121500871434ERA010153"
+        },
+        {
+          "value": "2OEWAALFOELANPOE",
+          "score": 0.7049,
+          "rotation": 0,
+          "source_text": "S3N2-SUPIT, 2OE WAAL FOE LANPOE"
+        },
+        {
+          "value": "MACS1024076ZACFO",
+          "score": 0.6584,
+          "rotation": 180,
+          "source_text": "MACS1024076ZACFO"
+        },
+        {
+          "value": "2DUXLBARDAARIAARTENRAEEGES",
+          "score": 0.6467,
+          "rotation": 270,
+          "source_text": ":AP1Ge(Tex indoor 2+2 duxl barda aria artenra Eeges"
+        },
+        {
+          "value": "MACSTONMOTC7ACFO",
+          "score": 0.6416,
+          "rotation": 90,
+          "source_text": "MACSTONMOTC7ACFO"
+        },
+        {
+          "value": "BADEAMARTARDEEELEGAN",
+          "score": 0.6116,
+          "rotation": 270,
+          "source_text": "DesC APs82E/Tax ndoor2-2 du!bade amart ardee Elegan"
+        },
+        {
+          "value": "SNE21500874E4ERAD1593",
+          "score": 0.5707,
+          "rotation": 90,
+          "source_text": "SNE21500874E4ERAD1593"
+        },
+        {
+          "value": "MACITESAPETSEES",
+          "score": 0.5686,
+          "rotation": 180,
+          "source_text": "MACITESAPETSEES"
+        },
+        {
+          "value": "DACA2EEMOC24BANDAMANARN",
+          "score": 0.5534,
+          "rotation": 0,
+          "source_text": "DacA2Ee moc24  band aman arn"
+        },
+        {
+          "value": "2DUBANAMYANDENNAEEG",
+          "score": 0.5493,
+          "rotation": 0,
+          "source_text": "DesAP18e(1x indoo2+2du ban amY andenna Eeg"
+        },
+        {
+          "value": "DEAPAXDOOR2UBNDMARTDEEEG",
+          "score": 0.5486,
+          "rotation": 180,
+          "source_text": "DeAPaxdoor 2 u bnd mart de Eeg"
+        },
+        {
+          "value": "CE0OY3VECO18NS",
+          "score": 0.3665,
+          "rotation": 90,
+          "source_text": "CE0OY3VECO18NS"
+        },
+        {
+          "value": "15866519955519290",
+          "score": 0.3501,
+          "rotation": 90,
+          "source_text": "15866519955519290"
+        }
+      ],
+      "mac_candidate": [
+        {
+          "value": "MAC: E49024187A70",
+          "score": 0.7851,
+          "rotation": 270,
+          "source_text": "MAC: E49024187A70"
+        },
+        {
+          "value": "MAC:E49024187A70",
+          "score": 0.7851,
+          "rotation": 270,
+          "source_text": "MAC: E49024187A70"
+        },
+        {
+          "value": "MAC: E4962A187A7O",
+          "score": 0.7608,
+          "rotation": 0,
+          "source_text": "MAC: E4962A187A7O"
+        },
+        {
+          "value": "MAC:E4962A187A7O",
+          "score": 0.7608,
+          "rotation": 0,
+          "source_text": "MAC: E4962A187A7O"
+        },
+        {
+          "value": "MACS1024076ZACFO",
+          "score": 0.6584,
+          "rotation": 180,
+          "source_text": "MACS1024076ZACFO"
+        },
+        {
+          "value": "MACSTONMOTC7ACFO",
+          "score": 0.6416,
+          "rotation": 90,
+          "source_text": "MACSTONMOTC7ACFO"
+        },
+        {
+          "value": "MACITESAPETSEES",
+          "score": 0.5686,
+          "rotation": 180,
+          "source_text": "MACITESAPETSEES"
+        },
+        {
+          "value": "MAC-1O24OTE7ACIFO",
+          "score": 0.5679,
+          "rotation": 270,
+          "source_text": "MAC-1O24OTE7ACIFO"
+        }
+      ],
+      "part_no": [
+        {
+          "value": "Part Vo: 50087148",
+          "score": 0.8181,
+          "rotation": 0,
+          "source_text": "Part Vo: 50087148"
+        },
+        {
+          "value": "PARTVO:50087148",
+          "score": 0.8181,
+          "rotation": 0,
+          "source_text": "Part Vo: 50087148"
+        },
+        {
+          "value": "Part No.: 50087148",
+          "score": 0.8044,
+          "rotation": 180,
+          "source_text": "Part No.: 50087148"
+        },
+        {
+          "value": "PARTNO.:50087148",
+          "score": 0.8044,
+          "rotation": 180,
+          "source_text": "Part No.: 50087148"
+        },
+        {
+          "value": "50087149",
+          "score": 0.726,
+          "rotation": 180,
+          "source_text": "PA/T N0. 50087149"
+        },
+        {
+          "value": "50087541",
+          "score": 0.708,
+          "rotation": 0,
+          "source_text": "Paa No.50087541"
+        },
+        {
+          "value": "50087549",
+          "score": 0.6695,
+          "rotation": 0,
+          "source_text": "Pr MA 50087549"
+        }
+      ]
+    },
+    "image_03.jpg": {
+      "sf_waybill": [
+        {
+          "value": "SF3260482825536",
+          "score": 0.9996,
+          "rotation": 0,
+          "source_text": "SF3260482825536"
+        }
+      ],
+      "route_code": [],
+      "long_numeric": [
+        {
+          "value": "15781051445989257",
+          "score": 0.9615,
+          "rotation": 270,
+          "source_text": "15781051445989257"
+        },
+        {
+          "value": "2415781051445989257",
+          "score": 0.9166,
+          "rotation": 0,
+          "source_text": "2415781051445989257"
+        },
+        {
+          "value": "24915781051445989257",
+          "score": 0.8789,
+          "rotation": 180,
+          "source_text": "24915781051445989257"
+        }
+      ],
+      "ap_model": [
+        {
+          "value": "AP162E",
+          "score": 0.9262,
+          "rotation": 0,
+          "source_text": "Model: AP162E"
+        }
+      ],
+      "s380_model_candidate": [],
+      "sn_candidate": [
+        {
+          "value": "SF3260482825536",
+          "score": 0.9996,
+          "rotation": 0,
+          "source_text": "SF3260482825536"
+        },
+        {
+          "value": "15781051445989257",
+          "score": 0.9615,
+          "rotation": 270,
+          "source_text": "15781051445989257"
+        },
+        {
+          "value": "MAC1102457E79080",
+          "score": 0.9429,
+          "rotation": 270,
+          "source_text": "MAC1102457E79080"
+        },
+        {
+          "value": "2415781051445989257",
+          "score": 0.9166,
+          "rotation": 0,
+          "source_text": "2415781051445989257"
+        },
+        {
+          "value": "PARTNO50087149",
+          "score": 0.8975,
+          "rotation": 0,
+          "source_text": "Part No 50087149"
+        },
+        {
+          "value": "MAC1102457E79060",
+          "score": 0.8962,
+          "rotation": 180,
+          "source_text": "MAC1102457E79060"
+        },
+        {
+          "value": "24915781051445989257",
+          "score": 0.8789,
+          "rotation": 180,
+          "source_text": "24915781051445989257"
+        },
+        {
+          "value": "SIN21800671494ERA210003",
+          "score": 0.8786,
+          "rotation": 270,
+          "source_text": "SIN21800671494ERA210003"
+        },
+        {
+          "value": "PARTNE50087149",
+          "score": 0.8519,
+          "rotation": 270,
+          "source_text": "Part Ne 50087149"
+        },
+        {
+          "value": "MAC110245VE79060",
+          "score": 0.8442,
+          "rotation": 0,
+          "source_text": "MAC110245VE79060"
+        },
+        {
+          "value": "S/N121800671494E7",
+          "score": 0.8294,
+          "rotation": 180,
+          "source_text": "S/N121800671494E7/A210003"
+        },
+        {
+          "value": "S/N121800671494ERA230003",
+          "score": 0.8198,
+          "rotation": 0,
+          "source_text": "S/N121800671494ERA230003"
+        },
+        {
+          "value": "NF2150067149487A230003",
+          "score": 0.8099,
+          "rotation": 90,
+          "source_text": "5/NF2150067149487A230003"
+        },
+        {
+          "value": "N25500875434ERA290398",
+          "score": 0.785,
+          "rotation": 180,
+          "source_text": "5/N25500875434ERA290398"
+        },
+        {
+          "value": "MACL102457E79060",
+          "score": 0.7272,
+          "rotation": 90,
+          "source_text": "MACL102457E79060"
+        },
+        {
+          "value": "PANTN550087141",
+          "score": 0.7181,
+          "rotation": 0,
+          "source_text": "PanT N5 50087141"
+        },
+        {
+          "value": "DescAP162E111ax",
+          "score": 0.6789,
+          "rotation": 270,
+          "source_text": "DescAP162E111ax ndoor2-2 oval tends,smant ataneamgaet"
+        },
+        {
+          "value": "DESCAP162E111AXNDOOR2",
+          "score": 0.6789,
+          "rotation": 270,
+          "source_text": "DescAP162E111ax ndoor2-2 oval tends,smant ataneamgaet"
+        },
+        {
+          "value": "SMANTATANEAMGAET",
+          "score": 0.6789,
+          "rotation": 270,
+          "source_text": "DescAP162E111ax ndoor2-2 oval tends,smant ataneamgaet"
+        },
+        {
+          "value": "artennaElegant",
+          "score": 0.678,
+          "rotation": 270,
+          "source_text": "Dersc AP826y 11ax ndoor,7*2 dual bends smart artennaElegant"
+        },
+        {
+          "value": "DERSCAP826Y11AXNDOOR",
+          "score": 0.678,
+          "rotation": 270,
+          "source_text": "Dersc AP826y 11ax ndoor,7*2 dual bends smart artennaElegant"
+        },
+        {
+          "value": "DESCAD2AXNDOR2",
+          "score": 0.6586,
+          "rotation": 0,
+          "source_text": "DescAd2ax ndor2*2 dualbends smart antenn Clegant"
+        },
+        {
+          "value": "2DUALBENDSSMARTANTENNCLEGANT",
+          "score": 0.6586,
+          "rotation": 0,
+          "source_text": "DescAd2ax ndor2*2 dualbends smart antenn Clegant"
+        },
+        {
+          "value": "DOKJP81AONDOEZ",
+          "score": 0.6562,
+          "rotation": 180,
+          "source_text": "dokjp81a ondoe Z*2 dual bonds, amat arta"
+        },
+        {
+          "value": "2DUALBONDSAMATARTANAEIMPACE",
+          "score": 0.6536,
+          "rotation": 0,
+          "source_text": "DescEa ndoe 2+2 dual bonds amat artanaEimpace"
+        },
+        {
+          "value": "GEWRMFOELANIPMER",
+          "score": 0.6365,
+          "rotation": 90,
+          "source_text": "E380-SSPIT. S'GE WRM FOELANIPMER"
+        },
+        {
+          "value": "DescAP162811ax",
+          "score": 0.629,
+          "rotation": 0,
+          "source_text": "DescAP162811ax nd0o.2+2 dvalbands aman n"
+        },
+        {
+          "value": "DESCAP162811AXND0O",
+          "score": 0.629,
+          "rotation": 0,
+          "source_text": "DescAP162811ax nd0o.2+2 dvalbands aman n"
+        },
+        {
+          "value": "2DVALBANDSAMANN",
+          "score": 0.629,
+          "rotation": 0,
+          "source_text": "DescAP162811ax nd0o.2+2 dvalbands aman n"
+        },
+        {
+          "value": "CWPYSOLWTONOWW",
+          "score": 0.6222,
+          "rotation": 90,
+          "source_text": "CWPYSOLWTONOWW"
+        },
+        {
+          "value": "BLCOVOYPRS2R0O6ENS",
+          "score": 0.5748,
+          "rotation": 90,
+          "source_text": "BLCOVOYPRS2R0O6ENS"
+        },
+        {
+          "value": "SNEE150047S454RUAC19320",
+          "score": 0.5703,
+          "rotation": 0,
+          "source_text": "SNEE150047S454RUAC19320"
+        },
+        {
+          "value": "CLODVHP0OOLENS",
+          "score": 0.5639,
+          "rotation": 90,
+          "source_text": "CLODVHP0OOLENS"
+        },
+        {
+          "value": "ELCO6OY83PERSZ00O64ENIS",
+          "score": 0.5469,
+          "rotation": 0,
+          "source_text": "ELCO6OY83PERSZ00O64ENIS"
+        },
+        {
+          "value": "WLE4P161822WEXA8",
+          "score": 0.5232,
+          "rotation": 180,
+          "source_text": "WLE4P161822WEXA8)"
+        },
+        {
+          "value": "MAGB10305NE7A67O",
+          "score": 0.4831,
+          "rotation": 90,
+          "source_text": "MAGB10305NE7A67O"
+        },
+        {
+          "value": "MTSTETAN9RSPGEA8A",
+          "score": 0.4717,
+          "rotation": 90,
+          "source_text": "MTSTETAN9RSPGEA8A"
+        },
+        {
+          "value": "BWNOOERCHNMHNE",
+          "score": 0.4621,
+          "rotation": 270,
+          "source_text": "BWNOOERCHNMHNE"
+        },
+        {
+          "value": "MEATTEM9ASDGNEXAS",
+          "score": 0.4513,
+          "rotation": 270,
+          "source_text": "MEATTEM9ASDGNEXAS"
+        },
+        {
+          "value": "BCOLOYLIPERSZR0OS4EENS",
+          "score": 0.4347,
+          "rotation": 270,
+          "source_text": "BCOLOYLIPERSZR0OS4EENS"
+        },
+        {
+          "value": "WL4P10118P2289",
+          "score": 0.4295,
+          "rotation": 0,
+          "source_text": "WL4P10118P2289.W8E0.A.S)"
+        },
+        {
+          "value": "BAP1601A2ZWERAR",
+          "score": 0.3966,
+          "rotation": 270,
+          "source_text": "BAP1601A2ZWERAR"
+        },
+        {
+          "value": "ENE0W8I100EE58RE",
+          "score": 0.3899,
+          "rotation": 270,
+          "source_text": "ENE0W8I100EE58RE"
+        },
+        {
+          "value": "MAEEESESRESERR",
+          "score": 0.3844,
+          "rotation": 180,
+          "source_text": "Maeee se  s re serr"
+        },
+        {
+          "value": "MEMTTET9ASDGSEAMASS",
+          "score": 0.3687,
+          "rotation": 0,
+          "source_text": "MEMTTET9AS DGSEAM ASS"
+        },
+        {
+          "value": "CUSDLEOZZ6O04XLSTOLVRR",
+          "score": 0.3657,
+          "rotation": 90,
+          "source_text": "CU SDLEO ZZ6O04 XLSTOLVRR"
+        }
+      ],
+      "mac_candidate": [
+        {
+          "value": "MAC1102457E79080",
+          "score": 0.9429,
+          "rotation": 270,
+          "source_text": "MAC1102457E79080"
+        },
+        {
+          "value": "MAC1102457E79060",
+          "score": 0.8962,
+          "rotation": 180,
+          "source_text": "MAC1102457E79060"
+        },
+        {
+          "value": "MAC110245VE79060",
+          "score": 0.8442,
+          "rotation": 0,
+          "source_text": "MAC110245VE79060"
+        },
+        {
+          "value": "MAC:100482E7C51D",
+          "score": 0.7893,
+          "rotation": 180,
+          "source_text": "MAC:100482E7C51D"
+        },
+        {
+          "value": "MACL102457E79060",
+          "score": 0.7272,
+          "rotation": 90,
+          "source_text": "MACL102457E79060"
+        },
+        {
+          "value": "MAC-1DO4E7EICS1E",
+          "score": 0.7147,
+          "rotation": 270,
+          "source_text": "MAC-1DO4E7EICS1E"
+        }
+      ],
+      "part_no": [
+        {
+          "value": "Part No 50087149",
+          "score": 0.8975,
+          "rotation": 0,
+          "source_text": "Part No 50087149"
+        },
+        {
+          "value": "PARTNO50087149",
+          "score": 0.8975,
+          "rotation": 0,
+          "source_text": "Part No 50087149"
+        },
+        {
+          "value": "50087549",
+          "score": 0.8958,
+          "rotation": 90,
+          "source_text": "50087549"
+        },
+        {
+          "value": "Part No.50087149",
+          "score": 0.8939,
+          "rotation": 90,
+          "source_text": "Part No.50087149"
+        },
+        {
+          "value": "PARTNO.50087149",
+          "score": 0.8939,
+          "rotation": 90,
+          "source_text": "Part No.50087149"
+        },
+        {
+          "value": "50087149",
+          "score": 0.8564,
+          "rotation": 180,
+          "source_text": "Part ho. 50087149"
+        },
+        {
+          "value": "Part Ne 50087149",
+          "score": 0.8519,
+          "rotation": 270,
+          "source_text": "Part Ne 50087149"
+        },
+        {
+          "value": "PARTNE50087149",
+          "score": 0.8519,
+          "rotation": 270,
+          "source_text": "Part Ne 50087149"
+        },
+        {
+          "value": "50087545",
+          "score": 0.7565,
+          "rotation": 0,
+          "source_text": "Pait NO. 50087545"
+        },
+        {
+          "value": "50087141",
+          "score": 0.7181,
+          "rotation": 0,
+          "source_text": "PanT N5 50087141"
+        }
+      ]
+    }
+  },
+  "notes": [
+    "Device-field scan used cropped model/sn fields; whole-image OCR is a supplemental candidate pass.",
+    "Values from whole-image OCR are candidates and should be manually checked against the source photos before inventory use."
+  ]
+}

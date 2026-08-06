@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "branch_name": "master",
+      "worktree_path": "D:\\newhuawei",
+      "status": "active",
+      "created_at": "2026-04-23T17:10:25.952Z",
+      "updated_at": "2026-04-23T20:14:53.656Z"
+    }
+  ]
+}

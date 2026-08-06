@@ -1,0 +1,9 @@
+{
+  "labels": 33,
+  "model_ocr_nonempty": "33/33",
+  "model_exact_vs_barcode": "24/24",
+  "sn_ocr_nonempty": "33/33",
+  "sn_exact_vs_barcode": "31/32",
+  "jsonl": "D:\\newhuawei\\validation\\pure_ocr_6_server_rec_20260419_224312\\pure_ocr_server_rec_results.jsonl",
+  "csv": "D:\\newhuawei\\validation\\pure_ocr_6_server_rec_20260419_224312\\pure_ocr_server_rec_results.csv"
+}

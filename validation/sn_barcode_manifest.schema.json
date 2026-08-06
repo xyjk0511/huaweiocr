@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SN barcode validation manifest row",
+  "type": "object",
+  "required": [
+    "image_path",
+    "label_id",
+    "expected_sn",
+    "barcode_present",
+    "accepted_quality",
+    "notes"
+  ],
+  "properties": {
+    "image_path": {
+      "type": "string",
+      "description": "Path to the original image or the only available local visual source."
+    },
+    "label_id": {
+      "type": "string",
+      "description": "Stable label identifier used in pipeline JSONL output."
+    },
+    "expected_sn": {
+      "type": "string",
+      "description": "Ground-truth SN expected from barcode decoding."
+    },
+    "barcode_present": {
+      "type": "boolean",
+      "description": "True when an SN barcode is visible in the image."
+    },
+    "accepted_quality": {
+      "type": "boolean",
+      "description": "True only when the SN barcode is large enough, not clipped, not severely blurred, and has usable quiet zones."
+    },
+    "label_crop": {
+      "type": "string",
+      "description": "Optional path to the full label crop."
+    },
+    "sn_path": {
+      "type": "string",
+      "description": "Optional path to the detector-produced SN crop."
+    },
+    "original_image_path": {
+      "type": "string",
+      "description": "Optional explicit original image path when image_path is a crop."
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
