@@ -36,15 +36,17 @@ class ProductProfileTest(unittest.TestCase):
         self.assertEqual("AP362E", builtin["part_no_model_map"]["50087147"])
         self.assertEqual("AP265E", builtin["part_no_model_map"]["50087144"])
         self.assertEqual("AR180Pro", builtin["part_no_model_map"]["50010843"])
+        self.assertEqual("AR280", builtin["part_no_model_map"]["50010845"])
         self.assertEqual("S380-S8P2T", builtin["part_no_model_map"]["98012125"])
         self.assertEqual("S110-8P1T", builtin["part_no_model_map"]["98012406"])
         self.assertIn("AP162E", builtin["known_model_codes"])
         self.assertIn("AP362E", builtin["known_model_codes"])
         self.assertIn("AR180Pro", builtin["known_model_codes"])
+        self.assertIn("AR280", builtin["known_model_codes"])
         self.assertIn("S380-S8P2T", builtin["known_model_codes"])
         self.assertEqual(profile.KNOWN_MODEL_CODES, set(builtin["known_model_codes"]))
-        self.assertEqual(13, len(builtin["part_no_model_map"]))
-        self.assertEqual(10, len(builtin["known_model_codes"]))
+        self.assertEqual(14, len(builtin["part_no_model_map"]))
+        self.assertEqual(11, len(builtin["known_model_codes"]))
 
     def test_external_profile_adds_entries_for_profile_and_extract(self):
         with tempfile.TemporaryDirectory() as tmp:

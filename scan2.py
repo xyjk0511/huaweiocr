@@ -41,6 +41,8 @@ from huaweiocr.core.extract import (
     filter_sn_lines,  # noqa: F401  (kept as scan2 module attribute for back-compat)
     normalize_model,
 )
+from huaweiocr.barcode.sn_rules import commit_sn_observations, reload_sn_rules
+from huaweiocr.core.model_learning import commit_model_observations
 
 # Simple log gating for CLI usage.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
@@ -1091,6 +1093,27 @@ def extract_unknown_model_candidate(text: str) -> str:
     return extract_model_candidate_from_text(text, allow_unknown=True)
 
 
+MODEL_FIELD_TOKEN_RE = re.compile(
+    r"(?:^|[\r\n])\s*MODEL\s*[:：]\s*([A-Z][A-Z0-9-]{1,23})(?![A-Z0-9-])",
+    re.I,
+)
+
+
+def extract_anchored_unknown_model(text: str) -> str:
+    """Extract one explicit MODEL field token without scanning description text."""
+    candidates = []
+    for match in MODEL_FIELD_TOKEN_RE.finditer(str(text or "")):
+        model = normalize_model(match.group(1))
+        if _unknown_model_candidate_is_reasonable(model):
+            candidates.append(model)
+    unique = list(dict.fromkeys(candidates))
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _join_raw_chunks(chunks) -> str:
+    return "\n".join(dict.fromkeys(str(chunk) for chunk in chunks if chunk))
+
+
 def filter_model_lines(lines: list[str]) -> list[str]:
     filtered = []
     for ln in lines:
@@ -1601,7 +1624,9 @@ def recognize_model_barcode(model_path: str, label_id: str = ""):
 def recognize_model_ocr(model_path: str, label_id: str = "", verify_barcode_visual: bool = False):
     tag = f"{label_id} " if label_id else ""
     append_debug(f"[MODEL][OCR] {tag}{os.path.basename(model_path)}")
+    raw_chunks = []
     text, concat, texts = ocr_text_with_details(model_path)
+    raw_chunks.extend((text, concat))
     append_sensitive_debug(f"[MODEL][OCR_FILE] {tag}{os.path.basename(model_path)} | {text!r}")
     append_sensitive_debug(
         f"[MODEL][OCR_FILE][TEXTS] {tag}{os.path.basename(model_path)} | "
@@ -1620,6 +1645,7 @@ def recognize_model_ocr(model_path: str, label_id: str = "", verify_barcode_visu
     color_img = load_for_ocr_color(model_path)
     if color_img is not None:
         text, concat, texts = ocr_text_with_details(color_img)
+        raw_chunks.extend((text, concat))
         append_sensitive_debug(f"[MODEL][OCR_COLOR] {tag}{os.path.basename(model_path)} | {text!r}")
         append_sensitive_debug(
             f"[MODEL][OCR_COLOR][TEXTS] {tag}{os.path.basename(model_path)} | "
@@ -1637,6 +1663,7 @@ def recognize_model_ocr(model_path: str, label_id: str = "", verify_barcode_visu
 
     img = load_and_preprocess(model_path, roi_bottom=False)
     text, concat, texts = ocr_text_with_details(img)
+    raw_chunks.extend((text, concat))
     append_sensitive_debug(f"[MODEL][OCR_BIN] {tag}{os.path.basename(model_path)} | {text!r}")
     append_sensitive_debug(
         f"[MODEL][OCR_BIN][TEXTS] {tag}{os.path.basename(model_path)} | "
@@ -1651,13 +1678,15 @@ def recognize_model_ocr(model_path: str, label_id: str = "", verify_barcode_visu
                 matched = visual.get("text", model_code)
                 return model_code, f"[BARCODE_VISUAL] {matched} score={score:.3f}", "barcode_visual"
         return model_code, text, "ocr_bin"
-    return "", text, "none"
+    return "", _join_raw_chunks(raw_chunks), "none"
 
 
 def recognize_model_label_ocr(label_path: str, label_id: str = ""):
     tag = f"{label_id} " if label_id else ""
     append_debug(f"[MODEL][LABEL_OCR] {tag}{os.path.basename(label_path)}")
+    raw_chunks = []
     text, concat, texts = ocr_text_with_details(label_path)
+    raw_chunks.extend((text, concat))
     append_sensitive_debug(f"[MODEL][LABEL_OCR_FILE] {tag}{os.path.basename(label_path)} | {text!r}")
     append_sensitive_debug(
         f"[MODEL][LABEL_OCR_FILE][TEXTS] {tag}{os.path.basename(label_path)} | "
@@ -1670,6 +1699,7 @@ def recognize_model_label_ocr(label_path: str, label_id: str = ""):
     color_img = load_for_ocr_color(label_path)
     if color_img is not None:
         text, concat, texts = ocr_text_with_details(color_img)
+        raw_chunks.extend((text, concat))
         append_sensitive_debug(f"[MODEL][LABEL_OCR_COLOR] {tag}{os.path.basename(label_path)} | {text!r}")
         append_sensitive_debug(
             f"[MODEL][LABEL_OCR_COLOR][TEXTS] {tag}{os.path.basename(label_path)} | "
@@ -1681,6 +1711,7 @@ def recognize_model_label_ocr(label_path: str, label_id: str = ""):
 
     img = load_and_preprocess(label_path, roi_bottom=False)
     text, concat, texts = ocr_text_with_details(img)
+    raw_chunks.extend((text, concat))
     append_sensitive_debug(f"[MODEL][LABEL_OCR_BIN] {tag}{os.path.basename(label_path)} | {text!r}")
     append_sensitive_debug(
         f"[MODEL][LABEL_OCR_BIN][TEXTS] {tag}{os.path.basename(label_path)} | "
@@ -1689,7 +1720,7 @@ def recognize_model_label_ocr(label_path: str, label_id: str = ""):
     model_code = extract_model_from_ocr_result(text, concat)
     if model_code:
         return model_code, text or concat, "ocr_label_bin"
-    return "", text or concat, "label_none"
+    return "", _join_raw_chunks(raw_chunks), "label_none"
 
 
 def recognize_model(model_path: str, label_id: str = "", use_barcode: bool = False):
@@ -1751,10 +1782,11 @@ def _unknown_sn_candidate_from_barcode_report(barcode_report) -> str:
         return ""
     candidates = []
     for result in getattr(barcode_report, "results", []) or []:
+        if getattr(result, "decoder_name", "") in {"legacy_path_decoder", "code128_pixel_repair"}:
+            continue
         candidates.extend(_extract_unknown_sn_candidates(getattr(result, "raw_text", "")))
-    for candidate in candidates:
-        return candidate
-    return ""
+    unique = list(dict.fromkeys(candidates))
+    return unique[0] if len(unique) == 1 else ""
 
 
 def _unknown_sn_consensus(barcode_report, *texts: str) -> str:
@@ -1764,6 +1796,27 @@ def _unknown_sn_consensus(barcode_report, *texts: str) -> str:
     for text in texts:
         if barcode_candidate in _extract_unknown_sn_candidates(text):
             return barcode_candidate
+    return ""
+
+
+STRICT_SN_FIELD_RE = re.compile(
+    r"(?:^|[\r\n])\s*S\s*/?\s*N\s*[:：]\s*([A-Z0-9-]{8,24})(?![A-Z0-9-])",
+    re.I,
+)
+
+
+def _strict_sn_consensus_evidence(barcode_report, expected: str, *texts: str) -> str:
+    barcode_candidate = _unknown_sn_candidate_from_barcode_report(barcode_report)
+    expected = _clean_code(expected)
+    if not barcode_candidate or barcode_candidate != expected:
+        return ""
+    for text in texts:
+        candidates = {
+            _clean_code(match.group(1))
+            for match in STRICT_SN_FIELD_RE.finditer(str(text or ""))
+        }
+        if candidates == {expected}:
+            return expected
     return ""
 
 
@@ -1868,6 +1921,9 @@ def recognize_sn_ocr_after_barcode(
         return sn, text, "ocr", meta
     sn = _unknown_sn_consensus(barcode_report, text, concat)
     if sn:
+        evidence = _strict_sn_consensus_evidence(barcode_report, sn, text, concat)
+        if evidence:
+            meta["sn_learning_candidate"] = evidence
         return sn, text or concat, "barcode_ocr_consensus", meta
 
     img = load_and_preprocess(sn_path, roi_bottom=True)
@@ -1882,6 +1938,9 @@ def recognize_sn_ocr_after_barcode(
         return sn, text, "ocr_bin", meta
     sn = _unknown_sn_consensus(barcode_report, text, concat)
     if sn:
+        evidence = _strict_sn_consensus_evidence(barcode_report, sn, text, concat)
+        if evidence:
+            meta["sn_learning_candidate"] = evidence
         return sn, text or concat, "barcode_ocr_consensus", meta
 
     top_text, top_concat = ocr_sn_top_text(sn_path)
@@ -1893,6 +1952,9 @@ def recognize_sn_ocr_after_barcode(
         return sn, top_text, "ocr_top", meta
     sn = _unknown_sn_consensus(barcode_report, top_text, top_concat)
     if sn:
+        evidence = _strict_sn_consensus_evidence(barcode_report, sn, top_text, top_concat)
+        if evidence:
+            meta["sn_learning_candidate"] = evidence
         return sn, top_text or top_concat, "barcode_ocr_consensus", meta
 
     if barcode_report.results:
@@ -2102,22 +2164,29 @@ def maybe_save_learned_part_no_model(
 
 
 def _extract_model_candidate_from_barcode_raw(raw: str) -> str:
+    candidates = []
     for part in str(raw or "").split(";"):
         candidate = part.split(":", 1)[-1].strip() if ":" in part else part.strip()
         model = extract_unknown_model_candidate(candidate)
         if model:
-            return model
+            candidates.append(normalize_model(model))
+    unique = list(dict.fromkeys(candidates))
+    if unique:
+        return unique[0] if len(unique) == 1 else ""
     return extract_unknown_model_candidate(raw)
 
 
 def _accept_model_barcode_ocr_consensus(
     key: str,
     barcode_raw: str,
+    barcode_source: str,
     ocr_raw: str,
     part_no_by_key: dict,
     part_no_map_updates: set,
     stats: dict,
 ) -> tuple[str, str, str]:
+    if barcode_source != "barcode_no_match":
+        return "", "", ""
     barcode_model = _extract_model_candidate_from_barcode_raw(barcode_raw)
     ocr_model = extract_unknown_model_candidate(ocr_raw)
     if not barcode_model or not ocr_model or normalize_model(barcode_model) != normalize_model(ocr_model):
@@ -2157,6 +2226,9 @@ def assign_part_no_model_result(
 # ===================== MAIN =====================
 def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=None, log_level="info"):
     set_log_level(log_level)
+    # One immutable active-rule snapshot per batch. Promotions happen after all
+    # rows are emitted and become effective on the next invocation.
+    reload_sn_rules()
     mask_raw = raw_result_fields_are_masked()
     model_barcode = _env_flag_default("SCAN2_MODEL_BARCODE", True)
     ocr_fallback = scan_ocr_fallback_enabled()
@@ -2198,6 +2270,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         "sn_barcode_hits": 0,
         "sn_barcode_hit_rate": 0.0,
         "sn_ocr_recoveries": 0,
+        "sn_families_learned": 0,
         "sn_barcode_parse_failures": 0,
         "sn_barcode_decoder_misses": 0,
         "sn_barcode_ambiguous": 0,
@@ -2260,6 +2333,9 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     part_no_by_key = {}
     part_no_src_by_key = {}
     part_no_map_updates = set()
+    model_learning_observations = []
+    model_candidate_keys = set()
+    sn_learning_observations = []
     part_no_scan_miss_keys = set()
     sn_results = {}
     sn_reports = {}
@@ -2431,7 +2507,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     item["model_path"],
                     label_id=learn_key,
                 )
-            if not learned_model and model_ocr_allowed:
+            barcode_candidate = ""
+            if not learned_model and learned_src == "barcode_no_match":
+                barcode_candidate = _extract_model_candidate_from_barcode_raw(learned_raw)
+            if not learned_model and not barcode_candidate and model_ocr_allowed:
                 learned_model, learned_raw, learned_src = recognize_model_ocr(
                     item["model_path"],
                     label_id=learn_key,
@@ -2507,7 +2586,26 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 stats["model_part_no_learned"] += 1
         else:
             model_barcode_misses[key] = (model_raw, model_src)
-            ocr_jobs.append(("model", key, item, None))
+            candidate_model = _extract_model_candidate_from_barcode_raw(model_raw)
+            if (
+                model_src == "barcode_no_match"
+                and candidate_model
+                and part_no_by_key.get(key)
+                and part_no_src_by_key.get(key) == "part_no_barcode"
+            ):
+                model_code = normalize_model(candidate_model)
+                model_results[key] = (model_code, model_raw, "barcode_candidate")
+                model_candidate_keys.add(key)
+                model_learning_observations.append(
+                    {
+                        "part_no": part_no_by_key[key],
+                        "model": model_code,
+                        "label_id": key,
+                        "original_image_path": item.get("original_image_path", ""),
+                    }
+                )
+            else:
+                ocr_jobs.append(("model", key, item, None))
 
     if ocr_jobs:
         pending_ocr_jobs = []
@@ -2602,6 +2700,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 consensus_model, consensus_raw, consensus_src = _accept_model_barcode_ocr_consensus(
                     key,
                     model_barcode_misses.get(key, ("", ""))[0],
+                    model_barcode_misses.get(key, ("", ""))[1],
                     model_raw,
                     part_no_by_key,
                     part_no_map_updates,
@@ -2610,6 +2709,27 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 if consensus_model:
                     result = (consensus_model, consensus_raw, consensus_src)
                     model_code, model_raw, model_src = result
+            if not model_code:
+                candidate_model = extract_anchored_unknown_model(model_raw)
+                if (
+                    candidate_model
+                    and part_no_by_key.get(key)
+                    and part_no_src_by_key.get(key) == "part_no_barcode"
+                ):
+                    model_code = normalize_model(candidate_model)
+                    model_src = "ocr_candidate"
+                    result = (model_code, model_raw, model_src)
+                    model_candidate_keys.add(key)
+                    model_learning_observations.append(
+                        {
+                            "part_no": part_no_by_key[key],
+                            "model": model_code,
+                            "label_id": key,
+                            "original_image_path": records.get(key, {}).get(
+                                "original_image_path", ""
+                            ),
+                        }
+                    )
             if (
                 not model_code_is_plausible(model_code)
                 and records.get(key, {}).get("part_no_path")
@@ -2723,7 +2843,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
             if model_code:
                 normalized_model = normalize_model(model_code)
-                if model_code_is_plausible(normalized_model):
+                if model_code_is_plausible(normalized_model) or (
+                    key in model_candidate_keys
+                    and _unknown_model_candidate_is_reasonable(normalized_model)
+                ):
                     model_code = normalized_model
                 else:
                     append_sensitive_debug(
@@ -2755,6 +2878,18 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
             if model_code == "S380-S8P2T" and sn_code and not sn_code.startswith("4E25A017"):
                 append_sensitive_debug(f"[WARN] {key} model= S380-S8P2T but sn={sn_code}")
+
+            if (
+                sn_src == "barcode_ocr_consensus"
+                and sn_meta.get("sn_learning_candidate") == sn_code
+            ):
+                sn_learning_observations.append(
+                    {
+                        "value": sn_code,
+                        "label_id": key,
+                        "original_image_path": item.get("original_image_path", ""),
+                    }
+                )
 
             out = {
                 "label_id": key,
@@ -2796,6 +2931,18 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         stats["sn_barcode_hit_rate"] = stats["sn_barcode_hits"] / float(stats["sn_total"])
     if stats["model_total"]:
         stats["model_barcode_hit_rate"] = stats["model_barcode_hits"] / float(stats["model_total"])
+
+    sn_learning_result = commit_sn_observations(sn_learning_observations)
+    stats["sn_families_learned"] = len(sn_learning_result.get("promoted", []))
+
+    model_learning_result = commit_model_observations(model_learning_observations)
+    for promoted in model_learning_result.get("promoted", []):
+        part_no = promoted.get("part_no", "")
+        model = promoted.get("model", "")
+        if save_learned_model_code(model, source="part_no_model_consensus"):
+            stats["model_consensus_learned"] += 1
+        if save_part_no_model_mapping(part_no, model, source="part_no_model_consensus"):
+            stats["model_part_no_learned"] += 1
 
     return stats
 

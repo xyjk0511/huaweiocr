@@ -118,6 +118,7 @@ def _clean_code(s: str) -> str:
 SN_OCR_BOUNDED_RES = (
     re.compile(r"(215[0-9]{7,8}(?:ER[A-Z]?|AGQ[A-Z])[0-9]{6})(?![0-9A-Z])"),
     re.compile(r"(215[0-9]{7,8}(?:LDR[A-Z]?|LDS|SRA)[0-9]{7})(?![0-9A-Z])"),
+    re.compile(r"(215001084(?:32|52)SS[0-9]{7})(?![0-9A-Z])"),
     re.compile(r"(215[0-9]{7,8}ES[0-9A-Z]{7})(?![0-9A-Z])"),
     re.compile(rf"({SN12_BODY_PATTERN})(?![0-9A-Z])"),
 )

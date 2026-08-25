@@ -235,6 +235,22 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             "2150087147LDS4024590",
         )
 
+    def test_ss_series_payload_is_extracted_from_direct_and_structured_barcode(self):
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21500108452SS1500363"),
+            "21500108452SS1500363",
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload(
+                "[)>06 1P50010843 18VLEHWT S21500108432SS4500577"
+            ),
+            "21500108432SS4500577",
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21500772777SS4049560"),
+            "",
+        )
+
     def test_agqa_series_payload_is_accepted_by_sn_rules(self):
         self.assertEqual(
             sn_barcode.extract_sn_from_payload("2150087144AGQA001288"),
@@ -301,6 +317,14 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(
             scan2.extract_sn_from_text("S/N : 21500872884ERB011934 515996"),
             "21500872884ERB011934",
+        )
+        self.assertEqual(
+            scan2.extract_sn_from_text("S/N: 21500108432SS4500060"),
+            "21500108432SS4500060",
+        )
+        self.assertEqual(
+            scan2.extract_sn_from_text("S/N: 21500772777SS4049560"),
+            "",
         )
 
     def test_model_barcode_candidate_rejects_sn_payloads(self):
@@ -748,6 +772,56 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(read_paths, ["sn.png"])
         self.assertEqual(template_specs, ["4E26########"])
 
+    def test_direct_unknown_sn_defers_pixel_repair_for_ocr_consensus(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        unknown_sn = "21500108452TC1500363"
+        direct_result = sn_barcode.DecoderResult(
+            "zxingcpp",
+            unknown_sn,
+            "sn",
+            "sn.0",
+        )
+
+        with mock.patch.dict(os.environ, {"SN_BARCODE_DECODERS": "pyzbar"}):
+            with mock.patch.object(sn_barcode, "_read_image", return_value=img):
+                with mock.patch.object(
+                    sn_barcode,
+                    "generate_candidate_images",
+                    return_value=[sn_barcode.CandidateImage(img, "sn", "sn.0", "raw")],
+                ):
+                    with mock.patch.object(sn_barcode, "diagnose_quality", return_value=[]):
+                        with mock.patch.object(
+                            sn_barcode,
+                            "_decode_pyzbar",
+                            return_value=([direct_result], []),
+                        ):
+                            with mock.patch.object(
+                                sn_barcode,
+                                "_pixel_repair_decode_path",
+                                return_value=(
+                                    [
+                                        sn_barcode.DecoderResult(
+                                            "code128_pixel_repair",
+                                            "21500108452ES1500363",
+                                            "sn",
+                                            "sn.code128_pixel_repair",
+                                        )
+                                    ],
+                                    1,
+                                    [],
+                                ),
+                            ) as repair:
+                                report = sn_barcode.scan_sn_barcodes(
+                                    [("sn", "sn.png")],
+                                    fallback_path_decoder=lambda _path: [],
+                                    max_decoder_attempts=96,
+                                )
+
+        self.assertEqual(report.status, "parse_failure")
+        self.assertIn(unknown_sn, report.failed_payloads)
+        self.assertTrue(any(result.raw_text == unknown_sn for result in report.results))
+        repair.assert_not_called()
+
     def test_scan_does_not_materialize_candidates_beyond_attempt_budget(self):
         img = np.full((80, 240, 3), 255, dtype=np.uint8)
         resize_calls = 0
@@ -1015,6 +1089,7 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
             "50087144": "AP265E",
             "50087289": "AP162E",
             "50010838": "AR180",
+            "50010845": "AR280",
             "98012403": "S110-5T",
             "98012406": "S110-8P1T",
         }

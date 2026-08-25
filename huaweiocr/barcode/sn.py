@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from huaweiocr.barcode.sn_rules import infer_standard_sn_family, match_learned_sn
+
 try:
     import cv2
 except Exception:  # pragma: no cover - exercised only in stripped test envs
@@ -20,7 +22,10 @@ except Exception:  # pragma: no cover
 
 
 SN20_PREFIX_PATTERN = r"215[0-9]{7,8}"
-SN20_BODY_PATTERN = rf"{SN20_PREFIX_PATTERN}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{{6,7}}"
+SN20_BODY_PATTERN = (
+    rf"(?:{SN20_PREFIX_PATTERN}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{{6,7}}"
+    rf"|215001084(?:32|52)SS[0-9]{{7}})"
+)
 SN12_BODY_PATTERN = r"4E[0-9]{2}(?:[0-9]{8}|[A-Z][0-9]{7})"
 SN20_RE = re.compile(rf"({SN20_BODY_PATTERN})")
 SN12_RE = re.compile(rf"({SN12_BODY_PATTERN})")
@@ -40,7 +45,10 @@ DEFAULT_MIN_BARCODE_HEIGHT = 22
 DEFAULT_BLUR_VARIANCE = 18.0
 DEFAULT_DESKEW_ANGLES = (0, -4, 4, -8, 8)
 DEFAULT_DECODERS = ("pyzbar", "zxingcpp")
-DEFAULT_PIXEL_REPAIR_TEMPLATE = "4E26########,###########ER@######,###########ES#######"
+DEFAULT_PIXEL_REPAIR_TEMPLATE = (
+    "4E26########,###########ER@######,###########ES#######,"
+    "21500108432SS#######,21500108452SS#######"
+)
 DEFAULT_PIXEL_REPAIR_LENGTHS = "12,20"
 DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE = 0.24
 DEFAULT_PIXEL_REPAIR_MIN_MARGIN = 0.0
@@ -275,7 +283,29 @@ def extract_sn_from_payload(value: str) -> str:
     if DIRECT_SCANNED_SN_RE.fullmatch(cleaned):
         return cleaned
 
+    learned = match_learned_sn(cleaned)
+    if learned:
+        return learned
+
     return ""
+
+
+def _is_direct_unknown_standard_sn(result: DecoderResult) -> bool:
+    """Keep a strong direct decode available for the OCR-consensus path.
+
+    Pixel repair is template-constrained to existing families and must not
+    replace a syntactically standard, label-local value from a real decoder.
+    """
+    if result.decoder_name in {"legacy_path_decoder", "code128_pixel_repair"}:
+        return False
+    if str(result.source).lower() != "sn":
+        return False
+    cleaned = _clean_code(result.raw_text)
+    return bool(
+        cleaned
+        and not extract_sn_from_payload(cleaned)
+        and infer_standard_sn_family(cleaned) is not None
+    )
 
 
 def _source_rank(source_region: str) -> int:
@@ -1189,7 +1219,8 @@ def scan_sn_barcodes(
         append_results(fallback)
         if fallback_path_decoder is not None:
             partial = select_sn_from_decoder_results(all_results)
-            if partial.status not in {"hit", "ambiguous"}:
+            has_direct_unknown = any(_is_direct_unknown_standard_sn(result) for result in all_results)
+            if partial.status not in {"hit", "ambiguous"} and not has_direct_unknown:
                 repair, repair_attempts, repair_errors = _pixel_repair_decode_path(
                     state["source"],
                     state["path"],
