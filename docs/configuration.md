@@ -2,7 +2,7 @@
 
 > 半自动生成于 2026-07-06（扫描全部运行时 .py 的环境变量读取点），行号会随代码演进漂移，
 > 以变量名为准。布尔开关统一接受 `1/true/yes/on` 与 `0/false/no/off`。
-> `.env`（仓库根/打包 `_internal\.env`）由 crop.load_dotenv 加载，只应放 `API_KEY`。
+> `.env`（仓库根/打包 `_internal\.env`）由 crop.load_dotenv 加载，可放 `API_KEY` 以及其他运行时环境变量（例如 `CROP_INFERENCE_BACKEND`）。
 
 ## 入口与日志
 
