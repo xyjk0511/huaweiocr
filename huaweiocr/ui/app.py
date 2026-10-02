@@ -5,7 +5,6 @@ import sys
 import threading
 import time
 import datetime
-import json
 import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -27,7 +26,7 @@ from gui_pipeline import copy_images_to_unique_run_dir, load_pipeline_modules, s
 from gui_i18n import get_strings  # noqa: E402
 from huaweiocr.io.feedback import build_feedback_package  # noqa: E402
 from huaweiocr.io.images import SUPPORTED_IMAGE_EXTS  # noqa: E402
-from huaweiocr.io.results import export_excel  # noqa: E402
+from huaweiocr.io.results import RESULT_COLUMNS, export_excel, iter_jsonl  # noqa: E402
 from huaweiocr.core.sources import display_source  # noqa: E402
 # 粘贴图片支持（可选）
 try:
@@ -314,8 +313,7 @@ class App(tk.Tk):
         # ============ 识别结果表 ============
         table_frame = tk.LabelFrame(self, text=self.strings["results_table_title"])
         table_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
-        columns = ("label_id", "model", "sn", "model_src", "sn_src")
-        self.table = ttk.Treeview(table_frame, columns=columns, show="headings", height=6)
+        self.table = ttk.Treeview(table_frame, columns=RESULT_COLUMNS, show="headings", height=6)
         self.table.heading("label_id", text=self.strings["col_label_id"])
         self.table.heading("model", text=self.strings["col_model"])
         self.table.heading("sn", text=self.strings["col_sn"])
@@ -365,48 +363,28 @@ class App(tk.Tk):
         if not lines:
             return
         self.log.configure(state="normal")
-        for line in lines:
-            self.log.insert(tk.END, line + "\n")
+        self.log.insert(tk.END, "\n".join(lines) + "\n")
         self.log.see(tk.END)
         self.log.configure(state="disabled")
 
     def _poll_log_queue(self):
         lines = []
-        drained_to_batch_limit = False
-        if hasattr(self, "_log_queue"):
-            max_batch = max(1, int(getattr(self, "_log_max_batch_lines", 24)))
-            while len(lines) < max_batch:
-                try:
-                    lines.append(self._log_queue.get_nowait())
-                except queue.Empty:
-                    break
-            drained_to_batch_limit = len(lines) >= max_batch
-        if lines:
-            self._append_log_lines(lines)
-        try:
-            backlog = drained_to_batch_limit
-            if hasattr(self, "_log_queue"):
-                qsize = getattr(self._log_queue, "qsize", None)
-                if callable(qsize):
-                    try:
-                        backlog = backlog or qsize() > 0
-                    except Exception:
-                        pass
-            next_delay = 1 if backlog else self._log_poll_interval_ms
-            self.after(next_delay, self._poll_log_queue)
-        except Exception:
-            pass
+        for _ in range(self._log_max_batch_lines):
+            try:
+                lines.append(self._log_queue.get_nowait())
+            except queue.Empty:
+                break
+        self._append_log_lines(lines)
+        delay = 1 if len(lines) == self._log_max_batch_lines else self._log_poll_interval_ms
+        self.after(delay, self._poll_log_queue)
 
     def write_log(self, text: str):
         """线程安全地往日志窗口里写一行"""
         text = _mask_path_text(text)
         if threading.get_ident() == self._main_thread_ident:
             self._append_log_lines([text])
-            return
-        if hasattr(self, "_log_queue"):
+        else:
             self._log_queue.put(text)
-            return
-        self._append_log_lines([text])
     def add_files(self, paths):
         """把选中的文件加入列表（过滤非图片、去重）"""
         added = 0
@@ -447,7 +425,7 @@ class App(tk.Tk):
                 self.add_files(obj)
                 return "break"
             # 2) 复制的是图片（截图/网页复制图片）
-            if obj is not None:
+            if isinstance(obj, Image.Image):
                 # 生成唯一文件名
                 fname = f"pasted_{int(time.time() * 1000)}.png"
                 save_path = os.path.join(input_dir, fname)
@@ -529,6 +507,12 @@ class App(tk.Tk):
         if not lines:
             lines.append(self.strings["issue_none"])
         return "\n".join(lines)
+    def _result_values(self, row):
+        return (
+            row.get("label_id", ""), row.get("model", ""), row.get("sn", ""),
+            _display_model_src(row.get("model_src", ""), self.strings),
+            _display_sn_src(row.get("sn_src", ""), self.strings),
+        )
     def export_table(self):
         """导出结果为 XLSX"""
         if not self.table.get_children():
@@ -547,16 +531,7 @@ class App(tk.Tk):
         headers = (self.strings["col_label_id"], self.strings["col_model"], self.strings["col_sn"], self.strings["col_model_src"], self.strings["col_sn_src"])
         try:
             if self.result_rows:
-                rows = (
-                    [
-                        row.get("label_id", ""),
-                        row.get("model", ""),
-                        row.get("sn", ""),
-                        _display_model_src(row.get("model_src", ""), self.strings),
-                        _display_sn_src(row.get("sn_src", ""), self.strings),
-                    ]
-                    for row in self.result_rows
-                )
+                rows = (self._result_values(row) for row in self.result_rows)
             else:
                 rows = (self.table.item(item, "values") for item in self.table.get_children())
             export_excel(path, rows, headers=headers, sheet_title=self.strings["excel_sheet_title"])
@@ -609,10 +584,11 @@ class App(tk.Tk):
         self.btn_export_feedback.config(state="disabled")
         self.btn_start.config(state="disabled")
         self.write_log(self.strings["log_start_pipeline"])
-        t = threading.Thread(target=self.run_pipeline, daemon=True)
+        t = threading.Thread(target=self.run_pipeline, args=(tuple(self.image_paths),), daemon=True)
         t.start()
-    def run_pipeline(self):
+    def run_pipeline(self, image_paths=None):
         """在后台线程里跑完整 pipeline：拷贝图片 → crop_labels.main → scan2.main"""
+        image_paths = tuple(self.image_paths) if image_paths is None else image_paths
         try:
             try:
                 crop_module, scan2_module = load_pipeline_modules()
@@ -625,9 +601,7 @@ class App(tk.Tk):
             self._crop_module = crop_module
             self._scan2_module = scan2_module
             input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
-            run_dir, copied_records = copy_images_to_unique_run_dir(self.image_paths, input_root)
-            input_dir = run_dir
-            out_dir = run_dir
+            run_dir, copied_records = copy_images_to_unique_run_dir(image_paths, input_root)
 
             self.write_log(self.strings["stage_prepare_input"])
             self.write_log(self.strings["log_copied_images"].format(count=len(copied_records)))
@@ -638,7 +612,7 @@ class App(tk.Tk):
             scan2_module.set_log_sink(self.write_log)
             try:
                 self.write_log(self.strings["stage_crop"])
-                crop_stats = crop_module.main(input_dir=input_dir, out_dir=out_dir)
+                crop_stats = crop_module.main(input_dir=run_dir, out_dir=run_dir)
                 if not isinstance(crop_stats, dict) or crop_stats.get("label_count", 0) <= 0:
                     raise RuntimeError(self.strings["error_no_label_crops"])
                 if crop_stats.get("manifest_rows", 0) <= 0:
@@ -685,17 +659,8 @@ class App(tk.Tk):
         if not os.path.isfile(out_path):
             self.write_log(self.strings["warn_output_not_found"].format(path=out_path))
             return
-        rows = []
         try:
-            with open(out_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rows.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+            rows = list(iter_jsonl(out_path))
         except Exception as e:
             self.write_log(self.strings["warn_read_results_failed"].format(error=e))
             return
@@ -703,14 +668,7 @@ class App(tk.Tk):
         def _append():
             self.table.delete(*self.table.get_children())
             for r in rows:
-                values = (
-                    r.get("label_id", ""),
-                    r.get("model", ""),
-                    r.get("sn", ""),
-                    _display_model_src(r.get("model_src", ""), self.strings),
-                    _display_sn_src(r.get("sn_src", ""), self.strings),
-                )
-                self.table.insert("", tk.END, values=values)
+                self.table.insert("", tk.END, values=self._result_values(r))
         if threading.get_ident() == self._main_thread_ident:
             _append()
         else:

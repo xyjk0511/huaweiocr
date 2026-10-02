@@ -155,9 +155,6 @@ def main() -> int:
         print(message, file=sys.stderr)
         return finish(2, message=message)
 
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-
     os.environ["LOG_LEVEL"] = args.log_level
 
     if not os.path.isdir(args.input):
@@ -181,6 +178,8 @@ def main() -> int:
     summary["image_count"] = total_images
 
     try:
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         import crop
         import scan2
 

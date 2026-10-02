@@ -121,25 +121,26 @@ class RunAllPathPropagationTest(unittest.TestCase):
             self.assertIsInstance(summary["timing_sec"]["scan"], float)
 
 
-class Scan2MapOrderedProgressTest(unittest.TestCase):
+class ParallelMapTest(unittest.TestCase):
     def test_map_ordered_reports_progress_and_preserves_input_order(self):
-        scan2 = _import_scan2()
+        from huaweiocr.core.parallel import map_ordered
 
         def work(item):
             time.sleep({1: 0.03, 2: 0.01, 3: 0.02}[item])
             return item * 10
 
-        progress = []
-        results = scan2._map_ordered(
-            [1, 2, 3],
-            work,
-            workers=3,
-            progress=lambda done, total: progress.append((done, total)),
-        )
+        for workers in (1, 3):
+            with self.subTest(workers=workers):
+                progress = []
+                results = map_ordered(
+                    [1, 2, 3], work, workers=workers,
+                    progress=lambda done, total: progress.append((done, total)),
+                )
+                self.assertEqual(results, [10, 20, 30])
+                self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
 
-        self.assertEqual(results, [10, 20, 30])
-        self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
 
+class RunAllCliTest(unittest.TestCase):
     def test_zero_label_crop_returns_nonzero_without_scanning(self):
         import run_all
 
@@ -276,6 +277,29 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
             self.assertIn("Warning: failed to write run summary", stderr_text)
             self.assertNotIn("returning failure status", stderr_text)
 
+    def test_output_directory_failure_is_reported_in_run_summary(self):
+        import run_all
+
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            os.makedirs(input_dir)
+            with open(os.path.join(input_dir, "sample.png"), "wb"):
+                pass
+            out_path = os.path.join(root, "out")
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("keep")
+            summary_path = os.path.join(root, "summary.json")
+            argv = ["run_all.py", "--input", input_dir, "--out", out_path,
+                    "--summary-json-out", summary_path]
+            with mock.patch.object(sys, "argv", argv), mock.patch("sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(run_all.main(), 1)
+            with open(summary_path, encoding="utf-8") as f:
+                summary = json.load(f)
+            self.assertEqual(summary["status"], "failed")
+            self.assertIn("FileExistsError", summary["error"])
+            with open(out_path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "keep")
+
     def test_cli_can_export_gui_equivalent_excel(self):
         import run_all
 
@@ -314,9 +338,9 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
                 os.makedirs(os.path.dirname(kwargs["out_jsonl"]), exist_ok=True)
                 with open(kwargs["out_jsonl"], "w", encoding="utf-8") as f:
                     f.write(json.dumps({
-                        "label_id": "sample.png__label_1",
+                        "label_id": "=sample.png__label_1",
                         "model": "AP162E",
-                        "sn": "4E25A0170000",
+                        "sn": "001234567890",
                         "model_src": "ocr_file",
                         "sn_src": "barcode",
                     }) + "\n")
@@ -346,8 +370,10 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
             )
             self.assertEqual(
                 [cell.value for cell in ws[2]],
-                ["sample.png__label_1", "AP162E", "4E25A0170000", "ocr_file", "barcode"],
+                ["=sample.png__label_1", "AP162E", "001234567890", "ocr_file", "barcode"],
             )
+            self.assertTrue(all(cell.data_type == "s" for cell in ws[2]))
+            wb.close()
 
             with open(os.path.join(out_dir, "run_summary.json"), "r", encoding="utf-8") as f:
                 summary = json.load(f)
@@ -1535,16 +1561,6 @@ class CropTempFileTest(unittest.TestCase):
             os.environ["CROP_STAGE2_WORKERS"] = "3"
             self.assertEqual(crop.crop_worker_count("stage2"), 3)
 
-    def test_map_ordered_preserves_input_order_when_parallel(self):
-        crop = _import_crop()
-
-        def worker(value):
-            if value == 1:
-                time.sleep(0.02)
-            return value * 10
-
-        self.assertEqual(crop._map_ordered([3, 1, 2], worker, workers=3), [30, 10, 20])
-
     def test_infer_with_resize_reports_cloudflare_block_without_html(self):
         crop = _import_crop()
 
@@ -1855,6 +1871,7 @@ class GuiPipelineTest(unittest.TestCase):
         app._main_thread_ident = threading.get_ident()
         app._log_queue = queue.SimpleQueue()
         app._log_poll_interval_ms = 50
+        app._log_max_batch_lines = 1
         app._append_log_lines = lambda lines: captured.extend(lines)
         app.after = lambda delay, callback=None: scheduled.append((delay, callback))
         app._poll_log_queue = lambda: gui_app.App._poll_log_queue(app)
@@ -1867,23 +1884,21 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertEqual(len(scheduled), 0)
 
         gui_app.App._poll_log_queue(app)
-
-        self.assertEqual(captured, ["后台日志1", "后台日志2"])
+        self.assertEqual(captured, ["后台日志1"])
         self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0][0], 1)
+        scheduled[0][1]()
+        scheduled[1][1]()
+        self.assertEqual(captured, ["后台日志1", "后台日志2"])
+        self.assertEqual(scheduled[-1][0], 50)
 
-    def _run_gui_pipeline_with_fakes(self, module_name):
-        sys.modules.pop(module_name, None)
-        gui_module = importlib.import_module(module_name)
+    def test_gui_run_uses_selected_input_snapshot_and_unique_output_dir(self):
+        import gui_app
 
         with tempfile.TemporaryDirectory() as root:
             input_root = os.path.join(root, "new_images")
             run_dir = os.path.join(input_root, "gui_run_test")
             stage2_dir = os.path.join(run_dir, "stage2_fields")
-            os.makedirs(run_dir)
-
-            crop_calls = []
-            scan2_calls = []
-
             crop_module = types.SimpleNamespace(
                 DEFAULT_INPUT_DIR=input_root,
                 STAGE1_DIR=os.path.join(run_dir, "stage1_labels"),
@@ -1891,86 +1906,60 @@ class GuiPipelineTest(unittest.TestCase):
                 OUT_MODEL_DIR=os.path.join(stage2_dir, "model"),
                 OUT_SN_DIR=os.path.join(stage2_dir, "sn"),
                 LOG_SINK=None,
+                main=mock.Mock(return_value={"label_count": 1, "manifest_rows": 1}),
             )
-
-            def crop_main(**kwargs):
-                crop_calls.append(kwargs)
-                out_dir = kwargs.get("out_dir") or run_dir
-                crop_module.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
-                crop_module.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
-                crop_module.OUT_MODEL_DIR = os.path.join(crop_module.STAGE2_DIR, "model")
-                crop_module.OUT_SN_DIR = os.path.join(crop_module.STAGE2_DIR, "sn")
-                return {"label_count": 1, "manifest_rows": 1}
-
-            crop_module.main = crop_main
             crop_module.set_log_sink = lambda sink: setattr(crop_module, "LOG_SINK", sink)
-
             scan2_module = types.SimpleNamespace(
                 OUT_JSONL=os.path.join(stage2_dir, "model_sn_ocr.jsonl"),
                 LOG_SINK=None,
+                main=mock.Mock(return_value={"rows": 1}),
             )
-
-            def scan2_main(**kwargs):
-                scan2_calls.append(kwargs)
-                scan2_module.OUT_JSONL = kwargs["out_jsonl"]
-                return {"rows": 1}
-
-            scan2_module.main = scan2_main
             scan2_module.set_log_sink = lambda sink: setattr(scan2_module, "LOG_SINK", sink)
-
+            selected = [os.path.join(root, "source.png")]
             app = types.SimpleNamespace(
-                image_paths=[os.path.join(root, "source.png")],
-                btn_start=types.SimpleNamespace(config=lambda **_kwargs: None),
-                btn_export_feedback=types.SimpleNamespace(config=lambda **_kwargs: None),
+                image_paths=selected.copy(),
+                btn_start=mock.Mock(),
+                btn_export_feedback=mock.Mock(),
+                _is_running=False,
                 _last_run_dir="",
                 write_log=lambda _text: None,
                 after=lambda _delay, callback=None: callback() if callback else None,
                 load_results_into_table=lambda: None,
                 _format_issue_summary=lambda: "ok",
-                strings=gui_module.get_strings("zh"),
+                strings=gui_app.get_strings("zh"),
             )
+            app.run_pipeline = lambda *args: gui_app.App.run_pipeline(app, *args)
+            with mock.patch.object(gui_app.threading, "Thread") as thread:
+                gui_app.App.start_run(app)
+            self.assertTrue(app._is_running)
+            thread.return_value.start.assert_called_once()
+            # The user edits the selection before the worker starts copying.
+            app.image_paths.clear()
+            with mock.patch.object(gui_app, "load_pipeline_modules", return_value=(crop_module, scan2_module)), mock.patch.object(
+                gui_app, "copy_images_to_unique_run_dir",
+                return_value=(run_dir, [{"input_name": "source.png"}]),
+            ) as copy_run_dir:
+                worker = thread.call_args.kwargs
+                worker["target"](*worker.get("args", ()))
 
-            with mock.patch.object(gui_module, "load_pipeline_modules", return_value=(crop_module, scan2_module)):
-                with mock.patch.object(
-                    gui_module,
-                    "copy_images_to_unique_run_dir",
-                    return_value=(run_dir, [{"input_name": "source.png"}]),
-                ) as copy_run_dir:
-                    gui_module.App.run_pipeline(app)
-
-            return {
-                "input_root": input_root,
-                "run_dir": run_dir,
-                "image_paths": app.image_paths,
-                "copy_call": copy_run_dir.call_args,
-                "crop_call": crop_calls[0],
-                "scan2_call": scan2_calls[0],
-            }
+            self.assertEqual(list(copy_run_dir.call_args.args[0]), selected)
+            self.assertEqual(copy_run_dir.call_args.args[1], input_root)
+            crop_module.main.assert_called_once_with(input_dir=run_dir, out_dir=run_dir)
+            scan2_module.main.assert_called_once_with(
+                model_dir=crop_module.OUT_MODEL_DIR, sn_dir=crop_module.OUT_SN_DIR,
+                out_jsonl=scan2_module.OUT_JSONL,
+                debug_log=os.path.join(stage2_dir, "debug_ocr_barcode.log"),
+            )
+            self.assertFalse(app._is_running)
+            self.assertEqual(app._last_run_dir, run_dir)
+            self.assertIsNone(crop_module.LOG_SINK)
+            self.assertIsNone(scan2_module.LOG_SINK)
 
     def test_gui_en_entry_delegates_to_gui_app(self):
         sys.modules.pop("gui_app_en", None)
         gui_app_en = importlib.import_module("gui_app_en")
         import gui_app
         self.assertIs(gui_app_en.main, gui_app.main)
-
-    def test_gui_run_pipeline_uses_unique_run_dir_as_crop_out_dir(self):
-        # gui_app_en 自 i18n 合并后是 gui_app 的薄壳，测 gui_app 即覆盖两个入口。
-        for module_name in ("gui_app",):
-            with self.subTest(gui=module_name):
-                result = self._run_gui_pipeline_with_fakes(module_name)
-
-                self.assertEqual(result["copy_call"].args, (result["image_paths"], result["input_root"]))
-                self.assertEqual(result["crop_call"]["input_dir"], result["run_dir"])
-                self.assertEqual(result["crop_call"].get("out_dir"), result["run_dir"])
-                self.assertNotIn("clean", result["crop_call"])
-                self.assertEqual(
-                    result["scan2_call"]["model_dir"],
-                    os.path.join(result["run_dir"], "stage2_fields", "model"),
-                )
-                self.assertEqual(
-                    result["scan2_call"]["sn_dir"],
-                    os.path.join(result["run_dir"], "stage2_fields", "sn"),
-                )
 
     def test_gui_prewarm_can_be_disabled_without_importing_scan2(self):
         sys.modules.pop("gui_pipeline", None)

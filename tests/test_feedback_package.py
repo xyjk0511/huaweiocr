@@ -64,6 +64,21 @@ class FeedbackPackageTests(unittest.TestCase):
             with zipfile.ZipFile(out_zip) as zf:
                 self.assertEqual(zf.namelist(), ["run_summary.json"])
 
+    def test_output_inside_evidence_directory_is_not_included(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            evidence = run_dir / "stage2_fields" / "miss_sn"
+            evidence.mkdir(parents=True)
+            (evidence / "label.png").write_bytes(b"label")
+            out_zip = evidence / "feedback.zip"
+
+            stats = build_feedback_package(str(run_dir), str(out_zip))
+
+            self.assertEqual(stats["files"], 1)
+            self.assertEqual(stats["misses"]["miss_sn"], 1)
+            with zipfile.ZipFile(out_zip) as zf:
+                self.assertEqual(zf.namelist(), ["stage2_fields/miss_sn/label.png"])
+
 
 if __name__ == "__main__":
     unittest.main()

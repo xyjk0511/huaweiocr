@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import time
 import ctypes
+from huaweiocr.io.envutil import env_float_default as _env_float
 
 MODEL_INSTALL_MARKER = ".huaweiocr_complete"
 MODEL_ROOT_MARKER = ".huaweiocr_models_root"
@@ -126,16 +127,6 @@ def get_model_install_root():
     if override:
         return os.path.abspath(override)
     return os.path.join(get_user_data_dir(), "models", "official_models")
-
-
-def _env_float(name, default):
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 def ensure_models_installed():

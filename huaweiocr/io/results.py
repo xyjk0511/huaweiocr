@@ -23,9 +23,12 @@ def export_excel(path, rows, *, headers=RESULT_COLUMNS, sheet_title="results") -
         sheet.title = sheet_title
         sheet.append(list(headers))
         count = 0
-        for row in rows:
-            sheet.append(list(row))
-            count += 1
+        for count, row in enumerate(rows, 1):
+            for column, value in enumerate(row, 1):
+                cell = sheet.cell(count + 1, column, value)
+                if isinstance(value, str):
+                    # Identifiers are literal text, including a filename starting with '='.
+                    cell.data_type = "s"
         workbook.save(path)
         return {"path": path, "rows": count}
     finally:

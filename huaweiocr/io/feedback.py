@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import zipfile
 from pathlib import Path
 
@@ -17,8 +16,8 @@ def build_feedback_package(run_dir: str, out_zip: str) -> dict:
     """把一次运行目录中的失败证据打包成 zip，返回统计 dict。"""
     run_root = Path(run_dir)
     zip_path = Path(out_zip)
-    if zip_path.parent:
-        zip_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = zip_path.resolve()
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
 
     files_added = 0
     skipped = 0
@@ -26,7 +25,7 @@ def build_feedback_package(run_dir: str, out_zip: str) -> dict:
 
     def add_file(zf: zipfile.ZipFile, path: Path, miss_kind: str | None = None) -> None:
         nonlocal files_added, skipped
-        if not path.is_file():
+        if not path.is_file() or path.resolve() == output_path:
             return
         arcname = path.relative_to(run_root).as_posix()
         try:
@@ -39,14 +38,6 @@ def build_feedback_package(run_dir: str, out_zip: str) -> dict:
         if miss_kind is not None:
             misses[miss_kind] += 1
 
-    def iter_files(root: Path):
-        if not root.is_dir():
-            return
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames.sort()
-            for filename in sorted(filenames):
-                yield Path(dirpath) / filename
-
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for name in ROOT_FILES:
             add_file(zf, run_root / name)
@@ -54,7 +45,7 @@ def build_feedback_package(run_dir: str, out_zip: str) -> dict:
         for name in STAGE2_FILES:
             add_file(zf, stage2_root / name)
         for miss_kind in MISS_DIRS:
-            for path in iter_files(stage2_root / miss_kind):
+            for path in sorted((stage2_root / miss_kind).rglob("*")):
                 add_file(zf, path, miss_kind)
 
     return {
