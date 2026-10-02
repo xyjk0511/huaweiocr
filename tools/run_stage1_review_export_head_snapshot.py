@@ -1,9 +1,7 @@
 import argparse
-import csv
 import importlib
 import io
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -14,11 +12,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.stage1_review_images import (
-    build_contact_sheet as _build_contact_sheet,
-    draw_overlay as _draw_overlay,
+    export_review,
     map_box_back_from_rotation as _map_box_back_from_rotation,
-    safe_rel_name as _safe_rel_name,
-    save_image as _save_image,
+    prepare_output,
 )
 
 
@@ -198,104 +194,24 @@ def main():
 
     input_root = Path(args.input).resolve()
     out_root = Path(args.out).resolve()
-    corrected_root = out_root / "corrected_inputs"
-    overlays_root = out_root / "overlays"
-    crops_root = out_root / "crops"
-    summary_path = out_root / "summary.csv"
-    contact_sheet_path = out_root / "overlay_contact_sheet.jpg"
     runtime_root = out_root / "_runtime"
     snapshot_root = out_root / "_head_snapshot"
-
-    if out_root.exists():
-        shutil.rmtree(out_root)
-    corrected_root.mkdir(parents=True, exist_ok=True)
-    overlays_root.mkdir(parents=True, exist_ok=True)
-    crops_root.mkdir(parents=True, exist_ok=True)
-    runtime_root.mkdir(parents=True, exist_ok=True)
+    try:
+        prepare_output(input_root, out_root)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
 
     os.environ["CROP_INFERENCE_BACKEND"] = "local"
     crop_mod, _local_yolo = _load_head_snapshot(snapshot_root)
     crop_mod.configure_paths(input_dir=str(input_root), out_dir=str(runtime_root))
 
     images = _list_images(input_root)
-    overlay_paths = []
-    summary_rows = []
-    total_boxes = 0
-
-    for index, img_path in enumerate(images, start=1):
-        rel_path = os.path.relpath(img_path, str(input_root))
-        print(f"[{index}/{len(images)}] {rel_path}")
-        img = crop_mod.read_image(img_path)
-        if img is None:
-            print(f"  skip unreadable: {rel_path}")
-            continue
-
-        corrected_path = corrected_root / rel_path
-        corrected_path.parent.mkdir(parents=True, exist_ok=True)
-        _save_image(corrected_path, img)
-
-        entries, rotation, dropped = _detect_entries(crop_mod, img, img_path)
-        if rotation:
-            print(f"  rotation_retry={rotation} boxes={len(entries)} dropped={dropped}")
-
-        overlay = _draw_overlay(img, entries)
-        overlay_path = overlays_root / rel_path
-        overlay_path.parent.mkdir(parents=True, exist_ok=True)
-        _save_image(overlay_path, overlay)
-        overlay_paths.append(overlay_path)
-
-        rel_stub = _safe_rel_name(rel_path)
-        for det_index, entry in enumerate(entries, start=1):
-            box = entry.get("box")
-            crop_img = entry.get("crop")
-            if box is None or crop_img is None:
-                continue
-            crop_name = f"{rel_stub}__det{det_index:02d}.jpg"
-            crop_path = crops_root / crop_name
-            _save_image(crop_path, crop_img)
-            x1, y1, x2, y2 = map(int, box)
-            width = max(0, x2 - x1)
-            height = max(0, y2 - y1)
-            summary_rows.append(
-                [
-                    rel_path.replace("\\", "/"),
-                    det_index,
-                    entry.get("class_id", 0),
-                    f"{float(entry.get('confidence', 0.0)):.6f}",
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    width,
-                    height,
-                    str(crop_path),
-                ]
-            )
-            total_boxes += 1
-
-    with summary_path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "relative_image",
-                "det_index",
-                "class_id",
-                "confidence",
-                "x1",
-                "y1",
-                "x2",
-                "y2",
-                "width",
-                "height",
-                "crop_path",
-            ]
-        )
-        writer.writerows(summary_rows)
-
-    _build_contact_sheet(overlay_paths, contact_sheet_path, crop_mod.read_image)
+    total_boxes = export_review(
+        images, input_root, out_root, crop_mod.read_image,
+        lambda img, path: _detect_entries(crop_mod, img, path),
+        lambda img, entry: entry.get("crop"),
+    )
     _write_readme(out_root, len(images), total_boxes, input_root)
-    print(f"images={len(images)} total_boxes={total_boxes}")
-    print(f"summary={summary_path}")
 
 
 if __name__ == "__main__":

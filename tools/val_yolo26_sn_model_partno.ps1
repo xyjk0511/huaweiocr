@@ -1,12 +1,13 @@
 param(
-    [string]$Model = "F:/HuaweiOCR/.worktrees/yolo26-retrain/runs/sn_model_partno/yolo26s_960_clean/weights/best.pt",
+    [string]$Model = "$PSScriptRoot/../runs/sn_model_partno/yolo26s_960_clean/weights/best.pt",
     [ValidateSet("train", "val", "test")]
     [string]$Split = "test",
     [int]$Device = 0,
     [int]$ImgSz = 960,
     [double]$Conf = 0.25,
     [double]$Iou = 0.60,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$Dataset = "$PSScriptRoot/../data.yaml"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,9 +16,8 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:POLARS_SKIP_CPU_CHECK = "1"
 
 $repoRoot = (Get-Location).Path.Replace("\", "/")
-$dataset = "$repoRoot/data.yaml"
 $project = "$repoRoot/runs/sn_model_partno_val"
-$yolo = "F:/HuaweiOCR/.venv/Scripts/yolo.exe"
+$yolo = "$repoRoot/.venv/Scripts/yolo.exe"
 
 if (-not (Test-Path $yolo)) {
     throw "Ultralytics CLI not found: $yolo"

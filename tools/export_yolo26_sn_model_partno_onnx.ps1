@@ -1,5 +1,5 @@
 param(
-    [string]$Model = "F:/HuaweiOCR/.worktrees/yolo26-retrain/runs/sn_model_partno/yolo26s_960_clean/weights/best.pt",
+    [string]$Model = "$PSScriptRoot/../runs/sn_model_partno/yolo26s_960_clean/weights/best.pt",
     [ValidateSet("onnx", "openvino")]
     [string]$Format = "onnx",
     [int]$ImgSz = 960,
@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:POLARS_SKIP_CPU_CHECK = "1"
 
-$yolo = "F:/HuaweiOCR/.venv/Scripts/yolo.exe"
+$yolo = Join-Path (Get-Location) ".venv/Scripts/yolo.exe"
 
 if (-not (Test-Path $yolo)) {
     throw "Ultralytics CLI not found: $yolo"

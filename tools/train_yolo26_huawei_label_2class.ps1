@@ -1,12 +1,16 @@
+param(
+    [string]$Dataset = "$PSScriptRoot/../datasets/all_label_yolo26_2class_701515/data.yaml",
+    [string]$Project = "$PSScriptRoot/../runs/huawei_label",
+    [string]$SmallWeights = "$PSScriptRoot/../yolo26s.pt",
+    [switch]$DryRun
+)
+
 $ErrorActionPreference = "Stop"
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:POLARS_SKIP_CPU_CHECK = "1"
 
-$dataset = "F:/HuaweiOCR/.worktrees/yolo26-retrain/datasets/all_label_yolo26_2class_701515/data.yaml"
-$project = "F:/HuaweiOCR/.worktrees/yolo26-retrain/runs/huawei_label"
-$yolo = "F:/HuaweiOCR/.venv/Scripts/yolo.exe"
-$smallWeights = "F:/HuaweiOCR/.worktrees/yolo26-retrain/yolo26s.pt"
+$yolo = Join-Path (Get-Location) ".venv/Scripts/yolo.exe"
 
 if (-not (Test-Path $yolo)) {
     throw "Ultralytics CLI not found: $yolo"
@@ -58,4 +62,8 @@ Write-Host "Starting YOLO26 2-class training"
 Write-Host "Dataset: $dataset"
 Write-Host "Project: $project"
 
-& $yolo @trainArgs
+if ($DryRun) {
+    Write-Host "Command: $yolo $($trainArgs -join ' ')"
+} else {
+    & $yolo @trainArgs
+}

@@ -6,7 +6,8 @@ param(
     [ValidateSet("ram", "disk", "False")]
     [string]$Cache = "ram",
     [Nullable[int]]$Batch = $null,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$Dataset = "$PSScriptRoot/../data.yaml"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,9 +16,8 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:POLARS_SKIP_CPU_CHECK = "1"
 
 $repoRoot = (Get-Location).Path.Replace("\", "/")
-$dataset = "$repoRoot/data.yaml"
 $project = "$repoRoot/runs/sn_model_partno"
-$yolo = "F:/HuaweiOCR/.venv/Scripts/yolo.exe"
+$yolo = "$repoRoot/.venv/Scripts/yolo.exe"
 $nanoWeights = "$repoRoot/yolo26n.pt"
 $smallWeights = "$repoRoot/yolo26s.pt"
 

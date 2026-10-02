@@ -1,5 +1,7 @@
 import unittest
 
+import numpy as np
+
 from huaweiocr.core import geometry
 
 
@@ -79,6 +81,33 @@ class CropGeometryTest(unittest.TestCase):
 
     def test_expand_box_pixels_truncates_float_padding(self):
         self.assertEqual(self.crop.expand_box_pixels(_Image(), (10, 20, 30, 40), 2.5, 3.5), (7, 16, 32, 43))
+
+
+class CropFromBoxClampTest(unittest.TestCase):
+    """Negative coordinates must not wrap around to the opposite image edge."""
+
+    def test_negative_x1_does_not_wrap_to_image_end(self):
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        img[:, 150:160] = 255
+        crop = geometry.crop_from_box(img, (-195, 0, 10, 10))
+        self.assertIsNotNone(crop)
+        self.assertEqual(crop.shape[:2], (10, 10))
+        self.assertEqual(int(crop.max()), 0)
+
+    def test_box_fully_left_of_image_returns_none(self):
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        self.assertIsNone(geometry.crop_from_box(img, (-50, 0, -10, 10)))
+
+    def test_in_bounds_box_is_unchanged(self):
+        img = np.arange(100 * 200 * 3, dtype=np.uint8).reshape(100, 200, 3)
+        crop = geometry.crop_from_box(img, (10, 20, 30, 40))
+        self.assertEqual(crop.shape[:2], (20, 20))
+        self.assertTrue(np.array_equal(crop, img[20:40, 10:30]))
+
+    def test_over_bounds_box_clips_as_before(self):
+        img = np.zeros((100, 200, 3), dtype=np.uint8)
+        crop = geometry.crop_from_box(img, (190, 90, 500, 500))
+        self.assertEqual(crop.shape[:2], (10, 10))
 
 
 if __name__ == "__main__":

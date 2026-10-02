@@ -242,27 +242,24 @@ def main() -> int:
             summary["output_paths"]["excel"] = args.excel_out
             summary["excel_export"] = export_stats
             print(f"  - {args.excel_out}")
-        total_time = (t3 - t0)
-        if total_images > 0:
-            avg_time = total_time / total_images
-            print(f"\nStats (mode={args.device}):")
-            print(f"  - images: {total_images}")
-            print(f"  - time_total_sec: {total_time:.2f}")
-            print(f"  - time_avg_sec: {avg_time:.2f}")
-            print(f"  - time_crop_sec: {t1 - t0:.2f}")
-            print(f"  - time_scan_sec: {t3 - t2:.2f}")
+        total_time = t3 - t0
+        print(f"\nStats (mode={args.device}):")
+        print(f"  - images: {total_images}")
+        print(f"  - time_total_sec: {total_time:.2f}")
+        print(f"  - time_avg_sec: {total_time / total_images:.2f}")
+        print(f"  - time_crop_sec: {t1 - t0:.2f}")
+        print(f"  - time_scan_sec: {t3 - t2:.2f}")
+        if isinstance(stats, dict) and stats.get("model_total"):
+            model_total = stats["model_total"]
+            model_success = stats.get("model_success", 0)
+            print("\nModel Metrics:")
+            print(f"  - model_total: {model_total}")
+            print(f"  - model_success: {model_success}")
+            print(f"  - model_success_rate: {model_success / model_total:.3f}")
+            print(f"  - model_barcode_hits: {stats.get('model_barcode_hits', 0)}")
+            print(f"  - model_barcode_hit_rate: {stats.get('model_barcode_hit_rate', 0.0):.3f}")
+            print(f"  - model_ocr_recoveries: {stats.get('model_ocr_recoveries', 0)}")
         if isinstance(stats, dict) and stats.get("sn_total"):
-            model_total = stats.get("model_total", 0)
-            if model_total:
-                model_success = stats.get("model_success", 0)
-                model_success_rate = model_success / model_total
-                print("\nModel Metrics:")
-                print(f"  - model_total: {model_total}")
-                print(f"  - model_success: {model_success}")
-                print(f"  - model_success_rate: {model_success_rate:.3f}")
-                print(f"  - model_barcode_hits: {stats.get('model_barcode_hits', 0)}")
-                print(f"  - model_barcode_hit_rate: {stats.get('model_barcode_hit_rate', 0.0):.3f}")
-                print(f"  - model_ocr_recoveries: {stats.get('model_ocr_recoveries', 0)}")
             sn_total = stats.get("sn_total", 0)
             sn_success = stats.get("sn_success", 0)
             sn_attempted = stats.get("sn_attempted", 0)

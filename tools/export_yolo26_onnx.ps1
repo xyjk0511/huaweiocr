@@ -1,12 +1,14 @@
+param(
+    [string]$Model = "$PSScriptRoot/../runs/huawei_label/yolo26n_640_noaug/weights/best.pt",
+    [switch]$DryRun
+)
+
 $ErrorActionPreference = "Stop"
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:POLARS_SKIP_CPU_CHECK = "1"
 
-$yolo = "F:/HuaweiOCR/.venv/Scripts/yolo.exe"
-$defaultModel = "F:/HuaweiOCR/.worktrees/yolo26-retrain/runs/huawei_label/yolo26n_640_noaug/weights/best.pt"
-
-$model = if ($args.Count -gt 0) { $args[0] } else { $defaultModel }
+$yolo = Join-Path (Get-Location) ".venv/Scripts/yolo.exe"
 
 if (-not (Test-Path $yolo)) {
     throw "Ultralytics CLI not found: $yolo"
@@ -16,4 +18,9 @@ if (-not (Test-Path $model)) {
     throw "Model checkpoint not found: $model"
 }
 
-& $yolo "export" "model=$model" "format=onnx" "imgsz=640" "simplify=True"
+$exportArgs = @("export", "model=$Model", "format=onnx", "imgsz=640", "simplify=True")
+if ($DryRun) {
+    Write-Host "Command: $yolo $($exportArgs -join ' ')"
+} else {
+    & $yolo @exportArgs
+}

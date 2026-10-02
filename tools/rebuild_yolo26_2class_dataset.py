@@ -73,9 +73,7 @@ def main() -> None:
     zip_path = Path(args.zip_path)
     out_dir = Path(args.out_dir)
 
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
 
     temp_dir = out_dir / "_extract"
     temp_dir.mkdir(parents=True, exist_ok=True)

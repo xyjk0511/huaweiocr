@@ -98,6 +98,16 @@ class CompareResultsTest(unittest.TestCase):
 
 
 class LoadResultsByLabelTest(unittest.TestCase):
+    def test_duplicate_labels_cannot_hide_an_incorrect_result(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "result.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(row) for row in (_row("a", sn="incorrect"), _row("a"))),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate label_id"):
+                baseline_tool.load_results_by_label(path)
+
     def test_loads_jsonl_keyed_by_label_id_and_skips_blank_lines(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "result.jsonl")

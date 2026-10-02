@@ -85,7 +85,7 @@ class RunAllPathPropagationTest(unittest.TestCase):
 
             def fake_scan2_main(**kwargs):
                 calls.update(kwargs)
-                return {"sn_total": 0}
+                return {"sn_total": 0, "model_total": 1, "model_success": 1}
 
             scan2.main = fake_scan2_main
 
@@ -97,8 +97,10 @@ class RunAllPathPropagationTest(unittest.TestCase):
                 out_dir,
             ]
             with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
-                with mock.patch.object(sys, "argv", argv):
+                with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new_callable=io.StringIO) as output:
                     self.assertEqual(run_all.main(), 0)
+            self.assertIn("model_success_rate: 1.000", output.getvalue())
+            self.assertNotIn("SN Metrics:", output.getvalue())
 
             summary_path = os.path.join(out_dir, "run_summary.json")
             with open(summary_path, "r", encoding="utf-8") as f:

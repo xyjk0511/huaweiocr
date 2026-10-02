@@ -22,8 +22,6 @@ VALID_BASENAMES = {
 
 
 def copy_base_dataset() -> None:
-    if OUT_DATASET.exists():
-        shutil.rmtree(OUT_DATASET)
     shutil.copytree(BASE_DATASET, OUT_DATASET)
 
 

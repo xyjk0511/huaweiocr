@@ -2133,45 +2133,15 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     os.makedirs(os.path.dirname(os.path.abspath(DEBUG_LOG_PATH)) or ".", exist_ok=True)
     start_debug_run()
     records = _load_manifest_records()
-    model_files = []
-    sn_files = []
-    part_no_files = []
     stats = new_stats()
-
-    if os.path.isdir(MODEL_CROP_DIR):
-        for fname in os.listdir(MODEL_CROP_DIR):
-            ext = os.path.splitext(fname)[1].lower()
-            if ext not in EXTS:
-                continue
-            model_files.append(fname)
-            key = label_key(fname)
-            records.setdefault(key, {})["model_path"] = os.path.join(MODEL_CROP_DIR, fname)
-
-    if os.path.isdir(PART_NO_CROP_DIR):
-        for fname in os.listdir(PART_NO_CROP_DIR):
-            ext = os.path.splitext(fname)[1].lower()
-            if ext not in EXTS:
-                continue
-            part_no_files.append(fname)
-            key = label_key(fname)
-            records.setdefault(key, {})["part_no_path"] = os.path.join(PART_NO_CROP_DIR, fname)
-
-    if os.path.isdir(SN_CROP_DIR):
-        for fname in os.listdir(SN_CROP_DIR):
-            ext = os.path.splitext(fname)[1].lower()
-            if ext not in EXTS:
-                continue
-            sn_files.append(fname)
-            key = label_key(fname)
-            records.setdefault(key, {})["sn_path"] = os.path.join(SN_CROP_DIR, fname)
-
-    append_debug(
-        f"[SCAN2] model_files={len(model_files)} part_no_files={len(part_no_files)} "
-        f"sn_files={len(sn_files)} keys={len(records)}"
-    )
-    append_debug(f"[SCAN2] model_names={sorted(model_files)}")
-    append_debug(f"[SCAN2] part_no_names={sorted(part_no_files)}")
-    append_debug(f"[SCAN2] sn_names={sorted(sn_files)}")
+    for field, folder in (("model", MODEL_CROP_DIR), ("part_no", PART_NO_CROP_DIR), ("sn", SN_CROP_DIR)):
+        names = [
+            fname for fname in os.listdir(folder) if os.path.splitext(fname)[1].lower() in EXTS
+        ] if os.path.isdir(folder) else []
+        for fname in names:
+            records.setdefault(label_key(fname), {})[f"{field}_path"] = os.path.join(folder, fname)
+        append_debug(f"[SCAN2] {field}_files={len(names)} {field}_names={sorted(names)}")
+    append_debug(f"[SCAN2] keys={len(records)}")
 
     keys = sorted(records.keys())
     barcode_workers = scan_worker_count("barcode")
@@ -2219,52 +2189,26 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
     def run_barcode_job(job):
         kind, key, item = job
-        job_label = _scan_job_label(kind, key)
         if kind == "part_no_model":
-            result = (
-                kind,
-                key,
-                try_model_from_part_no_crop(
-                    item.get("part_no_path", ""),
-                    label_id=key,
-                    use_ocr=False,
-                ),
+            result = try_model_from_part_no_crop(
+                item.get("part_no_path", ""), label_id=key, use_ocr=False,
             )
-            if progress_logs:
-                _log(f"[条码完成] {job_label} -> {_barcode_job_result_summary(kind, result[2])}", "info")
-            return result
-        if kind == "model":
-            result = (
-                kind,
-                key,
-                recognize_model_barcode(item["model_path"], label_id=key),
-            )
-            if progress_logs:
-                _log(f"[条码完成] {job_label} -> {_barcode_job_result_summary(kind, result[2])}", "info")
-            return result
-        if item.get("original_image_path"):
-            append_debug(f"[SN] {key} original image barcode fallback disabled")
-        label_path = ""
-        if item.get("label_crop"):
-            if item.get("sn_path"):
-                if scan_label_with_sn:
-                    label_path = item.get("label_crop", "")
-            elif scan_label_without_sn:
-                label_path = item.get("label_crop", "")
-        result = (
-            kind,
-            key,
-            _recognize_sn_barcode(
+        elif kind == "model":
+            result = recognize_model_barcode(item["model_path"], label_id=key)
+        else:
+            if item.get("original_image_path"):
+                append_debug(f"[SN] {key} original image barcode fallback disabled")
+            scan_label = scan_label_with_sn if item.get("sn_path") else scan_label_without_sn
+            result = _recognize_sn_barcode(
                 item.get("sn_path", ""),
                 label_id=key,
-                label_path=label_path,
+                label_path=item.get("label_crop", "") if scan_label else "",
                 original_path="",
                 known_non_sn_payloads=_known_non_sn_payloads_for_item(item, key, part_no_by_key),
-            ),
-        )
+            )
         if progress_logs:
-            _log(f"[条码完成] {job_label} -> {_barcode_job_result_summary(kind, result[2])}", "info")
-        return result
+            _log(f"[条码完成] {_scan_job_label(kind, key)} -> {_barcode_job_result_summary(kind, result)}", "info")
+        return kind, key, result
 
     for kind, key, result in _map_ordered(
         first_barcode_jobs,
@@ -2285,15 +2229,6 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 model_barcode_misses[key] = (model_raw, model_src)
                 if not part_no:
                     part_no_scan_miss_keys.add(key)
-            continue
-
-        if kind == "model":
-            model_code, model_raw, model_src = result
-            if model_code:
-                model_results[key] = (model_code, model_raw, model_src)
-            else:
-                model_barcode_misses[key] = (model_raw, model_src)
-                ocr_jobs.append(("model", key, item, None))
             continue
 
         sn_code, sn_raw, sn_src, sn_meta, barcode_report = result
@@ -2351,9 +2286,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
         for learn_key in group_keys:
             item = records[learn_key]
-            had_model_path = bool(item.get("model_path"))
             if not item.get("model_path"):
-                if delayed_model_crop_from_label(item, learn_key) and not had_model_path:
+                if delayed_model_crop_from_label(item, learn_key):
                     stats["model_deferred_crops"] += 1
             if not item.get("model_path"):
                 continue
@@ -2410,8 +2344,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             )
             and delayed_model_crop_enabled()
         ):
-            had_model_path = bool(item.get("model_path"))
-            if delayed_model_crop_from_label(item, key) and not had_model_path:
+            if delayed_model_crop_from_label(item, key):
                 stats["model_deferred_crops"] += 1
         if item.get("model_path"):
             if model_barcode:
@@ -2421,15 +2354,13 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         elif item.get("part_no_path") and (ocr_fallback or part_no_ocr_fallback):
             ocr_jobs.append(("model", key, item, None))
 
-    for kind, key, result in _map_ordered(
+    for _, key, result in _map_ordered(
         model_barcode_jobs,
         run_barcode_job,
         barcode_workers,
         progress=None,
     ):
         item = records[key]
-        if kind != "model":
-            continue
         model_code, model_raw, model_src = result
         if model_code:
             model_results[key] = (model_code, model_raw, model_src)
@@ -2503,17 +2434,16 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
     def run_ocr_job(job):
         kind, key, item, barcode_report = job
-        job_label = _scan_job_label(kind, key)
         if kind == "model":
-            model_result = ("", "", "missing")
+            result = ("", "", "missing")
             if item.get("model_path"):
-                model_result = recognize_model_ocr(
+                result = recognize_model_ocr(
                     item["model_path"],
                     label_id=key,
                     verify_barcode_visual=model_barcode,
                 )
             if (
-                (not model_result[0] or not model_code_is_plausible(model_result[0]))
+                (not result[0] or not model_code_is_plausible(result[0]))
                 and item.get("label_crop")
             ):
                 label_result = recognize_model_label_ocr(
@@ -2521,29 +2451,19 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     label_id=key,
                 )
                 if label_result[0] and model_code_is_plausible(label_result[0]):
-                    model_result = label_result
-                elif not model_result[0] and label_result[1]:
-                    model_result = label_result
-            result = (kind, key, model_result)
-            if progress_logs:
-                _log(f"[OCR完成] {job_label} -> {_ocr_job_result_summary(kind, result[2])}", "info")
-            return result
-        current = sn_results.get(key, ("", "", "missing", {}))
-        sn_meta = current[3] if len(current) > 3 else {}
-        sn_ocr_path = item.get("sn_path") or item.get("label_crop", "")
-        result = (
-            kind,
-            key,
-            recognize_sn_ocr_after_barcode(
-                sn_ocr_path,
+                    result = label_result
+                elif not result[0] and label_result[1]:
+                    result = label_result
+        else:
+            result = recognize_sn_ocr_after_barcode(
+                item.get("sn_path") or item.get("label_crop", ""),
                 label_id=key,
                 barcode_report=barcode_report or sn_reports.get(key),
-                meta=sn_meta,
-            ),
-        )
+                meta=sn_results.get(key, ("", "", "missing", {}))[3],
+            )
         if progress_logs:
-            _log(f"[OCR完成] {job_label} -> {_ocr_job_result_summary(kind, result[2])}", "info")
-        return result
+            _log(f"[OCR完成] {_scan_job_label(kind, key)} -> {_ocr_job_result_summary(kind, result)}", "info")
+        return kind, key, result
 
     for kind, key, result in _map_ocr_ordered(
         ocr_jobs,

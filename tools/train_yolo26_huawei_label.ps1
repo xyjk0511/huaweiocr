@@ -1,12 +1,18 @@
+param(
+    [ValidateSet("nano", "small")]
+    [string]$Variant = "nano",
+    [string]$Dataset = "$PSScriptRoot/../datasets/all_label_yolo26/data.yaml",
+    [string]$Project = "$PSScriptRoot/../runs/huawei_label",
+    [switch]$DryRun
+)
+
 $ErrorActionPreference = "Stop"
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 $env:POLARS_SKIP_CPU_CHECK = "1"
 
-$dataset = "F:/HuaweiOCR/.worktrees/yolo26-retrain/datasets/all_label_yolo26/data.yaml"
-$project = "F:/HuaweiOCR/.worktrees/yolo26-retrain/runs/huawei_label"
-$yolo = "F:/HuaweiOCR/.venv/Scripts/yolo.exe"
-$nanoWeights = "F:/HuaweiOCR/yolo26n.pt"
+$yolo = Join-Path (Get-Location) ".venv/Scripts/yolo.exe"
+$nanoWeights = Join-Path (Get-Location) "yolo26n.pt"
 $smallWeights = "yolo26s.pt"
 
 if (-not (Test-Path $yolo)) {
@@ -17,13 +23,11 @@ if (-not (Test-Path $dataset)) {
     throw "Dataset YAML not found: $dataset"
 }
 
-if (-not (Test-Path $nanoWeights)) {
+if ($Variant -eq "nano" -and -not (Test-Path $nanoWeights)) {
     throw "Missing YOLO26 nano weights: $nanoWeights"
 }
 
-$variant = if ($args.Count -gt 0) { $args[0].ToLowerInvariant() } else { "nano" }
-
-switch ($variant) {
+switch ($Variant) {
     "nano" {
         $name = "yolo26n_640_noaug"
         $trainArgs = @(
@@ -88,13 +92,14 @@ switch ($variant) {
             "hsv_v=0.15"
         )
     }
-    default {
-        throw "Unknown variant '$variant'. Use: nano or small"
-    }
 }
 
 Write-Host "Starting YOLO26 training variant: $variant"
 Write-Host "Dataset: $dataset"
 Write-Host "Project: $project"
 
-& $yolo @trainArgs
+if ($DryRun) {
+    Write-Host "Command: $yolo $($trainArgs -join ' ')"
+} else {
+    & $yolo @trainArgs
+}

@@ -52,11 +52,13 @@ def load_results_by_label(path) -> dict:
     """Load a model_sn_ocr.jsonl file keyed by label_id."""
     results = {}
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_number, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             row = json.loads(line)
+            if row["label_id"] in results:
+                raise ValueError(f"{path}:{line_number}: duplicate label_id {row['label_id']!r}")
             results[row["label_id"]] = row
     return results
 

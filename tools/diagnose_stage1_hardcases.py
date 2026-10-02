@@ -110,11 +110,7 @@ def main():
     manifest_path = Path(args.manifest)
     raw_dir = Path(args.raw_dir)
     out_dir = Path(args.out)
-    if out_dir.exists():
-        import shutil
-
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
 
     records = []
     with manifest_path.open("r", encoding="utf-8-sig", newline="") as f:
