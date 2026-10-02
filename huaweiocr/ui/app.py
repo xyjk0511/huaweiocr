@@ -141,12 +141,7 @@ def _display_source(value: str, strings=None) -> str:
     return display_source(value, strings or get_strings("zh"))
 
 
-def _display_model_src(value: str, strings=None) -> str:
-    return _display_source(value, strings)
-
-
-def _display_sn_src(value: str, strings=None) -> str:
-    return _display_source(value, strings)
+_display_model_src = _display_sn_src = _display_source
 
 
 def _self_check():
@@ -237,7 +232,6 @@ class App(tk.Tk):
         self.geometry("900x700")
         # 已选择的图片路径列表
         self.image_paths = []
-        self._crop_module = None
         self._scan2_module = None
         self._is_running = False
         self._last_run_dir = ""
@@ -250,28 +244,16 @@ class App(tk.Tk):
         top_frame = tk.Frame(self)
         top_frame.pack(fill=tk.X, padx=10, pady=10)
         if self.dnd_enabled:
-            self.drop_area = tk.Label(
-                top_frame,
-                text=self.strings["drop_hint_enabled"],
-                relief="ridge",
-                borderwidth=2,
-                width=60,
-                height=4,
-                fg="#555555"
-            )
+            hint_key = "drop_hint_enabled"
+        elif DND_IMPORT_AVAILABLE:
+            hint_key = "drop_hint_disabled"
         else:
-            hint = self.strings["drop_hint_disabled"]
-            if not DND_IMPORT_AVAILABLE:
-                hint = self.strings["drop_hint_tkdnd_missing"]
-            self.drop_area = tk.Label(
-                top_frame,
-                text=hint,
-                relief="ridge",
-                borderwidth=2,
-                width=60,
-                height=4,
-                fg="#aa0000"
-            )
+            hint_key = "drop_hint_tkdnd_missing"
+        self.drop_area = tk.Label(
+            top_frame, text=self.strings[hint_key], relief="ridge",
+            borderwidth=2, width=60, height=4,
+            fg="#555555" if self.dnd_enabled else "#aa0000",
+        )
         self.drop_area.pack(fill=tk.X, expand=True)
         if self.dnd_enabled:
             # 注册拖拽目标
@@ -314,16 +296,10 @@ class App(tk.Tk):
         table_frame = tk.LabelFrame(self, text=self.strings["results_table_title"])
         table_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
         self.table = ttk.Treeview(table_frame, columns=RESULT_COLUMNS, show="headings", height=6)
-        self.table.heading("label_id", text=self.strings["col_label_id"])
-        self.table.heading("model", text=self.strings["col_model"])
-        self.table.heading("sn", text=self.strings["col_sn"])
-        self.table.heading("model_src", text=self.strings["col_model_src"])
-        self.table.heading("sn_src", text=self.strings["col_sn_src"])
-        self.table.column("label_id", width=140, anchor="w")
-        self.table.column("model", width=120, anchor="w")
-        self.table.column("sn", width=200, anchor="w")
-        self.table.column("model_src", width=80, anchor="w")
-        self.table.column("sn_src", width=80, anchor="w")
+        for name, width in (("label_id", 140), ("model", 120), ("sn", 200),
+                            ("model_src", 80), ("sn_src", 80)):
+            self.table.heading(name, text=self.strings[f"col_{name}"])
+            self.table.column(name, width=width, anchor="w")
         table_scroll = tk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
         self.table.configure(yscrollcommand=table_scroll.set)
         self.table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -352,10 +328,7 @@ class App(tk.Tk):
                 self.write_log(self.strings["log_tkdnd_init_failed"].format(reason=reason))
         else:
             self.write_log(self.strings["log_drop_hint"])
-        if CLIP_AVAILABLE:
-            self.write_log(self.strings["log_clip_enabled"])
-        else:
-            self.write_log(self.strings["log_clip_pillow_missing"])
+        self.write_log(self.strings["log_clip_enabled" if CLIP_AVAILABLE else "log_clip_pillow_missing"])
         self._ocr_prewarm_thread = start_ocr_prewarm_thread(log=self.write_log)
         self.after(self._log_poll_interval_ms, self._poll_log_queue)
     # ========== 工具函数 ==========
@@ -598,7 +571,6 @@ class App(tk.Tk):
                 self.after(0, lambda msg=msg: messagebox.showerror(self.strings["dependency_load_failed_title"], msg))
                 return
 
-            self._crop_module = crop_module
             self._scan2_module = scan2_module
             input_root = os.path.abspath(getattr(crop_module, "DEFAULT_INPUT_DIR", "new_images"))
             run_dir, copied_records = copy_images_to_unique_run_dir(image_paths, input_root)

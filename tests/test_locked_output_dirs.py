@@ -53,6 +53,24 @@ class LockedOutputDirsTest(unittest.TestCase):
                 self.assertTrue(os.path.exists(locked_manifest))
 
 
+def _cli_pipeline_modules(out_dir):
+    stage2_dir = os.path.join(out_dir, "stage2_fields_run_x")
+    paths = {
+        "stage1_dir": os.path.join(out_dir, "stage1_labels_run_x"),
+        "stage2_dir": stage2_dir,
+        "model_dir": os.path.join(stage2_dir, "model"),
+        "sn_dir": os.path.join(stage2_dir, "sn"),
+    }
+    crop = types.SimpleNamespace(
+        STAGE1_DIR=paths["stage1_dir"], STAGE2_DIR=stage2_dir,
+        OUT_MODEL_DIR=paths["model_dir"], OUT_SN_DIR=paths["sn_dir"],
+        set_log_level=mock.Mock(),
+        main=mock.Mock(return_value={"label_count": 1, "manifest_rows": 1, **paths}),
+    )
+    scan2 = types.SimpleNamespace(set_log_level=mock.Mock(), main=mock.Mock(return_value={"sn_total": 0}))
+    return crop, scan2
+
+
 class RunAllPathPropagationTest(unittest.TestCase):
     def test_scan2_reads_actual_crop_output_dirs(self):
         import run_all
@@ -64,30 +82,8 @@ class RunAllPathPropagationTest(unittest.TestCase):
             with open(os.path.join(input_dir, "sample.png"), "wb") as image:
                 image.write(b"not-a-real-image")
 
-            crop = types.ModuleType("crop")
-            crop.OUT_MODEL_DIR = os.path.join(out_dir, "stage2_fields_run_x", "model")
-            crop.OUT_SN_DIR = os.path.join(out_dir, "stage2_fields_run_x", "sn")
-            crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields_run_x")
-            crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels_run_x")
-            crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: {
-                "label_count": 1,
-                "manifest_rows": 1,
-                "stage1_dir": crop.STAGE1_DIR,
-                "stage2_dir": crop.STAGE2_DIR,
-                "model_dir": crop.OUT_MODEL_DIR,
-                "sn_dir": crop.OUT_SN_DIR,
-            }
-
-            calls = {}
-            scan2 = types.ModuleType("scan2")
-            scan2.set_log_level = lambda level: None
-
-            def fake_scan2_main(**kwargs):
-                calls.update(kwargs)
-                return {"sn_total": 0, "model_total": 1, "model_success": 1}
-
-            scan2.main = fake_scan2_main
+            crop, scan2 = _cli_pipeline_modules(out_dir)
+            scan2.main.return_value = {"sn_total": 0, "model_total": 1, "model_success": 1}
 
             argv = [
                 "run_all.py",
@@ -106,6 +102,7 @@ class RunAllPathPropagationTest(unittest.TestCase):
             with open(summary_path, "r", encoding="utf-8") as f:
                 summary = json.load(f)
 
+            calls = scan2.main.call_args.kwargs
             self.assertEqual(calls["model_dir"], crop.OUT_MODEL_DIR)
             self.assertEqual(calls["sn_dir"], crop.OUT_SN_DIR)
             self.assertEqual(
@@ -153,13 +150,8 @@ class RunAllCliTest(unittest.TestCase):
             with open(os.path.join(input_dir, "sample.png"), "wb") as image:
                 image.write(b"not-a-real-image")
 
-            crop = types.ModuleType("crop")
-            crop.set_log_level = lambda level: None
-            crop.main = mock.Mock(return_value={"label_count": 0, "manifest_rows": 0})
-
-            scan2 = types.ModuleType("scan2")
-            scan2.set_log_level = lambda level: None
-            scan2.main = mock.Mock()
+            crop, scan2 = _cli_pipeline_modules(out_dir)
+            crop.main.return_value = {"label_count": 0, "manifest_rows": 0}
 
             argv = ["run_all.py", "--input", input_dir, "--out", out_dir]
             with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
@@ -213,24 +205,7 @@ class RunAllCliTest(unittest.TestCase):
             with open(os.path.join(input_dir, "sample.png"), "wb") as image:
                 image.write(b"not-a-real-image")
 
-            crop = types.ModuleType("crop")
-            crop.OUT_MODEL_DIR = os.path.join(out_dir, "stage2_fields", "model")
-            crop.OUT_SN_DIR = os.path.join(out_dir, "stage2_fields", "sn")
-            crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
-            crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
-            crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: {
-                "label_count": 1,
-                "manifest_rows": 1,
-                "stage1_dir": crop.STAGE1_DIR,
-                "stage2_dir": crop.STAGE2_DIR,
-                "model_dir": crop.OUT_MODEL_DIR,
-                "sn_dir": crop.OUT_SN_DIR,
-            }
-
-            scan2 = types.ModuleType("scan2")
-            scan2.set_log_level = lambda level: None
-            scan2.main = lambda **kwargs: {"sn_total": 0}
+            crop, scan2 = _cli_pipeline_modules(out_dir)
 
             argv = [
                 "run_all.py",
@@ -318,23 +293,7 @@ class RunAllCliTest(unittest.TestCase):
             with open(os.path.join(input_dir, "sample.png"), "wb") as image:
                 image.write(b"not-a-real-image")
 
-            crop = types.ModuleType("crop")
-            crop.OUT_MODEL_DIR = os.path.join(out_dir, "stage2_fields", "model")
-            crop.OUT_SN_DIR = os.path.join(out_dir, "stage2_fields", "sn")
-            crop.STAGE2_DIR = os.path.join(out_dir, "stage2_fields")
-            crop.STAGE1_DIR = os.path.join(out_dir, "stage1_labels")
-            crop.set_log_level = lambda level: None
-            crop.main = lambda **kwargs: {
-                "label_count": 1,
-                "manifest_rows": 1,
-                "stage1_dir": crop.STAGE1_DIR,
-                "stage2_dir": crop.STAGE2_DIR,
-                "model_dir": crop.OUT_MODEL_DIR,
-                "sn_dir": crop.OUT_SN_DIR,
-            }
-
-            scan2 = types.ModuleType("scan2")
-            scan2.set_log_level = lambda level: None
+            crop, scan2 = _cli_pipeline_modules(out_dir)
 
             def fake_scan2_main(**kwargs):
                 os.makedirs(os.path.dirname(kwargs["out_jsonl"]), exist_ok=True)
@@ -348,7 +307,7 @@ class RunAllCliTest(unittest.TestCase):
                     }) + "\n")
                 return {"records": 1, "sn_total": 1, "sn_success": 1}
 
-            scan2.main = fake_scan2_main
+            scan2.main.side_effect = fake_scan2_main
 
             excel_path = os.path.join(root, "result.xlsx")
             argv = [
@@ -388,15 +347,9 @@ class RunAllCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             input_dir = os.path.join(root, "empty")
             os.makedirs(input_dir)
-            crop = types.ModuleType("crop")
-            crop.set_log_level = lambda level: None
-            crop.main = mock.Mock()
-
-            scan2 = types.ModuleType("scan2")
-            scan2.set_log_level = lambda level: None
-            scan2.main = mock.Mock()
-
-            argv = ["run_all.py", "--input", input_dir, "--out", os.path.join(root, "out")]
+            out_dir = os.path.join(root, "out")
+            crop, scan2 = _cli_pipeline_modules(out_dir)
+            argv = ["run_all.py", "--input", input_dir, "--out", out_dir]
             with mock.patch.dict(sys.modules, {"crop": crop, "scan2": scan2}):
                 with mock.patch.object(sys, "argv", argv):
                     self.assertEqual(run_all.main(), 2)
