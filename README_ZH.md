@@ -13,7 +13,7 @@ SN 条码识别只使用当前标签绑定的裁剪图，例如 SN 小图、条�
 ## 环境
 
 - Windows
-- 推荐 Python 3.12
+- Python 3.10（本机与 CI 使用的已验证版本）
 - `requirements.txt` 已锁定依赖版本
 - 默认本地检测不需要 `.env`；只有显式使用 Roboflow 时才需要 API key
 

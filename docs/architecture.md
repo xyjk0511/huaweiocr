@@ -28,7 +28,9 @@ stage2_fields/model_sn_ocr.jsonl    ←— 最终结果（字段协议见 output
 run_summary.json（+ 可选 --excel-out 导出 Excel）
 ```
 
-crop 与 scan2 **只通过文件系统交互**（manifest + 图片），互不 import。
+阶段交接以文件系统为主（manifest + 图片）。Stage2 裁剪会调用识别模块验证
+PartNo/Model 条码；识别阶段的延迟 Model 补裁会调用裁剪函数。这些调用保留为
+运行时导入，像素分析模块不反向依赖管线或 GUI。
 识别策略与指标纪律：条码命中与 OCR 恢复分开统计，OCR 恢复不得计入条码命中率
 （项目规则，见 AGENTS.md）。
 
@@ -36,32 +38,45 @@ crop 与 scan2 **只通过文件系统交互**（manifest + 图片），互不 i
 
 | 文件 | 职责 | 依赖 |
 |---|---|---|
-| run_all.py | CLI 编排入口：调 crop.main → scan2.main，写 run_summary | crop, scan2 |
-| crop.py | Stage1 标签裁剪 + Stage2 字段裁剪 + 启发式过滤 + manifest 写入 | local_yolo, (可选)inference_sdk, envutil |
-| scan2.py | 条码优先识别、OCR 兜底、PartNo→Model 学习映射、统计 | barcode, sn_barcode, ocr, app_paths, envutil |
+| huaweiocr/cli.py | CLI 编排：裁剪 → 识别，写 run_summary | crop, scan2, io.results |
+| huaweiocr/detect/crop_pipeline.py | Stage1/Stage2 裁剪、输出路径与 manifest | local_yolo, (可选)inference_sdk, detect 下的像素分析模块 |
+| huaweiocr/detect/barcode_regions.py | 条码带定位、SN 分段与条码图像归一化 | OpenCV, NumPy, core.geometry |
+| huaweiocr/detect/text_regions.py | 连通域文字行定位 | OpenCV |
+| huaweiocr/detect/field_quality.py | 字段裁剪完整性、邻行过滤、留白与修剪 | barcode_regions, text_regions |
+| huaweiocr/recognition/pipeline.py | 条码优先识别、OCR 兜底、PartNo→Model 学习映射 | barcode, sn_barcode, ocr, core.extract |
+| huaweiocr/recognition/metrics.py | 型号/SN 统计、条码与 OCR 恢复分开计数 | — |
+| huaweiocr/core/parallel.py | 保序并发执行与进度回调 | Python 标准库 |
+| huaweiocr/core/sources.py | 共用中英文来源名称与 SN 辅助判断后缀 | — |
+| huaweiocr/io/images.py | 图片格式清单与稳定递归枚举 | Python 标准库 |
+| huaweiocr/io/results.py | JSONL 读取与 CLI/GUI 共用 Excel 导出 | openpyxl（导出时加载） |
 | local_yolo.py | 本地 YOLO 推理（ONNX/PT，letterbox+NMS），无内部依赖 | — |
 | ocr.py | PaddleOCR 引擎初始化与兼容处理 | app_paths |
 | barcode.py | 通用一维码解码库（pyzbar / BarcodeReaderCLI），无业务逻辑 | win_subprocess |
 | sn_barcode.py | SN 专用条码扫描（候选生成/多解码器/评分选择），dataclass 结构 | barcode |
 | part_no_barcode_rescue.py | PartNo 的 Code128 救援解码 | — |
 | linear_barcode_repair.py | Code128 像素级修复框架（scan2 的修复路径调用） | — |
-| gui_app.py / gui_app_en.py | 中/英文 Tkinter GUI（打包入口是 gui_app.py） | gui_pipeline |
-| gui_pipeline.py | GUI↔管线桥接：动态 import、OCR 预热线程、输入复制 | crop, scan2（动态） |
+| huaweiocr/ui/app.py | 中/英文 Tkinter GUI | ui.pipeline, ui.i18n, io.results |
+| huaweiocr/ui/pipeline.py | GUI↔管线桥接：动态 import、OCR 预热线程、输入复制 | crop, scan2（动态） |
+| huaweiocr/ui/i18n.py | 桌面文案 | core.sources |
 | app_paths.py | frozen/dev 路径解析、模型安装同步锁 | — |
 | envutil.py | 统一的环境变量解析工具 | — |
 | validate_sn_barcodes.py | SN 条码结果对 manifest 的验证工具 | sn_barcode |
 | tools/ | 训练/数据集/审计脚本，**非运行时依赖** | — |
-| legacy/ | 已退役代码，勿引用 | — |
+
+根目录的 `crop.py`、`scan2.py`、`run_all.py`、`gui_app.py`、`gui_pipeline.py`
+和 `gui_i18n.py` 都是兼容入口，沿用已有模块别名模式，旧 import 与包内实现共享
+同一个模块对象。`gui_app_en.py` 继续委托同一个 GUI；PyInstaller 仍从
+`gui_app.py` 开始静态收集。也可以使用 `python -m huaweiocr` 运行 CLI。
 
 ## 配置
 
 三层：`.env`（由 crop.load_dotenv 加载，主要是 API_KEY）→ 环境变量（约 70 个，
 全量清单见 [configuration.md](configuration.md)）→ CLI 参数（run_all.py）。
-阈值类常量目前硬编码在 crop.py 头部（MIN_CONF/PADDING/NMS 等）。
+阈值类常量位于 `huaweiocr/detect/crop_pipeline.py` 头部（MIN_CONF/PADDING/NMS 等）。
 
 ## 输出目录
 
-由 crop.py 的模块级路径常量 + `configure_paths()` 决定；输出目录已存在时自动建
+由裁剪管线的模块级路径常量 + `configure_paths()` 决定；输出目录已存在时自动建
 `*_run_N` 兄弟目录防覆盖（tests/test_locked_output_dirs.py 守护此行为）。
 
 ## 验证体系

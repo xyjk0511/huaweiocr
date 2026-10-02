@@ -13,7 +13,7 @@ Detection uses local ONNX models by default: `local_models/detectors/label_detec
 ## Requirements
 
 - Windows
-- Python 3.12 recommended
+- Python 3.10 (local build and CI target)
 - Dependencies pinned in `requirements.txt`
 - No `.env` is required for default local detection; an API key is only needed when explicitly using Roboflow
 

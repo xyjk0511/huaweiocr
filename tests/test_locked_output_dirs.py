@@ -24,10 +24,16 @@ def tearDownModule():
         "barcode",
         "huaweiocr.barcode.generic",
         "crop",
+        "huaweiocr.detect.crop_pipeline",
+        "huaweiocr.detect.barcode_regions",
+        "huaweiocr.detect.text_regions",
+        "huaweiocr.detect.field_quality",
         "cv2",
         "gui_app",
+        "huaweiocr.ui.app",
         "gui_app_en",
         "gui_pipeline",
+        "huaweiocr.ui.pipeline",
         "numpy",
         "ocr",
         "huaweiocr.detect.ocr_engine",
@@ -36,6 +42,7 @@ def tearDownModule():
         "pyzbar",
         "pyzbar.pyzbar",
         "scan2",
+        "huaweiocr.recognition.pipeline",
         "win_subprocess",
         "huaweiocr.io.win_subprocess",
     ):
@@ -107,12 +114,18 @@ def _install_scan2_import_fakes():
 def _import_crop():
     os.environ["API_KEY"] = "test-key"
     sys.modules.pop("crop", None)
+    sys.modules.pop("huaweiocr.detect.crop_pipeline", None)
+    sys.modules.pop("huaweiocr.core.geometry", None)
+    sys.modules.pop("huaweiocr.detect.barcode_regions", None)
+    sys.modules.pop("huaweiocr.detect.text_regions", None)
+    sys.modules.pop("huaweiocr.detect.field_quality", None)
     _install_crop_import_fakes()
     return importlib.import_module("crop")
 
 
 def _import_scan2():
     sys.modules.pop("scan2", None)
+    sys.modules.pop("huaweiocr.recognition.pipeline", None)
     _install_scan2_import_fakes()
     return importlib.import_module("scan2")
 
@@ -420,6 +433,8 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
         import run_all
 
         try:
+            # Pipeline tests install a minimal numpy fake; openpyxl needs the real module.
+            sys.modules.pop("numpy", None)
             import openpyxl
         except ImportError:
             self.skipTest("openpyxl is not installed")
@@ -1940,6 +1955,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_display_sources_are_chinese(self):
         sys.modules.pop("gui_app", None)
+        sys.modules.pop("huaweiocr.ui.app", None)
         sys.modules.pop("numpy", None)
         sys.modules.pop("app_paths", None)
         sys.modules.pop("huaweiocr.io.paths_runtime", None)
@@ -1951,6 +1967,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_gui_import_does_not_import_pipeline_modules(self):
         sys.modules.pop("gui_app", None)
+        sys.modules.pop("huaweiocr.ui.app", None)
         sys.modules.pop("crop", None)
         sys.modules.pop("scan2", None)
         sys.modules.pop("barcode", None)
@@ -1967,6 +1984,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_gui_log_mask_keeps_app_relative_output_paths(self):
         sys.modules.pop("gui_app", None)
+        sys.modules.pop("huaweiocr.ui.app", None)
         import gui_app
 
         app_path = os.path.join(os.getcwd(), "stage2_fields", "manifest.jsonl")
@@ -1982,6 +2000,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_gui_write_log_appends_directly_on_main_thread(self):
         sys.modules.pop("gui_app", None)
+        sys.modules.pop("huaweiocr.ui.app", None)
         import gui_app
 
         captured = []
@@ -1999,6 +2018,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_gui_write_log_batches_background_updates(self):
         sys.modules.pop("gui_app", None)
+        sys.modules.pop("huaweiocr.ui.app", None)
         import gui_app
 
         captured = []
@@ -2103,7 +2123,8 @@ class GuiPipelineTest(unittest.TestCase):
     def test_gui_en_entry_delegates_to_gui_app(self):
         sys.modules.pop("gui_app_en", None)
         gui_app_en = importlib.import_module("gui_app_en")
-        self.assertEqual(gui_app_en.main.__module__, "gui_app")
+        import gui_app
+        self.assertIs(gui_app_en.main, gui_app.main)
 
     def test_gui_run_pipeline_uses_unique_run_dir_as_crop_out_dir(self):
         # gui_app_en 自 i18n 合并后是 gui_app 的薄壳，测 gui_app 即覆盖两个入口。
@@ -2126,6 +2147,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_gui_starts_ocr_prewarm_after_init(self):
         sys.modules.pop("gui_app", None)
+        sys.modules.pop("huaweiocr.ui.app", None)
         import gui_app
 
         source = inspect.getsource(gui_app.App.__init__)
@@ -2134,6 +2156,7 @@ class GuiPipelineTest(unittest.TestCase):
 
     def test_gui_prewarm_can_be_disabled_without_importing_scan2(self):
         sys.modules.pop("gui_pipeline", None)
+        sys.modules.pop("huaweiocr.ui.pipeline", None)
         sys.modules.pop("scan2", None)
         import gui_pipeline
 

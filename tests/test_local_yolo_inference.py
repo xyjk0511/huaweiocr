@@ -452,6 +452,7 @@ class LocalYoloInferenceTests(unittest.TestCase):
         fake_local_yolo.LocalYoloClient = FakeLocalYoloClient
 
         old_crop = sys.modules.pop("crop", None)
+        old_impl = sys.modules.pop("huaweiocr.detect.crop_pipeline", None)
         try:
             with mock.patch.dict(
                 sys.modules,
@@ -469,6 +470,9 @@ class LocalYoloInferenceTests(unittest.TestCase):
                     fake_inference_sdk.InferenceHTTPClient.assert_not_called()
         finally:
             sys.modules.pop("crop", None)
+            sys.modules.pop("huaweiocr.detect.crop_pipeline", None)
+            if old_impl is not None:
+                sys.modules["huaweiocr.detect.crop_pipeline"] = old_impl
             if old_crop is not None:
                 sys.modules["crop"] = old_crop
 

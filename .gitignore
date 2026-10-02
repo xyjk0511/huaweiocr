@@ -2,6 +2,8 @@
 .idea/
 .venv/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 *.pyc
 build/
 dist/
@@ -26,6 +28,9 @@ clearimage_cli/**/obj/
 clearimage_cli/publish/
 release/
 test_runs/
+batch_runs/
+artifacts/sol/
+artifacts/verification/
 *.zip
 datasets/
 runs/

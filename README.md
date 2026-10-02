@@ -43,3 +43,14 @@ Results are written under `runs/`. If output folders already exist, a per-run si
 - `stage2_fields/debug_ocr_barcode.log` only with `--log-level debug`
 
 See [README_EN.md](README_EN.md) or [README_ZH.md](README_ZH.md) for details.
+
+## Development
+
+Runtime implementations live in `huaweiocr/`: `detect/` for cropping,
+`recognition/` for field recognition and metrics, `core/` for shared rules,
+`io/` for files and exports, and `ui/` for the desktop application.
+Root scripts preserve their existing imports and command-line behavior.
+The CLI is also available as `python -m huaweiocr` with the same options.
+
+See [architecture](docs/architecture.md), [configuration](docs/configuration.md)
+and [baseline verification](validation/baseline/README.md) before changing recognition.
