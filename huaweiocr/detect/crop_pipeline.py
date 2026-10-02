@@ -3188,12 +3188,6 @@ def _stage1_collect_raw_label_entries(img, label_preds, img_path=""):
     return accepted, 0
 
 
-def _stage1_collect_raw_label_crops(img, raw_preds):
-    label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
-    accepted_entries, dropped = _stage1_collect_raw_label_entries(img, label_preds)
-    return [item["crop"] for item in accepted_entries], dropped
-
-
 def _stage1_collect_raw_entries_from_preds(img, raw_preds, img_path=""):
     label_preds = [p for p in (raw_preds or []) if pred_class(p) == MODEL1_LABEL_CLASS]
     return _stage1_collect_raw_label_entries(img, label_preds, img_path=img_path)
@@ -3264,11 +3258,6 @@ def _stage1_collect_label_entries(img, raw_preds, img_path=""):
     if fallback_entries:
         return fallback_entries, fallback_dropped
     return [], dropped
-
-
-def _stage1_collect_label_crops(img, raw_preds):
-    accepted_entries, dropped = _stage1_collect_label_entries(img, raw_preds)
-    return [item["crop"] for item in accepted_entries], dropped
 
 
 def stage1_crop_labels(img_path):

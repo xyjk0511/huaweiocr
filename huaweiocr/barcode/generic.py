@@ -17,6 +17,8 @@ import cv2
 import numpy as np
 
 from win_subprocess import hide_subprocess_windows
+from huaweiocr.barcode.code128 import CODE128_PATTERNS, pattern_bits
+from huaweiocr.io.images import write_image_unicode as _imwrite_unicode
 
 hide_subprocess_windows()
 
@@ -63,23 +65,6 @@ CODE128_VISUAL_MIN_SEP = float(os.environ.get("CODE128_VISUAL_MIN_SEP", "0.20"))
 CODE128_VISUAL_MIN_SYMBOL_CORR = float(os.environ.get("CODE128_VISUAL_MIN_SYMBOL_CORR", "0.0"))
 CODE128_VISUAL_MIN_SYMBOL_SEP = float(os.environ.get("CODE128_VISUAL_MIN_SYMBOL_SEP", "0.0"))
 
-CODE128_PATTERNS = (
-    "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312",
-    "132212", "221213", "221312", "231212", "112232", "122132", "122231", "113222",
-    "123122", "123221", "223211", "221132", "221231", "213212", "223112", "312131",
-    "311222", "321122", "321221", "312212", "322112", "322211", "212123", "212321",
-    "232121", "111323", "131123", "131321", "112313", "132113", "132311", "211313",
-    "231113", "231311", "112133", "112331", "132131", "113123", "113321", "133121",
-    "313121", "211331", "231131", "213113", "213311", "213131", "311123", "311321",
-    "331121", "312113", "312311", "332111", "314111", "221411", "431111", "111224",
-    "111422", "121124", "121421", "141122", "141221", "112214", "112412", "122114",
-    "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111",
-    "111242", "121142", "121241", "114212", "124112", "124211", "411212", "421112",
-    "421211", "212141", "214121", "412121", "111143", "111341", "131141", "114113",
-    "114311", "411113", "411311", "113141", "114131", "311141", "411131", "211412",
-    "211214", "211232", "2331112",
-)
-
 def _run_cli(cmd, **kwargs):
     if os.name == "nt":
         startupinfo = subprocess.STARTUPINFO()
@@ -89,20 +74,6 @@ def _run_cli(cmd, **kwargs):
         hidden_flags = subprocess.CREATE_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0)
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | hidden_flags
     return subprocess.run(cmd, **kwargs)
-
-class _StderrSilencer:
-    def __enter__(self):
-        self._orig_fd = os.dup(2)
-        self._devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(self._devnull, 2)
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        os.dup2(self._orig_fd, 2)
-        os.close(self._devnull)
-        os.close(self._orig_fd)
-        return False
-
 
 def _short_error(exc: Exception) -> str:
     text = str(exc).strip()
@@ -340,19 +311,7 @@ def _code128b_module_bits(text: str) -> np.ndarray | None:
 
     bits = []
     for value in values:
-        color = 1
-        for width in map(int, CODE128_PATTERNS[value]):
-            bits.extend([color] * width)
-            color = 1 - color
-    return np.asarray(bits, dtype=np.float32)
-
-
-def _code128_value_bits(value: int) -> np.ndarray:
-    bits = []
-    color = 1
-    for width in map(int, CODE128_PATTERNS[value]):
-        bits.extend([color] * width)
-        color = 1 - color
+        bits.extend(pattern_bits(CODE128_PATTERNS[value]))
     return np.asarray(bits, dtype=np.float32)
 
 
@@ -365,7 +324,7 @@ def _code128b_symbol_quality(segment: np.ndarray, values: List[int]) -> Tuple[fl
     min_sep = 1.0
     offset = 0
     for value in values:
-        ideal = _code128_value_bits(value)
+        ideal = np.asarray(pattern_bits(CODE128_PATTERNS[value]), dtype=np.float32)
         observed = modules[offset:offset + len(ideal)]
         offset += len(ideal)
         if observed.size != ideal.size or observed.std() < 1e-6:
@@ -589,24 +548,6 @@ def read_barcodes_cli(img_path: str, decoder_errors=None) -> List[str]:
         for ln in proc.stdout.splitlines()
         if (stripped := ln.strip().lstrip("﻿").strip())
     ]
-
-
-def _imwrite_unicode(path: str, img: np.ndarray) -> bool:
-    """Write ``img`` to a possibly non-ASCII ``path``.
-
-    cv2.imwrite is not Unicode-path safe on Windows: for a path under a CJK
-    directory (e.g. a Chinese-username ``%TEMP%``) it returns True while writing
-    nothing. Encode in memory and write the bytes ourselves so CJK temp dirs work.
-    """
-    ext = os.path.splitext(path)[1] or ".png"
-    ok, buf = cv2.imencode(ext, img)
-    if not ok:
-        return False
-    try:
-        buf.tofile(path)
-    except OSError:
-        return False
-    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 def decode_with_cli(img_bgr: np.ndarray, tag: str, decoder_errors=None) -> List[Dict]:

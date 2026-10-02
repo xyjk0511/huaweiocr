@@ -14,7 +14,7 @@ import numpy as np
 import barcode as barcode_module
 import sn_barcode
 import validate_sn_barcodes
-from tests.test_locked_output_dirs import _import_scan2
+from tests.pipeline_fakes import import_scan2 as _import_scan2
 
 
 class BarcodeDecoderReliabilityTest(unittest.TestCase):

@@ -1,51 +1,6 @@
-import importlib
-import math
-import os
-import sys
-import types
 import unittest
 
-
-def tearDownModule():
-    for name in ("crop", "cv2", "inference_sdk", "numpy"):
-        sys.modules.pop(name, None)
-
-
-def _install_crop_import_fakes():
-    cv2 = types.ModuleType("cv2")
-    cv2.IMREAD_COLOR = 1
-    cv2.IMWRITE_JPEG_QUALITY = 1
-    cv2.imdecode = lambda *args, **kwargs: None
-    cv2.imencode = lambda *args, **kwargs: (False, b"")
-    cv2.dnn = types.SimpleNamespace(NMSBoxes=lambda *args, **kwargs: [])
-    sys.modules["cv2"] = cv2
-
-    numpy = types.ModuleType("numpy")
-    numpy.uint8 = object()
-    numpy.ceil = math.ceil
-    numpy.tan = math.tan
-    numpy.deg2rad = math.radians
-    numpy.fromfile = lambda *args, **kwargs: b""
-    sys.modules["numpy"] = numpy
-
-    inference_sdk = types.ModuleType("inference_sdk")
-
-    class DummyInferenceHTTPClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def infer(self, *args, **kwargs):
-            return {"predictions": []}
-
-    inference_sdk.InferenceHTTPClient = DummyInferenceHTTPClient
-    sys.modules["inference_sdk"] = inference_sdk
-
-
-def _import_crop():
-    os.environ["API_KEY"] = "test-key"
-    sys.modules.pop("crop", None)
-    _install_crop_import_fakes()
-    return importlib.import_module("crop")
+from huaweiocr.core import geometry
 
 
 class _Image:
@@ -54,7 +9,7 @@ class _Image:
 
 class CropGeometryTest(unittest.TestCase):
     def setUp(self):
-        self.crop = _import_crop()
+        self.crop = geometry
 
     def test_box_iou_none(self):
         self.assertEqual(self.crop.box_iou(None, (0, 0, 10, 10)), 0.0)

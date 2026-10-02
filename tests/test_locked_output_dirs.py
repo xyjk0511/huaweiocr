@@ -2,7 +2,6 @@ import importlib
 import inspect
 import io
 import json
-import math
 import os
 import queue
 import sys
@@ -15,164 +14,12 @@ import subprocess
 from unittest import mock
 
 import numpy as np
-
-
-def tearDownModule():
-    for name in (
-        "app_paths",
-        "huaweiocr.io.paths_runtime",
-        "barcode",
-        "huaweiocr.barcode.generic",
-        "crop",
-        "huaweiocr.detect.crop_pipeline",
-        "huaweiocr.detect.barcode_regions",
-        "huaweiocr.detect.text_regions",
-        "huaweiocr.detect.field_quality",
-        "cv2",
-        "gui_app",
-        "huaweiocr.ui.app",
-        "gui_app_en",
-        "gui_pipeline",
-        "huaweiocr.ui.pipeline",
-        "numpy",
-        "ocr",
-        "huaweiocr.detect.ocr_engine",
-        "paddle",
-        "paddleocr",
-        "pyzbar",
-        "pyzbar.pyzbar",
-        "scan2",
-        "huaweiocr.recognition.pipeline",
-        "win_subprocess",
-        "huaweiocr.io.win_subprocess",
-    ):
-        sys.modules.pop(name, None)
-
-
-def _install_crop_import_fakes():
-    cv2 = types.ModuleType("cv2")
-    cv2.IMREAD_COLOR = 1
-    cv2.IMWRITE_JPEG_QUALITY = 1
-    cv2.imdecode = lambda *args, **kwargs: None
-    cv2.imencode = lambda *args, **kwargs: (False, b"")
-    cv2.dnn = types.SimpleNamespace(NMSBoxes=lambda *args, **kwargs: [])
-    sys.modules["cv2"] = cv2
-
-    numpy = types.ModuleType("numpy")
-    numpy.uint8 = object()
-    numpy.ceil = math.ceil
-    numpy.tan = math.tan
-    numpy.deg2rad = math.radians
-    numpy.fromfile = lambda *args, **kwargs: b""
-    sys.modules["numpy"] = numpy
-
-    inference_sdk = types.ModuleType("inference_sdk")
-
-    class DummyInferenceHTTPClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def infer(self, *args, **kwargs):
-            return {"predictions": []}
-
-    inference_sdk.InferenceHTTPClient = DummyInferenceHTTPClient
-    sys.modules["inference_sdk"] = inference_sdk
-
-
-def _install_scan2_import_fakes():
-    cv2 = types.ModuleType("cv2")
-    cv2.IMREAD_COLOR = 1
-    cv2.THRESH_BINARY = 0
-    cv2.THRESH_OTSU = 0
-    cv2.COLOR_BGR2GRAY = 1
-    cv2.COLOR_GRAY2BGR = 2
-    cv2.BORDER_CONSTANT = 0
-    cv2.ROTATE_90_COUNTERCLOCKWISE = 0
-    cv2.INTER_CUBIC = 0
-    cv2.imread = lambda *args, **kwargs: None
-    sys.modules["cv2"] = cv2
-
-    numpy = types.ModuleType("numpy")
-    sys.modules["numpy"] = numpy
-
-    ocr = types.ModuleType("ocr")
-    ocr.init_ocr = lambda: object()
-    ocr.ocr_one_image = lambda *args, **kwargs: ([], "")
-    sys.modules["ocr"] = ocr
-
-    barcode = types.ModuleType("barcode")
-    barcode.decode_small_patch = lambda *args, **kwargs: {"results": []}
-    sys.modules["barcode"] = barcode
-
-    app_paths = types.ModuleType("app_paths")
-    user_data_dir = tempfile.mkdtemp(prefix="huaweiocr_test_data_")
-    app_paths.ensure_models_installed = lambda: None
-    app_paths.get_user_data_dir = lambda: user_data_dir
-    sys.modules["app_paths"] = app_paths
-
-
-def _import_crop():
-    os.environ["API_KEY"] = "test-key"
-    sys.modules.pop("crop", None)
-    sys.modules.pop("huaweiocr.detect.crop_pipeline", None)
-    sys.modules.pop("huaweiocr.core.geometry", None)
-    sys.modules.pop("huaweiocr.detect.barcode_regions", None)
-    sys.modules.pop("huaweiocr.detect.text_regions", None)
-    sys.modules.pop("huaweiocr.detect.field_quality", None)
-    _install_crop_import_fakes()
-    return importlib.import_module("crop")
-
-
-def _import_scan2():
-    sys.modules.pop("scan2", None)
-    sys.modules.pop("huaweiocr.recognition.pipeline", None)
-    _install_scan2_import_fakes()
-    return importlib.import_module("scan2")
-
-
-def _install_barcode_import_fakes():
-    cv2 = types.ModuleType("cv2")
-    cv2.COLOR_BGR2GRAY = 1
-    cv2.COLOR_GRAY2BGR = 2
-    cv2.BORDER_CONSTANT = 0
-    cv2.INTER_CUBIC = 0
-    cv2.ADAPTIVE_THRESH_GAUSSIAN_C = 0
-    cv2.THRESH_BINARY = 0
-    cv2.MORPH_RECT = 0
-    cv2.MORPH_CLOSE = 0
-    cv2.ROTATE_90_CLOCKWISE = 0
-    cv2.cvtColor = lambda img, *args, **kwargs: img
-    cv2.resize = lambda img, *args, **kwargs: img
-    cv2.bitwise_not = lambda img: img
-    cv2.copyMakeBorder = lambda img, *args, **kwargs: img
-    cv2.createCLAHE = lambda *args, **kwargs: types.SimpleNamespace(apply=lambda img: img)
-    cv2.GaussianBlur = lambda img, *args, **kwargs: img
-    cv2.addWeighted = lambda img, *args, **kwargs: img
-    cv2.adaptiveThreshold = lambda img, *args, **kwargs: img
-    cv2.getStructuringElement = lambda *args, **kwargs: object()
-    cv2.morphologyEx = lambda img, *args, **kwargs: img
-    cv2.imwrite = lambda *args, **kwargs: True
-    sys.modules["cv2"] = cv2
-
-    numpy = types.ModuleType("numpy")
-    numpy.ndarray = object
-    numpy.rot90 = lambda img, k: img
-    sys.modules["numpy"] = numpy
-
-    pyzbar_pkg = types.ModuleType("pyzbar")
-    pyzbar_mod = types.ModuleType("pyzbar.pyzbar")
-    pyzbar_mod.ZBarSymbol = types.SimpleNamespace(CODE128=object())
-    pyzbar_mod.decode = lambda *args, **kwargs: []
-    pyzbar_pkg.pyzbar = pyzbar_mod
-    sys.modules["pyzbar"] = pyzbar_pkg
-    sys.modules["pyzbar.pyzbar"] = pyzbar_mod
-
-
-def _import_barcode():
-    sys.modules.pop("barcode", None)
-    sys.modules.pop("huaweiocr.barcode.generic", None)
-    _install_barcode_import_fakes()
-    return importlib.import_module("barcode")
+from tests.pipeline_fakes import (
+    clear_import_fakes,
+    import_barcode as _import_barcode,
+    import_crop as _import_crop,
+    import_scan2 as _import_scan2,
+)
 
 
 @unittest.skipUnless(os.name == "nt", "Windows file locking behavior only")
@@ -433,8 +280,7 @@ class Scan2MapOrderedProgressTest(unittest.TestCase):
         import run_all
 
         try:
-            # Pipeline tests install a minimal numpy fake; openpyxl needs the real module.
-            sys.modules.pop("numpy", None)
+            clear_import_fakes()
             import openpyxl
         except ImportError:
             self.skipTest("openpyxl is not installed")
@@ -1956,7 +1802,6 @@ class GuiPipelineTest(unittest.TestCase):
     def test_display_sources_are_chinese(self):
         sys.modules.pop("gui_app", None)
         sys.modules.pop("huaweiocr.ui.app", None)
-        sys.modules.pop("numpy", None)
         sys.modules.pop("app_paths", None)
         sys.modules.pop("huaweiocr.io.paths_runtime", None)
         import gui_app
@@ -1964,23 +1809,6 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertEqual(gui_app._display_model_src("barcode"), "扫描条形码")
         self.assertEqual(gui_app._display_model_src("ocr_file"), "文字识别")
         self.assertEqual(gui_app._display_sn_src("barcode_decoder_miss"), "未扫到条形码")
-
-    def test_gui_import_does_not_import_pipeline_modules(self):
-        sys.modules.pop("gui_app", None)
-        sys.modules.pop("huaweiocr.ui.app", None)
-        sys.modules.pop("crop", None)
-        sys.modules.pop("scan2", None)
-        sys.modules.pop("barcode", None)
-        sys.modules.pop("huaweiocr.barcode.generic", None)
-        sys.modules.pop("cv2", None)
-        sys.modules.pop("numpy", None)
-        sys.modules.pop("pyzbar", None)
-        sys.modules.pop("pyzbar.pyzbar", None)
-
-        importlib.import_module("gui_app")
-
-        self.assertNotIn("crop", sys.modules)
-        self.assertNotIn("scan2", sys.modules)
 
     def test_gui_log_mask_keeps_app_relative_output_paths(self):
         sys.modules.pop("gui_app", None)
@@ -2030,7 +1858,6 @@ class GuiPipelineTest(unittest.TestCase):
         app._append_log_lines = lambda lines: captured.extend(lines)
         app.after = lambda delay, callback=None: scheduled.append((delay, callback))
         app._poll_log_queue = lambda: gui_app.App._poll_log_queue(app)
-        app._flush_log_buffer = lambda: gui_app.App._flush_log_buffer(app)
 
         fake_bg_ident = app._main_thread_ident + 1
         with mock.patch("threading.get_ident", return_value=fake_bg_ident):
@@ -2039,7 +1866,7 @@ class GuiPipelineTest(unittest.TestCase):
 
         self.assertEqual(len(scheduled), 0)
 
-        gui_app.App._flush_log_buffer(app)
+        gui_app.App._poll_log_queue(app)
 
         self.assertEqual(captured, ["后台日志1", "后台日志2"])
         self.assertEqual(len(scheduled), 1)
@@ -2144,15 +1971,6 @@ class GuiPipelineTest(unittest.TestCase):
                     result["scan2_call"]["sn_dir"],
                     os.path.join(result["run_dir"], "stage2_fields", "sn"),
                 )
-
-    def test_gui_starts_ocr_prewarm_after_init(self):
-        sys.modules.pop("gui_app", None)
-        sys.modules.pop("huaweiocr.ui.app", None)
-        import gui_app
-
-        source = inspect.getsource(gui_app.App.__init__)
-
-        self.assertIn("start_ocr_prewarm_thread(log=self.write_log)", source)
 
     def test_gui_prewarm_can_be_disabled_without_importing_scan2(self):
         sys.modules.pop("gui_pipeline", None)

@@ -54,31 +54,31 @@ class CropFieldPaddingTests(unittest.TestCase):
             self.assertTrue(crop.stage1_raw_label_mode_enabled())
             self.assertTrue(crop.stage1_keep_all_crops_enabled())
 
-    def test_stage1_collect_raw_label_crops_keeps_all_non_conflicting_boxes(self):
+    def test_stage1_collect_raw_entries_keeps_all_non_conflicting_boxes(self):
         img = np.full((300, 500, 3), 255, dtype=np.uint8)
         preds = [
             {"x": 120, "y": 90, "width": 180, "height": 70, "class": crop.MODEL1_LABEL_CLASS, "confidence": 0.92},
             {"x": 380, "y": 210, "width": 160, "height": 68, "class": crop.MODEL1_LABEL_CLASS, "confidence": 0.88},
         ]
 
-        crops, dropped = crop._stage1_collect_raw_label_crops(img, preds)
+        entries, dropped = crop._stage1_collect_raw_entries_from_preds(img, preds)
 
         self.assertEqual(dropped, 0)
-        self.assertEqual(len(crops), 2)
-        self.assertTrue(all(crop_img is not None and crop_img.size > 0 for crop_img in crops))
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(all(entry["crop"].size > 0 for entry in entries))
 
-    def test_stage1_collect_raw_label_crops_rejects_edge_near_square_box(self):
+    def test_stage1_collect_raw_entries_rejects_edge_near_square_box(self):
         img = np.full((300, 500, 3), 255, dtype=np.uint8)
         preds = [
             {"x": 120, "y": 90, "width": 180, "height": 70, "class": crop.MODEL1_LABEL_CLASS, "confidence": 0.92},
             {"x": 470, "y": 262, "width": 58, "height": 56, "class": crop.MODEL1_LABEL_CLASS, "confidence": 0.98},
         ]
 
-        crops, dropped = crop._stage1_collect_raw_label_crops(img, preds)
+        entries, dropped = crop._stage1_collect_raw_entries_from_preds(img, preds)
 
         self.assertEqual(dropped, 0)
-        self.assertEqual(len(crops), 1)
-        self.assertTrue(crops[0] is not None and crops[0].size > 0)
+        self.assertEqual(len(entries), 1)
+        self.assertGreater(entries[0]["crop"].size, 0)
 
     def test_stage1_save_preview_image_writes_overlay(self):
         img = np.full((240, 360, 3), 255, dtype=np.uint8)
@@ -1970,11 +1970,11 @@ class CropFieldPaddingTests(unittest.TestCase):
 
         with mock.patch.object(crop, "crop_from_pred", return_value=product_crop):
             with mock.patch.object(crop, "infer_with_resize", return_value=field_preds):
-                out, dropped = crop._stage1_collect_label_crops(img, [pred])
+                out, dropped = crop._stage1_collect_label_entries(img, [pred])
 
         self.assertEqual(len(out), 1)
         self.assertEqual(dropped, 0)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
 
     def test_stage1_collect_rejects_low_confidence_candidate_without_field_evidence(self):
         img = np.full((800, 1000, 3), 255, dtype=np.uint8)
@@ -1992,7 +1992,7 @@ class CropFieldPaddingTests(unittest.TestCase):
 
         with mock.patch.object(crop, "crop_from_pred", return_value=product_like_crop):
             with mock.patch.object(crop, "infer_with_resize", return_value=[]):
-                out, _dropped = crop._stage1_collect_label_crops(img, [pred])
+                out, _dropped = crop._stage1_collect_label_entries(img, [pred])
 
         self.assertEqual(out, [])
 
@@ -2018,12 +2018,12 @@ class CropFieldPaddingTests(unittest.TestCase):
         self.assertFalse(crop.stage1_is_product_label_crop(vertical_crop))
         with mock.patch.object(crop, "crop_from_pred", return_value=vertical_crop):
             with mock.patch.object(crop, "infer_with_resize", return_value=field_preds):
-                out, dropped = crop._stage1_collect_label_crops(img, [pred])
+                out, dropped = crop._stage1_collect_label_entries(img, [pred])
 
         self.assertEqual(len(out), 1)
         self.assertEqual(dropped, 0)
-        self.assertGreater(out[0].shape[1] / float(out[0].shape[0]), crop.STAGE1_MIN_ASPECT)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+        self.assertGreater(out[0]["crop"].shape[1] / float(out[0]["crop"].shape[0]), crop.STAGE1_MIN_ASPECT)
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
 
     def test_stage1_collect_rejects_invalid_low_confidence_fallback(self):
         img = np.full((800, 1000, 3), 255, dtype=np.uint8)
@@ -2038,7 +2038,7 @@ class CropFieldPaddingTests(unittest.TestCase):
         }
 
         with mock.patch.object(crop, "crop_from_pred", return_value=invalid_crop):
-            out, _dropped = crop._stage1_collect_label_crops(img, [pred])
+            out, _dropped = crop._stage1_collect_label_entries(img, [pred])
 
         self.assertEqual(out, [])
 
@@ -2087,11 +2087,6 @@ class CropFieldPaddingTests(unittest.TestCase):
             "class": crop.MODEL1_LABEL_CLASS,
             "confidence": 0.18,
         }
-        field_preds = [  # noqa: F841  (documents the fixture; pre-existing)
-            {"class": crop.MODEL2_PART_NO_CLASS, "x": 85, "y": 45, "width": 150, "height": 36},
-            {"class": crop.MODEL2_SN_CLASS, "x": 180, "y": 90, "width": 170, "height": 42},
-        ]
-
         def fake_crop_from_pred(_img, pred, *_args, **_kwargs):
             return full_crop if pred["confidence"] > 0.5 else partial_crop
 
@@ -2101,12 +2096,12 @@ class CropFieldPaddingTests(unittest.TestCase):
                 "_stage1_has_single_label_field_evidence",
                 side_effect=lambda img: img is full_crop or img is partial_crop,
             ):
-                out, dropped = crop._stage1_collect_label_crops(img, [high_pred, low_pred])
+                out, dropped = crop._stage1_collect_label_entries(img, [high_pred, low_pred])
 
         self.assertEqual(len(out), 2)
         self.assertEqual(dropped, 0)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
-        self.assertTrue(crop.stage1_is_product_label_crop(out[1]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[1]["crop"]))
 
     def test_stage1_collect_supplement_keeps_lower_confidence_real_candidate_after_invalid_overlap(self):
         img = np.full((800, 1000, 3), 255, dtype=np.uint8)
@@ -2144,11 +2139,6 @@ class CropFieldPaddingTests(unittest.TestCase):
             "class": crop.MODEL1_LABEL_CLASS,
             "confidence": 0.17,
         }
-        single_label_field_preds = [
-            {"class": crop.MODEL2_PART_NO_CLASS, "x": 85, "y": 45, "width": 150, "height": 36},
-            {"class": crop.MODEL2_SN_CLASS, "x": 180, "y": 90, "width": 170, "height": 42},
-        ]
-
         def fake_crop_from_pred(_img, pred, *_args, **_kwargs):
             if pred["confidence"] > 0.5:
                 return full_crop
@@ -2156,26 +2146,21 @@ class CropFieldPaddingTests(unittest.TestCase):
                 return invalid_crop
             return partial_crop
 
-        def fake_infer_with_resize(crop_img, *_args, **_kwargs):
-            if crop_img is partial_crop:
-                return single_label_field_preds
-            return []
-
         with mock.patch.object(crop, "crop_from_pred", side_effect=fake_crop_from_pred):
             with mock.patch.object(
                 crop,
                 "_stage1_has_single_label_field_evidence",
                 side_effect=lambda img: img is full_crop or img is partial_crop,
             ):
-                out, dropped = crop._stage1_collect_label_crops(
+                out, dropped = crop._stage1_collect_label_entries(
                     img,
                     [high_pred, invalid_overlap_pred, valid_overlap_pred],
                 )
 
         self.assertEqual(len(out), 2)
         self.assertEqual(dropped, 1)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
-        self.assertTrue(crop.stage1_is_product_label_crop(out[1]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[1]["crop"]))
 
     def test_stage1_collect_supplement_rejects_larger_near_contained_single_label_box(self):
         img = np.full((800, 1000, 3), 255, dtype=np.uint8)
@@ -2227,11 +2212,11 @@ class CropFieldPaddingTests(unittest.TestCase):
             with mock.patch.object(crop, "box_from_pred", side_effect=fake_box_from_pred):
                 with mock.patch.object(crop, "infer_with_resize", side_effect=fake_infer_with_resize):
                     with mock.patch.object(crop, "_stage1_hardcase_model_available", return_value=False):
-                        out, dropped = crop._stage1_collect_label_crops(img, [high_pred, low_pred])
+                        out, dropped = crop._stage1_collect_label_entries(img, [high_pred, low_pred])
 
         self.assertEqual(len(out), 1)
         self.assertEqual(dropped, 0)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
 
     def test_stage1_collect_supplement_rejects_multi_label_candidate(self):
         img = np.full((800, 1000, 3), 255, dtype=np.uint8)
@@ -2278,11 +2263,11 @@ class CropFieldPaddingTests(unittest.TestCase):
 
         with mock.patch.object(crop, "crop_from_pred", side_effect=fake_crop_from_pred):
             with mock.patch.object(crop, "infer_with_resize", side_effect=fake_infer_with_resize):
-                out, dropped = crop._stage1_collect_label_crops(img, [high_pred, low_pred])
+                out, dropped = crop._stage1_collect_label_entries(img, [high_pred, low_pred])
 
         self.assertEqual(len(out), 1)
         self.assertEqual(dropped, 1)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
 
     def test_stage1_collect_supplement_rejects_merged_box_covering_two_existing_labels(self):
         img = np.full((800, 1200, 3), 255, dtype=np.uint8)
@@ -2336,15 +2321,15 @@ class CropFieldPaddingTests(unittest.TestCase):
         with mock.patch.object(crop, "crop_from_pred", side_effect=fake_crop_from_pred):
             with mock.patch.object(crop, "_stage1_hardcase_model_available", return_value=False):
                 with mock.patch.object(crop, "infer_with_resize", side_effect=fake_infer_with_resize):
-                    out, dropped = crop._stage1_collect_label_crops(
+                    out, dropped = crop._stage1_collect_label_entries(
                         img,
                         [high_pred_left, high_pred_right, low_pred_merged],
                     )
 
         self.assertEqual(len(out), 2)
         self.assertEqual(dropped, 0)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
-        self.assertTrue(crop.stage1_is_product_label_crop(out[1]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[1]["crop"]))
 
     def test_stage1_box_conflicts_rejects_large_near_contained_overlap(self):
         existing_box = (274, 731, 2330, 1856)
@@ -2372,7 +2357,7 @@ class CropFieldPaddingTests(unittest.TestCase):
         }
 
         with mock.patch.object(crop, "crop_from_pred", return_value=tiny_crop):
-            out, dropped = crop._stage1_collect_label_crops(img, [tiny_pred])
+            out, dropped = crop._stage1_collect_label_entries(img, [tiny_pred])
 
         self.assertEqual(out, [])
         self.assertEqual(dropped, 1)
@@ -2698,11 +2683,6 @@ class CropFieldPaddingTests(unittest.TestCase):
             "class": crop.MODEL1_LABEL_CLASS,
             "confidence": 0.81,
         }
-        single_label_field_preds = [  # noqa: F841  (documents the fixture; pre-existing)
-            {"class": crop.MODEL2_PART_NO_CLASS, "x": 85, "y": 45, "width": 150, "height": 36},
-            {"class": crop.MODEL2_SN_CLASS, "x": 180, "y": 90, "width": 170, "height": 42},
-        ]
-
         def fake_crop_from_pred(_img, pred, *_args, **_kwargs):
             return full_crop if pred["confidence"] > 0.9 else partial_crop
 
@@ -2719,12 +2699,12 @@ class CropFieldPaddingTests(unittest.TestCase):
                         "_stage1_has_single_label_field_evidence",
                         side_effect=lambda img: img is full_crop or img is partial_crop,
                     ):
-                        out, dropped = crop._stage1_collect_label_crops(img, [high_pred])
+                        out, dropped = crop._stage1_collect_label_entries(img, [high_pred])
 
         self.assertEqual(len(out), 2)
         self.assertEqual(dropped, 0)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
-        self.assertTrue(crop.stage1_is_product_label_crop(out[1]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[1]["crop"]))
 
     def test_stage1_collect_rejects_portrait_secondary_hardcase_supplement(self):
         img = np.full((1600, 2200, 3), 255, dtype=np.uint8)
@@ -2769,11 +2749,11 @@ class CropFieldPaddingTests(unittest.TestCase):
                         "_stage1_has_single_label_field_evidence",
                         side_effect=lambda img: img is full_crop or img is portrait_crop,
                     ):
-                        out, dropped = crop._stage1_collect_label_crops(img, [high_pred])
+                        out, dropped = crop._stage1_collect_label_entries(img, [high_pred])
 
         self.assertEqual(len(out), 1)
         self.assertEqual(dropped, 1)
-        self.assertTrue(crop.stage1_is_product_label_crop(out[0]))
+        self.assertTrue(crop.stage1_is_product_label_crop(out[0]["crop"]))
 
     def test_stage1_hardcase_supplement_is_disabled_when_primary_already_uses_same_model(self):
         fake_local_yolo = types.SimpleNamespace(

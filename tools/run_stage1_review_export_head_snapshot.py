@@ -1,87 +1,47 @@
 import argparse
 import csv
-import importlib.util
-import math
+import importlib
+import io
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import tarfile
 from pathlib import Path
 
-import cv2
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-
-def _save_image(path: Path, img) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    suffix = path.suffix.lower()
-    ext = ".jpg" if suffix in {".jpg", ".jpeg"} else ".png"
-    ok, buf = cv2.imencode(ext, img)
-    if not ok:
-        raise RuntimeError(f"Failed to encode image: {path}")
-    path.write_bytes(buf.tobytes())
-
-
-def _safe_rel_name(rel_path: str) -> str:
-    rel_no_ext = os.path.splitext(rel_path)[0]
-    return rel_no_ext.replace("/", "__").replace("\\", "__")
-
-
-def _map_box_back_from_rotation(box, original_shape, rotation):
-    if box is None or rotation not in {90, 180, 270}:
-        return box
-    h, w = original_shape[:2]
-    x1, y1, x2, y2 = box
-    corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
-
-    def inverse_point(xr, yr):
-        if rotation == 90:
-            return yr, h - xr
-        if rotation == 180:
-            return w - xr, h - yr
-        return w - yr, xr
-
-    mapped = [inverse_point(xr, yr) for xr, yr in corners]
-    xs = [pt[0] for pt in mapped]
-    ys = [pt[1] for pt in mapped]
-    ox1 = max(0, min(w, int(round(min(xs)))))
-    oy1 = max(0, min(h, int(round(min(ys)))))
-    ox2 = max(0, min(w, int(round(max(xs)))))
-    oy2 = max(0, min(h, int(round(max(ys)))))
-    if ox2 <= ox1 or oy2 <= oy1:
-        return None
-    return ox1, oy1, ox2, oy2
-
-
-def _git_show(path: str) -> str:
-    return subprocess.check_output(
-        ["git", "show", f"HEAD:{path}"],
-        cwd=str(REPO_ROOT),
-        text=True,
-        encoding="utf-8",
-    )
-
-
-def _load_module_from_path(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, str(path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load module spec: {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from tools.stage1_review_images import (
+    build_contact_sheet as _build_contact_sheet,
+    draw_overlay as _draw_overlay,
+    map_box_back_from_rotation as _map_box_back_from_rotation,
+    safe_rel_name as _safe_rel_name,
+    save_image as _save_image,
+)
 
 
 def _load_head_snapshot(snapshot_root: Path):
     snapshot_root.mkdir(parents=True, exist_ok=True)
-    crop_path = snapshot_root / "crop.py"
-    local_yolo_path = snapshot_root / "local_yolo.py"
-    crop_path.write_text(_git_show("crop.py"), encoding="utf-8")
-    local_yolo_path.write_text(_git_show("local_yolo.py"), encoding="utf-8")
+    git_options = {"cwd": str(REPO_ROOT), "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    root_names = subprocess.check_output(["git", "ls-tree", "--name-only", "HEAD"], **git_options).decode("utf-8").splitlines()
+    paths = [name for name in root_names if name.endswith(".py") or name == "huaweiocr"]
+    archive = subprocess.check_output(["git", "archive", "--format=tar", "HEAD", *paths], **git_options)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+        for member in source:
+            if member.isfile() and member.name.endswith(".py"):
+                path = snapshot_root / member.name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(source.extractfile(member).read())
 
-    local_yolo = _load_module_from_path("snapshot_local_yolo", local_yolo_path)
+    # HEAD includes both legacy entry points and their package implementations.
+    # Discard already imported runtime modules so none come from the working tree.
+    for name in list(sys.modules):
+        if name == "huaweiocr" or name.startswith("huaweiocr.") or name + ".py" in paths:
+            sys.modules.pop(name, None)
+    sys.path.insert(0, str(snapshot_root))
+    local_yolo = importlib.import_module("local_yolo")
     local_yolo.DEFAULT_MODEL_SPECS = {
         "huawei-2ha7t/7": local_yolo.ModelSpec(
             path=str(REPO_ROOT / "local_models" / "detectors" / "label_detector.onnx"),
@@ -92,9 +52,7 @@ def _load_head_snapshot(snapshot_root: Path):
             names=("model", "partno", "sn"),
         ),
     }
-    sys.modules["local_yolo"] = local_yolo
-    crop = _load_module_from_path("snapshot_crop", crop_path)
-    return crop, local_yolo
+    return importlib.import_module("crop"), local_yolo
 
 
 def _box_from_pred_ratio(crop_mod, img, pred, pad_ratio, slant_guard_max_px=0):
@@ -205,64 +163,6 @@ def _detect_entries(crop_mod, img, img_path: str):
                 mapped.append(mapped_entry)
             return mapped, rotation, dropped
     return [], 0, dropped
-
-
-def _draw_overlay(img, entries):
-    overlay = img.copy()
-    for idx, entry in enumerate(entries, start=1):
-        box = entry.get("box")
-        if box is None:
-            continue
-        x1, y1, x2, y2 = box
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 4)
-        text = f"det{idx}:{float(entry.get('confidence', 0.0)):.3f}"
-        cv2.putText(
-            overlay,
-            text,
-            (x1, max(30, y1 - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            (0, 0, 255),
-            2,
-            cv2.LINE_AA,
-        )
-    return overlay
-
-
-def _build_contact_sheet(crop_mod, image_paths, out_path: Path, thumb_w=420, thumb_h=300, cols=3):
-    if not image_paths:
-        return
-    thumbs = []
-    for image_path in image_paths:
-        img = crop_mod.read_image(str(image_path))
-        if img is None:
-            continue
-        canvas = cv2.copyMakeBorder(img, 36, 0, 0, 0, cv2.BORDER_CONSTANT, value=(255, 255, 255))
-        h, w = canvas.shape[:2]
-        scale = min(thumb_w / float(max(1, w)), thumb_h / float(max(1, h)))
-        resized = cv2.resize(canvas, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
-        import numpy as np
-        thumb = np.full((thumb_h, thumb_w, 3), 255, dtype="uint8")
-        y0 = (thumb_h - resized.shape[0]) // 2
-        x0 = (thumb_w - resized.shape[1]) // 2
-        thumb[y0:y0 + resized.shape[0], x0:x0 + resized.shape[1]] = resized
-        label = Path(image_path).stem[:50]
-        cv2.putText(thumb, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (40, 40, 40), 2, cv2.LINE_AA)
-        thumbs.append(thumb)
-
-    if not thumbs:
-        return
-
-    import numpy as np
-    rows = int(math.ceil(len(thumbs) / float(cols)))
-    sheet = np.full((rows * thumb_h, cols * thumb_w, 3), 255, dtype="uint8")
-    for idx, thumb in enumerate(thumbs):
-        row = idx // cols
-        col = idx % cols
-        y0 = row * thumb_h
-        x0 = col * thumb_w
-        sheet[y0:y0 + thumb_h, x0:x0 + thumb_w] = thumb
-    _save_image(out_path, sheet)
 
 
 def _write_readme(out_root: Path, total_images: int, total_boxes: int, input_root: Path):
@@ -392,7 +292,7 @@ def main():
         )
         writer.writerows(summary_rows)
 
-    _build_contact_sheet(crop_mod, overlay_paths, contact_sheet_path)
+    _build_contact_sheet(overlay_paths, contact_sheet_path, crop_mod.read_image)
     _write_readme(out_root, len(images), total_boxes, input_root)
     print(f"images={len(images)} total_boxes={total_boxes}")
     print(f"summary={summary_path}")

@@ -247,10 +247,6 @@ class App(tk.Tk):
         self._log_queue = queue.SimpleQueue()
         self._log_poll_interval_ms = 8
         self._log_max_batch_lines = 10
-        self._log_idle_heartbeat_sec = 0.8
-        self._last_log_monotonic = time.monotonic()
-        self._last_heartbeat_monotonic = 0.0
-        self._last_stage_hint = ""
         # ============ 顶部：拖拽区域 ============
         top_frame = tk.Frame(self)
         top_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -386,21 +382,8 @@ class App(tk.Tk):
                     break
             drained_to_batch_limit = len(lines) >= max_batch
         if lines:
-            App._update_stage_hint(self, lines)
             self._append_log_lines(lines)
-            self._last_log_monotonic = time.monotonic()
         try:
-            now = time.monotonic()
-            if (
-                getattr(self, "_is_running", False)
-                and not lines
-                and (now - getattr(self, "_last_log_monotonic", 0.0)) >= getattr(self, "_log_idle_heartbeat_sec", 0.8)
-                and (now - getattr(self, "_last_heartbeat_monotonic", 0.0)) >= getattr(self, "_log_idle_heartbeat_sec", 0.8)
-            ):
-                heartbeat = App._build_idle_heartbeat(self)
-                if heartbeat:
-                    self._append_log_lines([heartbeat])
-                    self._last_heartbeat_monotonic = now
             backlog = drained_to_batch_limit
             if hasattr(self, "_log_queue"):
                 qsize = getattr(self._log_queue, "qsize", None)
@@ -414,27 +397,11 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _flush_log_buffer(self):
-        self._poll_log_queue()
-
-    def _update_stage_hint(self, lines):
-        for line in lines:
-            text = str(line or "")
-            if text.startswith("[1/4]") or text.startswith("[2/4]") or text.startswith("[3/4]") or text.startswith("[4/4]"):
-                self._last_stage_hint = text
-            elif text.startswith("[条码开始]") or text.startswith("[条码完成]") or text.startswith("[OCR开始]") or text.startswith("[OCR完成]"):
-                self._last_stage_hint = text
-
-    def _build_idle_heartbeat(self):
-        return None
-
     def write_log(self, text: str):
         """线程安全地往日志窗口里写一行"""
         text = _mask_path_text(text)
         if threading.get_ident() == self._main_thread_ident:
-            App._update_stage_hint(self, [text])
             self._append_log_lines([text])
-            self._last_log_monotonic = time.monotonic()
             return
         if hasattr(self, "_log_queue"):
             self._log_queue.put(text)
@@ -638,9 +605,6 @@ class App(tk.Tk):
             return
         # 禁用按钮，防止重复点击
         self._is_running = True
-        self._last_log_monotonic = time.monotonic()
-        self._last_heartbeat_monotonic = 0.0
-        self._last_stage_hint = ""
         self._last_run_dir = ""
         self.btn_export_feedback.config(state="disabled")
         self.btn_start.config(state="disabled")

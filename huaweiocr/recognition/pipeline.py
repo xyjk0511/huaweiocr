@@ -11,7 +11,7 @@ import numpy as np
 from pathlib import Path
 from huaweiocr.core.parallel import map_ordered as _map_ordered
 from huaweiocr.core.sources import display_source
-from huaweiocr.io.images import SUPPORTED_IMAGE_EXTS
+from huaweiocr.io.images import SUPPORTED_IMAGE_EXTS, write_image_unicode as _imwrite_unicode
 from huaweiocr.recognition.metrics import (
     finalize_rates,
     new_stats,
@@ -1077,21 +1077,6 @@ def build_sn_views(img_bgr):
         views.append(("rot90ccw_qzpad", rot_qzpad))
 
     return views
-
-
-def _imwrite_unicode(path, img):
-    """cv2.imwrite is not Unicode-path safe on Windows (it returns True but
-    writes nothing under a CJK directory such as a Chinese-username %TEMP%).
-    Encode in memory and write the bytes ourselves so CJK temp dirs work."""
-    ext = os.path.splitext(path)[1] or ".png"
-    ok, buf = cv2.imencode(ext, img)
-    if not ok:
-        return False
-    try:
-        buf.tofile(path)
-    except OSError:
-        return False
-    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 def decode_barcodes_with_dbr(img_bgr, debug_name=""):

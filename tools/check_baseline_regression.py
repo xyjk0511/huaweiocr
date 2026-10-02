@@ -174,6 +174,7 @@ def run_pipeline(input_dir, out_dir, python_exe=None, extra_env=None, log_level=
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 

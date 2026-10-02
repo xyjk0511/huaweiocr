@@ -67,3 +67,23 @@ print('module aliases and lazy GUI import verified')
         # argparse's program name differs; the accepted options and defaults do not.
         left, right = (result.stdout[result.stdout.index("options:"):] for result in results)
         self.assertEqual(left, right)
+
+    def test_head_review_snapshot_loads_its_own_package_dependencies(self):
+        code = """
+import importlib
+from pathlib import Path
+import tempfile
+from tools.run_stage1_review_export_head_snapshot import _load_head_snapshot
+with tempfile.TemporaryDirectory() as folder:
+    root = Path(folder)
+    crop, local_yolo = _load_head_snapshot(root)
+    assert callable(crop.configure_paths)
+    for module in (crop, local_yolo, importlib.import_module('huaweiocr.core.geometry')):
+        assert Path(module.__file__).is_relative_to(root), module.__file__
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=30,
+            creationflags=HIDDEN_FLAGS,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

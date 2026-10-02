@@ -47,7 +47,7 @@ PartNo/Model 条码；识别阶段的延迟 Model 补裁会调用裁剪函数。
 | huaweiocr/recognition/metrics.py | 型号/SN 统计、条码与 OCR 恢复分开计数 | — |
 | huaweiocr/core/parallel.py | 保序并发执行与进度回调 | Python 标准库 |
 | huaweiocr/core/sources.py | 共用中英文来源名称与 SN 辅助判断后缀 | — |
-| huaweiocr/io/images.py | 图片格式清单与稳定递归枚举 | Python 标准库 |
+| huaweiocr/io/images.py | 图片格式清单、稳定递归枚举与 Unicode 路径写图 | Python 标准库；写图时加载 OpenCV |
 | huaweiocr/io/results.py | JSONL 读取与 CLI/GUI 共用 Excel 导出 | openpyxl（导出时加载） |
 | local_yolo.py | 本地 YOLO 推理（ONNX/PT，letterbox+NMS），无内部依赖 | — |
 | ocr.py | PaddleOCR 引擎初始化与兼容处理 | app_paths |
@@ -55,6 +55,7 @@ PartNo/Model 条码；识别阶段的延迟 Model 补裁会调用裁剪函数。
 | sn_barcode.py | SN 专用条码扫描（候选生成/多解码器/评分选择），dataclass 结构 | barcode |
 | part_no_barcode_rescue.py | PartNo 的 Code128 救援解码 | — |
 | linear_barcode_repair.py | Code128 像素级修复框架（scan2 的修复路径调用） | — |
+| huaweiocr/barcode/code128.py | 通用解码、PartNo 救援和像素修复共用的 Code128 码表与位展开 | Python 标准库 |
 | huaweiocr/ui/app.py | 中/英文 Tkinter GUI | ui.pipeline, ui.i18n, io.results |
 | huaweiocr/ui/pipeline.py | GUI↔管线桥接：动态 import、OCR 预热线程、输入复制 | crop, scan2（动态） |
 | huaweiocr/ui/i18n.py | 桌面文案 | core.sources |
