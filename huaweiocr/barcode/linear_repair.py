@@ -428,6 +428,21 @@ def start_stop_score(profile: np.ndarray, x0: float, module_px: float, n_modules
     return start_err + stop_err, start_err, stop_err
 
 
+def _start_stop_scores(profile: np.ndarray, geometries) -> Tuple[np.ndarray, np.ndarray]:
+    """Score a profile's hypotheses together, preserving float32 sampling."""
+    _lengths, starts, modules, counts = np.asarray(geometries, dtype=np.float64).T
+    stops = starts + (counts - 13) * modules
+    modules = modules.astype(np.float32)[:, None]
+    grid = np.arange(len(profile), dtype=np.float32)
+    errors = []
+    for origins, pattern in ((starts, BITS11[START_B]), (stops, STOP_BITS)):
+        offsets = np.arange(len(pattern), dtype=np.float32) + 0.5
+        xs = origins.astype(np.float32)[:, None] + offsets * modules
+        sampled = np.interp(np.clip(xs, 0, len(profile) - 1), grid, profile).astype(np.float32)
+        errors.append(((pattern - sampled) ** 2).mean(axis=1))
+    return errors[0], errors[1]
+
+
 def quick_geometry_score(sampled: np.ndarray, length: int, mode: str) -> Tuple[float, float, float, float]:
     k = length + 2
     segs = sampled[: 11 * k].reshape(k, 11)
@@ -497,15 +512,18 @@ def decode_dp(sampled: np.ndarray, length: int, mode: str) -> Optional[Tuple[str
         ndp = np.full(103, inf, dtype=np.float32)
         pm = np.full(103, -1, dtype=np.int16)
         pc = np.full(103, -1, dtype=np.int16)
-        active_mods = np.where(dp < inf / 2)[0]
-        for mod in active_mods:
-            next_mods = (mod + pos * codes) % 103
-            vals = dp[mod] + costs
-            for code, next_mod, val in zip(codes, next_mods, vals):
-                if val < ndp[next_mod]:
-                    ndp[next_mod] = val
-                    pm[next_mod] = mod
-                    pc[next_mod] = code
+        mods = np.arange(103)[:, None]
+        next_mods = ((mods + pos * codes) % 103).ravel()
+        vals = (dp[:, None] + costs).ravel()
+        valid = np.repeat(dp < inf / 2, len(codes)) & (vals < inf)
+        np.minimum.at(ndp, next_mods[valid], vals[valid])
+        # First minimum in mod/code order retains the scalar solver's tie rule.
+        winners = np.full(103, len(vals), dtype=np.intp)
+        best = np.flatnonzero(valid & (vals == ndp[next_mods]))
+        np.minimum.at(winners, next_mods[best], best)
+        reached = winners < len(vals)
+        pm[reached] = winners[reached] // len(codes)
+        pc[reached] = codes[winners[reached] % len(codes)]
         dp = ndp
         prev_mod.append(pm)
         prev_code.append(pc)
@@ -532,25 +550,20 @@ def decode_dp(sampled: np.ndarray, length: int, mode: str) -> Optional[Tuple[str
     return text, total, float(avg), start_err, checksum_err, stop_err, [START_B] + data_codes + [checksum, STOP]
 
 
-def decode_for_lengths(
-    path: Path,
+def _candidate_geometries(
     profiles: Sequence[Profile],
     lengths: Sequence[int],
-    mode: str,
-    regex: str = "",
-    max_extents: int = 60,
-    stage1_keep: int = 300,
-    stage2_keep: int = 80,
-    decode_keep: int = 60,
-) -> List[DecodeCandidate]:
+    max_extents: int,
+    keep: int,
+) -> List[GeometryLite]:
     phase_grid = (-1.4, -1.0, -0.6, -0.3, 0.0, 0.3, 0.6, 1.0, 1.4)
     scales = (0.975, 0.988, 1.000, 1.012, 1.025)
-    profile_map = {p.name: p for p in profiles}
 
     stage1: List[GeometryLite] = []
     for profile in profiles:
         extents = extent_candidates(profile.blackness, max_extents=max_extents)
         width = len(profile.blackness)
+        proposals = []
         for x0e, x1e in extents:
             extent_width = x1e - x0e
             for length in lengths:
@@ -566,9 +579,13 @@ def decode_for_lengths(
                         module_px = base_module * scale
                         if x0 + n_modules * module_px >= width - 1:
                             continue
-                        ss, start_err, stop_err = start_stop_score(profile.blackness, x0, module_px, n_modules)
-                        if start_err < 0.90 and stop_err < 0.90:
-                            stage1.append(GeometryLite(ss, profile.name, length, x0, module_px, n_modules, start_err, stop_err))
+                        proposals.append((length, x0, module_px, n_modules))
+        if proposals:
+            starts, stops = _start_stop_scores(profile.blackness, proposals)
+            for (length, x0, module_px, n_modules), start_err, stop_err in zip(proposals, starts, stops):
+                start_err, stop_err = float(start_err), float(stop_err)
+                if start_err < 0.90 and stop_err < 0.90:
+                    stage1.append(GeometryLite(start_err + stop_err, profile.name, length, x0, module_px, n_modules, start_err, stop_err))
 
     stage1.sort(key=lambda g: g.start_stop_score)
     deduped: List[GeometryLite] = []
@@ -579,11 +596,30 @@ def decode_for_lengths(
             continue
         seen.add(key)
         deduped.append(g)
-        if len(deduped) >= stage1_keep:
+        if len(deduped) >= keep:
             break
+    return deduped
+
+
+def decode_for_lengths(
+    path: Path,
+    profiles: Sequence[Profile],
+    lengths: Sequence[int],
+    mode: str,
+    regex: str = "",
+    max_extents: int = 60,
+    stage1_keep: int = 300,
+    stage2_keep: int = 80,
+    decode_keep: int = 60,
+    *,
+    geometries: Optional[Sequence[GeometryLite]] = None,
+) -> List[DecodeCandidate]:
+    if geometries is None:
+        geometries = _candidate_geometries(profiles, lengths, max_extents, stage1_keep)
+    profile_map = {p.name: p for p in profiles}
 
     stage2: List[Tuple[float, GeometryLite, np.ndarray]] = []
-    for g in deduped:
+    for g in geometries:
         profile = profile_map[g.profile_name]
         sampled = sample_modules(profile.blackness, g.x0, g.module_px, g.n_modules)
         quick_score, start_err, stop_err, _ = quick_geometry_score(sampled, g.length, mode)
@@ -652,13 +688,18 @@ def decode_image(
     templates = templates or []
     if templates:
         merged: Dict[str, DecodeCandidate] = {}
+        geometries_by_length = {}
         old_override = CURRENT_ALLOWED_OVERRIDE
         try:
             for allowed in templates:
                 CURRENT_ALLOWED_OVERRIDE = allowed
+                length = len(allowed)
+                if length not in geometries_by_length:
+                    geometries_by_length[length] = _candidate_geometries(profiles, [length], 60, 350)
                 partial = decode_for_lengths(
                     path, profiles, [len(allowed)], mode, regex="",
                     max_extents=60, stage1_keep=350, stage2_keep=110, decode_keep=90,
+                    geometries=geometries_by_length[length],
                 )
                 for cand in partial:
                     if not text_matches_template(cand.text, allowed):

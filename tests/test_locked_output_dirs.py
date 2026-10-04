@@ -462,6 +462,8 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
                 text_recognition_model_dir=None,
                 textline_orientation_model_name=None,
                 textline_orientation_model_dir=None,
+                text_det_limit_side_len=None,
+                text_det_limit_type=None,
             ):
                 pass
 
@@ -485,7 +487,15 @@ class PaddleOcrModelKwargsTest(unittest.TestCase):
             ):
                 os.makedirs(os.path.join(models, name))
 
-            kwargs = ocr._paddleocr_model_kwargs(models)
+            with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_DET_MAX_SIDE": "1280"}):
+                kwargs = ocr._paddleocr_model_kwargs(models)
+            with mock.patch.dict(os.environ, {"HUAWEIOCR_OCR_DET_MAX_SIDE": "0"}):
+                uncapped = ocr._paddleocr_model_kwargs(models)
+
+        self.assertEqual(kwargs["text_det_limit_side_len"], 1280)
+        self.assertEqual(kwargs["text_det_limit_type"], "max")
+        self.assertNotIn("text_det_limit_side_len", uncapped)
+        self.assertNotIn("text_det_limit_type", uncapped)
 
         self.assertEqual(kwargs["text_detection_model_name"], "PP-OCRv5_server_det")
         self.assertEqual(kwargs["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")

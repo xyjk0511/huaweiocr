@@ -385,6 +385,9 @@ def _paddleocr_model_kwargs(model_root):
     rec_dir = _first_existing_model_dir(model_root, _recognition_model_candidates())
     cls_dir = _first_existing_model_dir(model_root, ["PP-LCNet_x1_0_textline_ori"])
     rec_name = os.path.basename(rec_dir) if rec_dir else None
+    # Bound detection work; recognition still crops from the original image.
+    # Zero retains the installed pipeline's original detection-size settings.
+    det_max_side = int(os.environ.get("HUAWEIOCR_OCR_DET_MAX_SIDE", "1280"))
     desired = {
         "use_doc_orientation_classify": False,
         "use_doc_unwarping": False,
@@ -392,6 +395,10 @@ def _paddleocr_model_kwargs(model_root):
         "use_angle_cls": True,
         "use_mkldnn": False,
         "enable_mkldnn": False,
+        "text_det_limit_side_len": det_max_side if det_max_side > 0 else None,
+        "text_det_limit_type": "max" if det_max_side > 0 else None,
+        "det_limit_side_len": det_max_side if det_max_side > 0 else None,
+        "det_limit_type": "max" if det_max_side > 0 else None,
         "text_detection_model_name": "PP-OCRv5_server_det" if det_dir else None,
         "det_model_dir": det_dir,
         "text_detection_model_dir": det_dir,

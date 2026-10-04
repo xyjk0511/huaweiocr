@@ -94,6 +94,7 @@
 | HUAWEIOCR_DATA_DIR | LOCALAPPDATA 派生 | 用户数据目录覆盖 | huaweiocr/io/paths_runtime.py |
 | HUAWEIOCR_MODEL_DIR | 派生 | 模型目录覆盖 | huaweiocr/io/paths_runtime.py |
 | HUAWEIOCR_OCR_PROFILE | mobile | OCR 引擎档位（mobile/server） | huaweiocr/detect/ocr_engine.py |
+| HUAWEIOCR_OCR_DET_MAX_SIDE | 1280 | 文字检测图像的最长边（像素）；文字识别仍裁剪原图。设为 0 恢复引擎原有尺寸设置；超长图中的小字漏检时可调大 | huaweiocr/detect/ocr_engine.py |
 | HUAWEIOCR_PREWARM_OCR | 跟随 OCR_FALLBACK | GUI 启动预热 OCR | huaweiocr/ui/pipeline.py |
 | OCR_IMG_DIR / OCR_OUT_JSONL | stage2_fields/sn 派生 | ocr.py 独立运行时的输入输出 | huaweiocr/detect/ocr_engine.py |
 
