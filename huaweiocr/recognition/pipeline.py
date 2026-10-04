@@ -640,7 +640,28 @@ def _read_part_no_fast(img) -> list[str]:
             if len(parts) == 1:
                 return lines
             if parts:
-                break
+                return []
+
+        from barcode import (
+            auto_rotate_to_horizontal, crop_bar_band,
+            crop_detected_barcode_band, enhance_band,
+        )
+
+        gray = auto_rotate_to_horizontal(gray)
+        lines = []
+        for view in (gray, crop_detected_barcode_band(gray), crop_bar_band(gray)):
+            if view is None:
+                continue
+            enhanced, _ = enhance_band(view)
+            decoded = zxingcpp.read_barcodes(
+                enhanced, formats=zxingcpp.BarcodeFormat.Code128,
+                try_rotate=True, try_downscale=True, try_invert=True, return_errors=False,
+            )
+            lines.extend(item.text for item in decoded if item.text)
+        # Check every enhanced view before accepting; conflicting crops use the legacy path.
+        parts = {part for line in lines for part in extract_part_numbers_from_text(line)}
+        if len(parts) == 1:
+            return list(dict.fromkeys(lines))
     except Exception:
         pass
     return []

@@ -70,6 +70,36 @@ class BarcodeDecoderReliabilityTest(unittest.TestCase):
             self.assertEqual(scan2.read_part_no_barcodes("part.png"), ["50087288"])
             legacy.assert_called_once_with("part.png")
 
+    def test_part_no_enhanced_views_require_agreement_and_keep_fallback(self):
+        scan2 = _import_scan2()
+        image = np.full((40, 160, 3), 255, dtype=np.uint8)
+        gray = image[:, :, 0]
+        for payloads, expected, fallback in (
+            ((["50087149"], [], ["1P50087149"]), ["50087149", "1P50087149"], False),
+            ((["50087149"], ["50087288"], []), ["legacy"], True),
+            (([], [], []), ["legacy"], True),
+        ):
+            with self.subTest(payloads=payloads):
+                decoder = types.SimpleNamespace(
+                    BarcodeFormat=types.SimpleNamespace(Code128=object()),
+                    read_barcodes=mock.Mock(side_effect=[[], []] + [
+                        [types.SimpleNamespace(text=p) for p in values] for values in payloads
+                    ]),
+                )
+                barcode = types.SimpleNamespace(
+                    auto_rotate_to_horizontal=lambda img: gray,
+                    crop_detected_barcode_band=lambda img: gray,
+                    crop_bar_band=lambda img: gray,
+                    enhance_band=lambda img: (gray, gray),
+                )
+                with mock.patch.dict(sys.modules, {"zxingcpp": decoder, "barcode": barcode}), mock.patch.object(
+                    scan2, "cv2", cv2,
+                ), mock.patch.object(scan2, "_read_image", return_value=image), mock.patch.object(
+                    scan2, "read_barcodes", return_value=["legacy"],
+                ) as legacy:
+                    self.assertEqual(scan2.read_part_no_barcodes("part.png", allow_pixel_repair=False), expected)
+                    self.assertEqual(legacy.called, fallback)
+
     def test_barcode_module_import_survives_missing_pyzbar(self):
         module_name = "barcode_without_pyzbar_test"
         # barcode.py 已是别名垫片，导入期行为要从实现文件本身验证。
