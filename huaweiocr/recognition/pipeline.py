@@ -619,8 +619,8 @@ def _part_no_stripe_rescue(img_path: str) -> list[str]:
     return [str(best.text)]
 
 
-def _read_part_no_fast(img) -> list[str]:
-    """Decode an unambiguous label-local PartNo before expensive repair passes."""
+def _read_field_barcodes_fast(img, extract_values) -> list[str]:
+    """Decode an unambiguous label-local field before expensive repair passes."""
     if img is None:
         return []
     try:
@@ -636,7 +636,7 @@ def _read_part_no_fast(img) -> list[str]:
                 try_rotate=True, try_downscale=False, try_invert=True, return_errors=False,
             )
             lines = list(dict.fromkeys(item.text for item in decoded if item.text))
-            parts = {part for line in lines for part in extract_part_numbers_from_text(line)}
+            parts = {part for line in lines for part in extract_values(line)}
             if len(parts) == 1:
                 return lines
             if parts:
@@ -659,12 +659,24 @@ def _read_part_no_fast(img) -> list[str]:
             )
             lines.extend(item.text for item in decoded if item.text)
         # Check every enhanced view before accepting; conflicting crops use the legacy path.
-        parts = {part for line in lines for part in extract_part_numbers_from_text(line)}
+        parts = {part for line in lines for part in extract_values(line)}
         if len(parts) == 1:
             return list(dict.fromkeys(lines))
     except Exception:
         pass
     return []
+
+
+def _read_part_no_fast(img) -> list[str]:
+    return _read_field_barcodes_fast(img, extract_part_numbers_from_text)
+
+
+def _read_sn_fallback_barcodes(img_path: str) -> list[str]:
+    lines = _read_field_barcodes_fast(
+        _read_image(img_path, cv2.IMREAD_COLOR),
+        lambda text: [sn] if (sn := extract_sn_from_payload(text)) else [],
+    )
+    return lines or read_barcodes(img_path)
 
 
 def read_part_no_barcodes(img_path: str, *, allow_pixel_repair: bool = True) -> list[str]:
@@ -1307,7 +1319,7 @@ def _scan_sn_barcode_report(
 ):
     return scan_sn_barcodes(
         sources,
-        fallback_path_decoder=read_barcodes,
+        fallback_path_decoder=_read_sn_fallback_barcodes,
         label_id=label_id,
         debug_dir=_debug_candidate_dir(),
         early_exit=allow_early_exit,
@@ -1825,6 +1837,24 @@ def recognize_sn_barcode(
     )[:4]
 
 
+def _recognize_sn_textline_fast(img) -> tuple[str, str]:
+    try:
+        texts = _load_ocr_module().ocr_sn_textline_candidates(img)
+    except Exception as exc:
+        append_debug(f"[SN][TEXTLINE_FALLBACK] {exc.__class__.__name__}")
+        return "", ""
+    if len(texts) != 2:
+        return "", ""
+    sns = [
+        extract_sn_from_text(item["text"])
+        if item["score"] >= 0.90 and re.match(r"^S\s*/?\s*N\s*:", item["text"], re.I) else ""
+        for item in texts
+    ]
+    if sns[0] and sns[0] == sns[1]:
+        return sns[0], texts[0]["text"]
+    return "", ""
+
+
 def recognize_sn_ocr_after_barcode(
     sn_path: str = "",
     label_id: str = "",
@@ -1846,6 +1876,11 @@ def recognize_sn_ocr_after_barcode(
     color_img = load_for_ocr_color(sn_path)
     if color_img is None:
         return _sn_barcode_failure_result(barcode_report, barcode_raw, meta, has_sn_path=True)
+
+    sn, text = _recognize_sn_textline_fast(color_img)
+    if sn:
+        meta["ocr_text_found"] = True
+        return sn, text, "ocr", meta
 
     text, concat, texts = ocr_text_with_details(color_img)
     last_text = text

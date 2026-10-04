@@ -5,6 +5,7 @@ import sys
 import types
 import warnings
 import inspect
+import threading
 import importlib.machinery
 from contextlib import nullcontext
 
@@ -274,6 +275,8 @@ OCR_LANG = "en"
 # 是否使用 GPU（你现在一般是 CPU，就 False）
 USE_GPU = False
 OCR_PROFILE = os.environ.get("HUAWEIOCR_OCR_PROFILE", "mobile").strip().lower()
+_SN_TEXT_RECOGNIZER = None
+_SN_TEXT_LOCK = threading.Lock()
 # ===========================================
 
 LOG_SINK = None
@@ -437,6 +440,38 @@ def init_ocr():
     )
     _emit_log("✅ OCR 引擎初始化完成")
     return ocr
+
+
+def ocr_sn_textline_candidates(img):
+    """Read two SN header views with the bundled recognizer, without detection."""
+    global _SN_TEXT_RECOGNIZER
+    if OCR_PROFILE in {"accurate", "server"} or os.environ.get(
+        "HUAWEIOCR_SN_TEXTLINE_OCR", "1",
+    ).strip().lower() in {"0", "false", "no"}:
+        return []
+    with _SN_TEXT_LOCK:
+        if _SN_TEXT_RECOGNIZER is None:
+            try:
+                from paddleocr import TextRecognition
+
+                root = ensure_models_installed() or _local_model_root_fallback()
+                model_dir = _first_existing_model_dir(root, ["en_PP-OCRv5_mobile_rec", "PP-OCRv5_mobile_rec"])
+                if not model_dir:
+                    return []
+                _SN_TEXT_RECOGNIZER = TextRecognition(
+                    model_name=os.path.basename(model_dir), model_dir=model_dir,
+                    device="cpu", enable_mkldnn=False, cpu_threads=4,
+                )
+            except Exception:
+                _SN_TEXT_RECOGNIZER = False
+        if _SN_TEXT_RECOGNIZER is False:
+            return []
+        results = []
+        for ratio in (0.45, 0.50):
+            view = img[:max(1, round(img.shape[0] * ratio))]
+            result = _SN_TEXT_RECOGNIZER.predict(view)[0]
+            results.append({"text": normalize_sn_text(result["rec_text"]), "score": float(result["rec_score"])})
+        return results
 
 
 def ocr_one_image(ocr, img_path):

@@ -3770,7 +3770,7 @@ def stage2_crop_fields(label_img_path):
     part_no_crop = selected.get("part_no_crop")
     part_no_codes = list(selected.get("part_no_codes") or [])
     part_no_raw_codes = list(selected.get("part_no_raw_codes") or [])
-    if part_no_crop is not None and not part_no_raw_codes and not part_no_codes:
+    if part_no_crop is not None and "part_no_raw_codes" not in selected and not part_no_codes:
         part_no_raw_codes = decode_raw_part_no_crop(part_no_crop, label_id=base)
         part_no_codes = normalize_part_no_codes(part_no_raw_codes)
     if not part_no_codes:

@@ -100,6 +100,52 @@ class BarcodeDecoderReliabilityTest(unittest.TestCase):
                     self.assertEqual(scan2.read_part_no_barcodes("part.png", allow_pixel_repair=False), expected)
                     self.assertEqual(legacy.called, fallback)
 
+    def test_sn_native_fallback_requires_one_sn_and_preserves_legacy_on_conflict(self):
+        scan2 = _import_scan2()
+        image = np.full((40, 160, 3), 255, dtype=np.uint8)
+        for payloads, expected, fallback in (
+            (["21500871494ERB012345"], ["21500871494ERB012345"], False),
+            (["21500871494ERB012345", "21500871494ERB012346"], ["legacy"], True),
+            (["50087149", "AP162E"], ["legacy"], True),
+        ):
+            with self.subTest(payloads=payloads):
+                decoder = types.SimpleNamespace(
+                    BarcodeFormat=types.SimpleNamespace(Code128=object()),
+                    read_barcodes=mock.Mock(return_value=[types.SimpleNamespace(text=p) for p in payloads]),
+                )
+                with mock.patch.dict(sys.modules, {"zxingcpp": decoder}), mock.patch.object(
+                    scan2, "cv2", cv2,
+                ), mock.patch.object(scan2, "_read_image", return_value=image), mock.patch.object(
+                    scan2, "read_barcodes", return_value=["legacy"],
+                ) as legacy:
+                    self.assertEqual(scan2._read_sn_fallback_barcodes("sn.png"), expected)
+                    self.assertEqual(legacy.called, fallback)
+
+    def test_sn_textline_consensus_keeps_ocr_fallback_for_unreliable_views(self):
+        scan2 = _import_scan2()
+        sn = "21500871494ERB012345"
+        reliable = {"text": "S/N: " + sn, "score": 0.95}
+        for candidates, accepted in (
+            ([reliable, reliable], True),
+            ([reliable, {"text": "S/N: 21500871494ERB012346", "score": 0.99}], False),
+            ([reliable, {"text": "S/N: " + sn, "score": 0.5}], False),
+            ([reliable, {"text": sn, "score": 0.99}], False),
+            ([reliable], False),
+            ([], False),
+        ):
+            with self.subTest(candidates=candidates):
+                module = types.SimpleNamespace(ocr_sn_textline_candidates=lambda img: candidates)
+                with mock.patch.object(scan2, "_load_ocr_module", return_value=module), mock.patch.object(
+                    scan2, "load_for_ocr_color", return_value=np.full((40, 160, 3), 255, dtype=np.uint8),
+                ), mock.patch.object(scan2, "ocr_text_with_details", return_value=("S/N: " + sn, sn, [])) as detect:
+                    result = scan2.recognize_sn_ocr_after_barcode(
+                        "sn.png", barcode_report=sn_barcode.SnBarcodeReport(status="decoder_miss"),
+                    )
+                self.assertEqual(result[0], sn)
+                self.assertEqual(result[2], "ocr")
+                self.assertTrue(result[3]["ocr_text_found"])
+                self.assertEqual(detect.called, not accepted)
+
     def test_barcode_module_import_survives_missing_pyzbar(self):
         module_name = "barcode_without_pyzbar_test"
         # barcode.py 已是别名垫片，导入期行为要从实现文件本身验证。

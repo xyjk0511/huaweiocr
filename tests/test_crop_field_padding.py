@@ -1277,6 +1277,31 @@ class CropFieldPaddingTests(unittest.TestCase):
         self.assertTrue(args)
         self.assertTrue(kwargs["allow_pixel_repair"])
 
+    def test_stage2_does_not_decode_a_known_failed_candidate_again(self):
+        image = np.full((120, 320, 3), 255, dtype=np.uint8)
+        candidate = {
+            "score": 100, "rotation": 0, "model_crop": None, "model_kind": "",
+            "sn_crop": image, "sn_conf": 0.9, "part_no_crop": image,
+            "part_no_kind": "detector", "part_no_conf": 0.9,
+            "part_no_raw_codes": [], "part_no_codes": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "label.png")
+            crop.cv2.imwrite(path, image)
+            crop.configure_paths(input_dir=root, out_dir=root)
+            crop.ensure_dirs(clean=True)
+            with mock.patch.object(crop, "_stage2_infer_field_preds", return_value=[]), mock.patch.object(
+                crop, "_stage2_build_candidate", return_value=candidate,
+            ), mock.patch.object(crop, "_stage2_should_retry_rot180", return_value=False), mock.patch.object(
+                crop, "recover_part_no_crop_from_original_context", return_value=(None, [], []),
+            ), mock.patch.object(crop, "part_no_crop_is_structurally_valid", return_value=True), mock.patch.object(
+                crop, "decode_raw_part_no_crop",
+            ) as decode:
+                result = crop.stage2_crop_fields(path)
+            decode.assert_not_called()
+            self.assertTrue(result["sn_path"])
+            self.assertEqual(result["part_no_codes"], [])
+
     def test_stage2_saves_part_no_crop_when_barcode_scan_misses(self):
         img = np.full((120, 320, 3), 255, dtype=np.uint8)
         sn_crop = img[20:72, 30:250].copy()
