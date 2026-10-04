@@ -619,14 +619,44 @@ def _part_no_stripe_rescue(img_path: str) -> list[str]:
     return [str(best.text)]
 
 
+def _read_part_no_fast(img) -> list[str]:
+    """Decode an unambiguous label-local PartNo before expensive repair passes."""
+    if img is None:
+        return []
+    try:
+        import zxingcpp
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        for scale in (1, 2):
+            view = gray if scale == 1 else cv2.resize(
+                gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC,
+            )
+            decoded = zxingcpp.read_barcodes(
+                view, formats=zxingcpp.BarcodeFormat.Code128,
+                try_rotate=True, try_downscale=False, try_invert=True, return_errors=False,
+            )
+            lines = list(dict.fromkeys(item.text for item in decoded if item.text))
+            parts = {part for line in lines for part in extract_part_numbers_from_text(line)}
+            if len(parts) == 1:
+                return lines
+            if parts:
+                break
+    except Exception:
+        pass
+    return []
+
+
 def read_part_no_barcodes(img_path: str, *, allow_pixel_repair: bool = True) -> list[str]:
+    img = _read_image(img_path, cv2.IMREAD_COLOR)
+    fast_lines = _read_part_no_fast(img)
+    if fast_lines:
+        return fast_lines
     lines = read_barcodes(img_path)
     if lines and not allow_pixel_repair:
         return lines
     if _lines_contain_part_no(lines):
         return lines
 
-    img = _read_image(img_path, cv2.IMREAD_COLOR)
     if img is None:
         return lines
 

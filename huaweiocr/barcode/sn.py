@@ -925,20 +925,21 @@ def _decode_cli(candidate: CandidateImage) -> tuple[list[DecoderResult], list[st
                 f"{candidate.source_region}:{candidate.variant}",
                 decoder_errors=decoder_errors,
             )
-        if not raw_results and hasattr(barcode_module, "decode_cli_multi"):
-            raw_results = barcode_module.decode_cli_multi(
-                candidate.image,
-                f"{candidate.source_region}:{candidate.variant}",
-                {"limit": 4, "calls": 0},
-                decoder_errors=decoder_errors,
-            )
-        elif hasattr(barcode_module, "decode_small_patch"):
-            info = barcode_module.decode_small_patch(candidate.image)
-            raw_results = list(info.get("results", [])) if isinstance(info, dict) else []
-            if isinstance(info, dict):
-                for error in info.get("decoder_errors", []):
-                    if error and error not in decoder_errors:
-                        decoder_errors.append(error)
+        if not raw_results:
+            if hasattr(barcode_module, "decode_cli_multi"):
+                raw_results = barcode_module.decode_cli_multi(
+                    candidate.image,
+                    f"{candidate.source_region}:{candidate.variant}",
+                    {"limit": 4, "calls": 0},
+                    decoder_errors=decoder_errors,
+                )
+            elif hasattr(barcode_module, "decode_small_patch"):
+                info = barcode_module.decode_small_patch(candidate.image)
+                raw_results = list(info.get("results", [])) if isinstance(info, dict) else []
+                if isinstance(info, dict):
+                    for error in info.get("decoder_errors", []):
+                        if error and error not in decoder_errors:
+                            decoder_errors.append(error)
     except Exception as exc:
         decoder_errors.append(f"BarcodeReaderCLI_error:{exc.__class__.__name__}")
         return [], decoder_errors

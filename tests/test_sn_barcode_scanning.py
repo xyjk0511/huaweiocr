@@ -18,6 +18,58 @@ from tests.pipeline_fakes import import_scan2 as _import_scan2
 
 
 class BarcodeDecoderReliabilityTest(unittest.TestCase):
+    def test_sn_cli_keeps_direct_hit_without_running_fallbacks(self):
+        candidate = sn_barcode.CandidateImage(
+            np.full((40, 160), 255, dtype=np.uint8), "sn", "sn.rot0.full", "raw",
+        )
+        direct = {"data": "21500871494ERB012345", "type": "CODE128"}
+        module = types.SimpleNamespace(
+            decode_with_cli=mock.Mock(return_value=[direct]),
+            decode_cli_multi=mock.Mock(return_value=[]),
+            decode_small_patch=mock.Mock(return_value={"results": []}),
+        )
+        with mock.patch.dict(sys.modules, {"barcode": module}):
+            results, errors = sn_barcode._decode_cli(candidate)
+        self.assertEqual([result.raw_text for result in results], [direct["data"]])
+        self.assertEqual(errors, [])
+        module.decode_cli_multi.assert_not_called()
+        module.decode_small_patch.assert_not_called()
+
+    def test_part_no_fast_decode_only_accepts_one_distinct_part_number(self):
+        scan2 = _import_scan2()
+        image = np.full((40, 160, 3), 255, dtype=np.uint8)
+        for payloads, expected in (
+            (["1P50087149", "1P50087149"], ["1P50087149"]),
+            (["50087149", "50087288"], []),
+            (["AP162E", "6901027696956"], []),
+            (["21500871494ERB012345"], []),
+            ([], []),
+        ):
+            with self.subTest(payloads=payloads):
+                decoder = types.SimpleNamespace(
+                    BarcodeFormat=types.SimpleNamespace(Code128=object()),
+                    read_barcodes=mock.Mock(return_value=[types.SimpleNamespace(text=p) for p in payloads]),
+                )
+                with mock.patch.dict(sys.modules, {"zxingcpp": decoder}), mock.patch.object(scan2, "cv2", cv2):
+                    self.assertEqual(scan2._read_part_no_fast(image), expected)
+
+    def test_part_no_fast_decode_retries_scaled_image_and_keeps_legacy_fallback(self):
+        scan2 = _import_scan2()
+        image = np.full((40, 160, 3), 255, dtype=np.uint8)
+        decoder = types.SimpleNamespace(
+            BarcodeFormat=types.SimpleNamespace(Code128=object()),
+            read_barcodes=mock.Mock(side_effect=[[], [types.SimpleNamespace(text="50087149")]]),
+        )
+        with mock.patch.dict(sys.modules, {"zxingcpp": decoder}), mock.patch.object(scan2, "cv2", cv2), mock.patch.object(
+            scan2, "_read_image", return_value=image,
+        ), mock.patch.object(scan2, "read_barcodes", return_value=["50087288"]) as legacy:
+            self.assertEqual(scan2.read_part_no_barcodes("part.png"), ["50087149"])
+            legacy.assert_not_called()
+            self.assertEqual(decoder.read_barcodes.call_args.args[0].shape, (80, 320))
+            decoder.read_barcodes.side_effect = RuntimeError("decoder unavailable")
+            self.assertEqual(scan2.read_part_no_barcodes("part.png"), ["50087288"])
+            legacy.assert_called_once_with("part.png")
+
     def test_barcode_module_import_survives_missing_pyzbar(self):
         module_name = "barcode_without_pyzbar_test"
         # barcode.py 已是别名垫片，导入期行为要从实现文件本身验证。
