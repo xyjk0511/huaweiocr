@@ -4,6 +4,7 @@ import os
 import re
 import json
 import cv2
+import hashlib
 import tempfile
 import threading
 import time
@@ -679,8 +680,42 @@ def _read_sn_fallback_barcodes(img_path: str) -> list[str]:
     return lines or read_barcodes(img_path)
 
 
+_PART_NO_DECODE_CACHE: dict[tuple[str, bool], list[str]] = {}
+_PART_NO_DECODE_CACHE_LOCK = threading.Lock()
+_PART_NO_DECODE_CACHE_MAX = 512
+
+
+def _part_no_cache_key(img, allow_pixel_repair: bool) -> tuple[str, bool] | None:
+    if img is None or not hasattr(img, "tobytes"):
+        return None
+    digest = hashlib.sha1(img.tobytes())
+    digest.update(repr(img.shape).encode("ascii"))
+    return digest.hexdigest(), bool(allow_pixel_repair)
+
+
 def read_part_no_barcodes(img_path: str, *, allow_pixel_repair: bool = True) -> list[str]:
+    # The same PartNo crop is decoded in Stage2 and again during recognition.
+    # When its barcode is unreadable every call runs the full fallback chain
+    # (scaled views, pixel repair, stripe rescue, ~8 s on low-resolution
+    # labels), so remember failed decodes for identical pixels instead of
+    # paying for them twice. Successful decodes are cheap and not cached.
     img = _read_image(img_path, cv2.IMREAD_COLOR)
+    cache_key = _part_no_cache_key(img, allow_pixel_repair) if allow_pixel_repair else None
+    if cache_key is not None:
+        with _PART_NO_DECODE_CACHE_LOCK:
+            cached = _PART_NO_DECODE_CACHE.get(cache_key)
+        if cached is not None:
+            return list(cached)
+    lines = _read_part_no_barcodes_uncached(img_path, img, allow_pixel_repair=allow_pixel_repair)
+    if cache_key is not None and not _lines_contain_part_no(lines):
+        with _PART_NO_DECODE_CACHE_LOCK:
+            if len(_PART_NO_DECODE_CACHE) >= _PART_NO_DECODE_CACHE_MAX:
+                _PART_NO_DECODE_CACHE.clear()
+            _PART_NO_DECODE_CACHE[cache_key] = list(lines)
+    return lines
+
+
+def _read_part_no_barcodes_uncached(img_path: str, img, *, allow_pixel_repair: bool) -> list[str]:
     fast_lines = _read_part_no_fast(img)
     if fast_lines:
         return fast_lines
@@ -718,12 +753,18 @@ def read_part_no_barcodes(img_path: str, *, allow_pixel_repair: bool = True) -> 
         )
     )
 
+    used_scales = set()
     for tw in PART_NO_TARGET_WIDTHS:
         if tw <= w:
             continue
         scale = min(tw / float(w), PART_NO_MAX_SCALE)
         if scale <= 1.01:
             continue
+        # Small crops hit PART_NO_MAX_SCALE for every target width; identical
+        # views decode identically, so only try each scale once.
+        if scale in used_scales:
+            continue
+        used_scales.add(scale)
         new_w = int(round(w * scale))
         new_h = int(round(h * scale))
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)

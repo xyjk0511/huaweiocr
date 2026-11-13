@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_PREFIX_PATTERN = r"215[0-9]{7,8}"
+SN20_PREFIX_PATTERN = r"21(?:5[0-9]{7,8}|980[0-9]{5,6})"
 SN20_BODY_PATTERN = (
     rf"(?:{SN20_PREFIX_PATTERN}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{{6,7}}"
     rf"|215001084(?:32|52)SS[0-9]{{7}})"
@@ -243,6 +243,31 @@ def _clean_code(value: str) -> str:
     return re.sub(r"[^0-9A-Z]", "", (value or "").upper())
 
 
+def _starts_with_sn20(value: str) -> bool:
+    return bool(SN20_RE.match(value) or DIRECT_SCANNED_SN_RE.match(value))
+
+
+def _strip_serial_field_marker(cleaned: str) -> str:
+    """Drop the 'S' serial-field marker in front of a 20-char SN.
+
+    Only strip at a position where an SN actually starts: an ES/LDS/SS marker
+    followed by a suffix that begins with 215/21980 (e.g. 21500108432SS2198567)
+    must not cut the real SN off.
+    """
+    if _starts_with_sn20(cleaned):
+        return cleaned
+    positions = sorted(i for i in (cleaned.find("S215"), cleaned.find("S21980")) if i >= 0)
+    for index in positions:
+        rest = cleaned[index + 1:]
+        if _starts_with_sn20(rest):
+            return rest
+    # Legacy behaviour for payloads whose SN is only recognized later
+    # (e.g. learned families): strip at the first S215.
+    if "S215" in cleaned:
+        return cleaned[cleaned.index("S215") + 1:]
+    return cleaned
+
+
 def extract_sn_from_payload(value: str) -> str:
     cleaned = _clean_code(value)
     if not cleaned:
@@ -253,8 +278,7 @@ def extract_sn_from_payload(value: str) -> str:
         return ""
     while cleaned.startswith("SN"):
         cleaned = cleaned[2:]
-    if "S215" in cleaned:
-        cleaned = cleaned[cleaned.index("S215") + 1:]
+    cleaned = _strip_serial_field_marker(cleaned)
     m = SERIAL_FIELD_SN_RE.search(cleaned)
     if m:
         return m.group(1)
@@ -322,7 +346,7 @@ def _source_rank(source_region: str) -> int:
 
 
 def _sn_value_rank(sn: str) -> tuple[int, int]:
-    if sn.startswith("215"):
+    if sn.startswith(("215", "21980")):
         return (0, -len(sn))
     if sn.startswith("4E"):
         return (1, -len(sn))

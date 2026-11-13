@@ -51,6 +51,7 @@ class TextExtractTest(unittest.TestCase):
             ("SN: 4E25-A017-0000", "4E25A0170000"),
             ("noise 2151234567ERA123456 end", "2151234567ERA123456"),
             ("abc 4E25A0170000 xyz", "4E25A0170000"),
+            ("S/N: 21980131704ES6000762", "21980131704ES6000762"),
             ("MODEL AP162E", ""),
         ):
             with self.subTest(text=text):

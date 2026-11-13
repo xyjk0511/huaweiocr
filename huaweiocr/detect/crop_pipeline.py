@@ -1770,10 +1770,42 @@ def normalize_part_no_codes(codes):
     return out
 
 
+_STAGE2_PART_NO_BUDGET = threading.local()
+
+
+def _stage2_part_no_budget_seconds():
+    return _env_float_default("CROP_STAGE2_PART_NO_BUDGET_SECONDS", 45.0)
+
+
+def _stage2_part_no_budget_exhausted():
+    # Only time spent inside PartNo decoding counts, so slow detector
+    # inference or disk I/O cannot starve the first decode of a clean label.
+    budget = getattr(_STAGE2_PART_NO_BUDGET, "budget", None)
+    return budget is not None and getattr(_STAGE2_PART_NO_BUDGET, "spent", 0.0) >= budget
+
+
 def decode_raw_part_no_crop(crop_img, label_id=""):
     if crop_img is None:
         return []
+    # An unreadable PartNo barcode (blurred or low-resolution photo) costs
+    # ~10 s per crop variant, and Stage2 tries up to ~8 variants per label.
+    # Once a label has spent its budget, stop trying more variants so one bad
+    # photo cannot stall the whole batch; OCR fallback still runs later.
+    if _stage2_part_no_budget_exhausted():
+        tag = f"{label_id} " if label_id else ""
+        _log(f"Part No扫码预算已用完，跳过：{tag}".rstrip(), "debug")
+        return []
+    started = time.monotonic()
+    try:
+        return _decode_raw_part_no_crop_once(crop_img, label_id=label_id)
+    finally:
+        if getattr(_STAGE2_PART_NO_BUDGET, "budget", None) is not None:
+            _STAGE2_PART_NO_BUDGET.spent = getattr(_STAGE2_PART_NO_BUDGET, "spent", 0.0) + (
+                time.monotonic() - started
+            )
 
+
+def _decode_raw_part_no_crop_once(crop_img, label_id=""):
     fd, tmp_path = tempfile.mkstemp(prefix="part_no_scan_", suffix=".png")
     os.close(fd)
     try:
@@ -3735,6 +3767,17 @@ def _stage2_should_retry_rot180(candidate):
 
 
 def stage2_crop_fields(label_img_path):
+    budget = _stage2_part_no_budget_seconds()
+    _STAGE2_PART_NO_BUDGET.budget = budget if budget > 0 else None
+    _STAGE2_PART_NO_BUDGET.spent = 0.0
+    try:
+        return _stage2_crop_fields_impl(label_img_path)
+    finally:
+        _STAGE2_PART_NO_BUDGET.budget = None
+        _STAGE2_PART_NO_BUDGET.spent = 0.0
+
+
+def _stage2_crop_fields_impl(label_img_path):
     img = read_image(label_img_path)
     if img is None:
         return None

@@ -45,8 +45,9 @@ class ProductProfileTest(unittest.TestCase):
         self.assertIn("AR280", builtin["known_model_codes"])
         self.assertIn("S380-S8P2T", builtin["known_model_codes"])
         self.assertEqual(profile.KNOWN_MODEL_CODES, set(builtin["known_model_codes"]))
-        self.assertEqual(14, len(builtin["part_no_model_map"]))
-        self.assertEqual(11, len(builtin["known_model_codes"]))
+        self.assertEqual("S110-4P1T-BU-V2", builtin["part_no_model_map"]["98013170"])
+        self.assertEqual(15, len(builtin["part_no_model_map"]))
+        self.assertEqual(12, len(builtin["known_model_codes"]))
 
     def test_external_profile_adds_entries_for_profile_and_extract(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1277,6 +1277,39 @@ class CropFieldPaddingTests(unittest.TestCase):
         self.assertTrue(args)
         self.assertTrue(kwargs["allow_pixel_repair"])
 
+    def test_decode_raw_part_no_crop_skips_after_stage2_budget_is_spent(self):
+        part_no_crop = np.full((40, 160, 3), 255, dtype=np.uint8)
+        clock = [100.0]
+
+        def slow_failed_decode(*_args, **_kwargs):
+            clock[0] += 30.0  # an unreadable barcode runs the full fallback chain
+            return []
+
+        fake_scan2 = types.SimpleNamespace(read_part_no_barcodes=mock.Mock(side_effect=slow_failed_decode))
+
+        def fake_impl(_path):
+            clock[0] += 60.0  # slow detector inference / disk I/O must not count
+            first = crop.decode_raw_part_no_crop(part_no_crop, label_id="unit")
+            second = crop.decode_raw_part_no_crop(part_no_crop, label_id="unit")
+            return first, second
+
+        with mock.patch.dict(sys.modules, {"scan2": fake_scan2}), mock.patch.dict(
+            os.environ, {"CROP_STAGE2_PART_NO_BUDGET_SECONDS": "25"},
+        ), mock.patch.object(crop.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(
+            crop, "_stage2_crop_fields_impl", side_effect=fake_impl,
+        ):
+            first, second = crop.stage2_crop_fields("label.png")
+
+        self.assertEqual((first, second), ([], []))
+        self.assertEqual(fake_scan2.read_part_no_barcodes.call_count, 1)
+        self.assertIsNone(crop._STAGE2_PART_NO_BUDGET.budget)
+        # Outside Stage2 (no budget) decoding is never skipped.
+        fake_scan2.read_part_no_barcodes.side_effect = None
+        fake_scan2.read_part_no_barcodes.return_value = ["50087288"]
+        with mock.patch.dict(sys.modules, {"scan2": fake_scan2}):
+            self.assertEqual(crop.decode_raw_part_no_crop(part_no_crop), ["50087288"])
+            self.assertEqual(crop.decode_raw_part_no_crop(part_no_crop), ["50087288"])
+
     def test_stage2_does_not_decode_a_known_failed_candidate_again(self):
         image = np.full((120, 320, 3), 255, dtype=np.uint8)
         candidate = {

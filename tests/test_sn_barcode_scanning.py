@@ -70,6 +70,39 @@ class BarcodeDecoderReliabilityTest(unittest.TestCase):
             self.assertEqual(scan2.read_part_no_barcodes("part.png"), ["50087288"])
             legacy.assert_called_once_with("part.png")
 
+    def test_part_no_failed_full_decode_is_reused_for_identical_crop(self):
+        scan2 = _import_scan2()
+        image = np.full((20, 80, 3), 255, dtype=np.uint8)
+        dbr_calls = []
+
+        def fake_dbr(view, debug_name=""):
+            dbr_calls.append(debug_name)
+            return []
+
+        with mock.patch.object(scan2, "cv2", cv2), mock.patch.object(
+            scan2, "_read_image", return_value=image,
+        ), mock.patch.object(scan2, "_read_part_no_fast", return_value=[]), mock.patch.object(
+            scan2, "read_barcodes", return_value=[],
+        ) as legacy, mock.patch.object(scan2, "decode_barcodes_with_dbr", side_effect=fake_dbr), mock.patch.object(
+            scan2, "_part_no_pixel_repair", return_value=[],
+        ) as repair, mock.patch.object(scan2, "_part_no_stripe_rescue", return_value=[]):
+            self.assertEqual(scan2.read_part_no_barcodes("a.png"), [])
+            # 80px wide: 650/900/1200 all cap at PART_NO_MAX_SCALE, so only one scaled pair.
+            self.assertEqual(dbr_calls, ["part_no[qzpad]", "part_no[x4.00]", "part_no[x4.00_qzpad]"])
+            self.assertEqual(scan2.read_part_no_barcodes("b.png"), [])
+            self.assertEqual(legacy.call_count, 1)
+            self.assertEqual(repair.call_count, 1)
+            self.assertEqual(len(dbr_calls), 3)
+
+    def test_part_no_successful_decode_is_not_cached(self):
+        scan2 = _import_scan2()
+        image = np.full((20, 80, 3), 255, dtype=np.uint8)
+        with mock.patch.object(scan2, "_read_image", return_value=image), mock.patch.object(
+            scan2, "_read_part_no_fast", side_effect=[["50087149"], ["98013170"]],
+        ):
+            self.assertEqual(scan2.read_part_no_barcodes("a.png"), ["50087149"])
+            self.assertEqual(scan2.read_part_no_barcodes("a.png"), ["98013170"])
+
     def test_part_no_enhanced_views_require_agreement_and_keep_fallback(self):
         scan2 = _import_scan2()
         image = np.full((40, 160, 3), 255, dtype=np.uint8)
@@ -362,6 +395,42 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             sn_barcode.extract_sn_from_payload("SN: 2150087147LDS4024590"),
             "2150087147LDS4024590",
         )
+
+    def test_s110_4p1t_bu_v2_es_payload_with_980_part_no_prefix_is_extracted(self):
+        # S110-4P1T-BU-V2 (Part No. 98013170) prints SN = "21" + PartNo + digit + ES + 7 digits.
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21980131704ES6000762"),
+            "21980131704ES6000762",
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("S21980131704ES6000762"),
+            "21980131704ES6000762",
+        )
+        self.assertEqual(sn_barcode.extract_sn_from_payload("21970131704ES6000762"), "")
+
+    def test_standard_sn_family_inference_covers_980_part_no_prefix(self):
+        from huaweiocr.barcode import sn_rules
+
+        family = sn_rules.infer_standard_sn_family("21980131704ER6000762")
+        self.assertEqual(family["mask"], "21980######ER#######")
+        self.assertEqual(family["id"], "p11-21980-er-d7")
+        legacy = sn_rules.infer_standard_sn_family("21500871494ERB006054")
+        self.assertEqual(legacy["id"], "p11-erb-d6")
+        self.assertTrue(legacy["mask"].startswith("215########ERB"))
+        self.assertIsNone(sn_rules.infer_standard_sn_family("21970131704ER6000762"))
+        self.assertIsNone(sn_rules.infer_standard_sn_family("21981234567ES1234567"))
+
+    def test_serial_field_marker_is_not_stripped_inside_sn_suffix(self):
+        for payload, expected in (
+            ("21500108432SS2198567", "21500108432SS2198567"),
+            ("21512345678ES2198123", "21512345678ES2198123"),
+            ("21980131704ES2198123", "21980131704ES2198123"),
+            ("S21980131704ES2156789", "21980131704ES2156789"),
+            ("1S21980131704ES2150762", "21980131704ES2150762"),
+            ("[)>06 1P50087149 18VLEHWT S21500871494ERB006054", "21500871494ERB006054"),
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(sn_barcode.extract_sn_from_payload(payload), expected)
 
     def test_ss_series_payload_is_extracted_from_direct_and_structured_barcode(self):
         self.assertEqual(
