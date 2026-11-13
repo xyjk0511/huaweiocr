@@ -224,14 +224,19 @@ def infer_standard_sn_family(value: str) -> dict[str, Any] | None:
     """Infer standard Huawei 20-char SN family envelope.
 
     Deterministic envelope:
-    - 20-char value shaped '215' or '21980' (= '21' + 500xxxxx/980xxxxx Part No.) + total 10/11 digit prefix + 2-4 uppercase marker + 6/7 uppercase-alphanumeric suffix.
+    - 20-char value shaped '21' + 8-digit Part No. (+ optional digit) = 10/11 digit prefix + 2-4 uppercase marker + 6/7 uppercase-alphanumeric suffix.
     - Suffix kind inferred as 'digits' or 'alnum'.
     - Returns schema dict or None on nonstandard/ambiguous shape.
     """
     cleaned = _clean_sn_value(value)
-    if len(cleaned) != 20 or not cleaned.startswith(("215", "21980")):
+    if len(cleaned) != 20 or not cleaned.startswith("21"):
         return None
-    fixed_prefix = "21980" if cleaned.startswith("21980") else "215"
+    if cleaned.startswith("215"):
+        fixed_prefix = "215"
+    elif cleaned.startswith("21980"):
+        fixed_prefix = "21980"
+    else:
+        fixed_prefix = "21"
 
     if not cleaned[:10].isdigit():
         return None
@@ -289,7 +294,7 @@ def infer_standard_sn_family(value: str) -> dict[str, Any] | None:
     mask = prefix_mask + marker + suffix_mask
     family_id = f"p{prefix_digits}-{marker.lower()}-{'d' if suffix_kind == 'digits' else 'a'}{suffix_len}"
     if fixed_prefix != "215":
-        # Keep pre-existing 215 family ids stable; 980-series families get their own id.
+        # Keep pre-existing 215 family ids stable; other PartNo series get their own id.
         family_id = f"p{prefix_digits}-{fixed_prefix}-{marker.lower()}-{'d' if suffix_kind == 'digits' else 'a'}{suffix_len}"
 
     return {

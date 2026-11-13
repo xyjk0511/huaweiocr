@@ -1758,11 +1758,14 @@ PART_NO_CODE_RE = re.compile(
 
 
 def normalize_part_no_codes(codes):
+    # Same rules as recognition: known 500/980 series anywhere, other 8-digit
+    # PartNos only as a standalone non-date token.
+    from huaweiocr.core.extract import extract_part_numbers_from_text
+
     out = []
     seen = set()
     for code in codes or []:
-        for match in PART_NO_CODE_RE.finditer(str(code or "").upper()):
-            part_no = match.group(1)
+        for part_no in extract_part_numbers_from_text(str(code or "")):
             if part_no in seen:
                 continue
             seen.add(part_no)

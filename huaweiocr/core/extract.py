@@ -34,14 +34,39 @@ PART_NO_RE = re.compile(
 )
 
 
+# PartNos outside the known 500/980 series are accepted only as a standalone
+# 8-digit token (a whole barcode payload, or "part_no:<code>" / "P/N <code>"),
+# never as part of a longer code, and never when the token looks like a date.
+GENERIC_PART_NO_RE = re.compile(r"(?<![0-9A-Z])([0-9]{8})(?![0-9A-Z])")
+_DATE_LIKE_PART_NO_RE = re.compile(r"(?:19|20)[0-9]{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])")
+
+
+def is_generic_part_no(value: str) -> bool:
+    value = str(value or "")
+    if re.fullmatch(r"(?:500|980)[0-9]{5}", value):
+        return True
+    return bool(
+        re.fullmatch(r"[0-9]{8}", value)
+        and not _DATE_LIKE_PART_NO_RE.fullmatch(value)
+        and len(set(value)) > 1
+    )
+
+
 def extract_part_numbers_from_text(text: str) -> list[str]:
     if not text:
         return []
     seen = set()
     out = []
-    for match in PART_NO_RE.finditer(str(text).upper()):
+    upper = str(text).upper()
+    for match in PART_NO_RE.finditer(upper):
         part_no = match.group(1)
         if part_no in seen:
+            continue
+        seen.add(part_no)
+        out.append(part_no)
+    for match in GENERIC_PART_NO_RE.finditer(upper):
+        part_no = match.group(1)
+        if part_no in seen or not is_generic_part_no(part_no):
             continue
         seen.add(part_no)
         out.append(part_no)
@@ -116,10 +141,10 @@ def _clean_code(s: str) -> str:
 
 
 SN_OCR_BOUNDED_RES = (
-    re.compile(r"(215[0-9]{7,8}(?:ER[A-Z]?|AGQ[A-Z])[0-9]{6})(?![0-9A-Z])"),
-    re.compile(r"(215[0-9]{7,8}(?:LDR[A-Z]?|LDS|SRA)[0-9]{7})(?![0-9A-Z])"),
+    re.compile(r"(21[0-9]{8,9}(?:ER[A-Z]?|AGQ[A-Z])[0-9]{6})(?![0-9A-Z])"),
+    re.compile(r"(21[0-9]{8,9}(?:LDR[A-Z]?|LDS|SRA)[0-9]{7})(?![0-9A-Z])"),
     re.compile(r"(215001084(?:32|52)SS[0-9]{7})(?![0-9A-Z])"),
-    re.compile(r"(21(?:5[0-9]{7,8}|980[0-9]{5,6})ES[0-9A-Z]{7})(?![0-9A-Z])"),
+    re.compile(r"(21[0-9]{8,9}ES[0-9A-Z]{7})(?![0-9A-Z])"),
     re.compile(rf"({SN12_BODY_PATTERN})(?![0-9A-Z])"),
 )
 UNKNOWN_SN_NON_PREFIX_RE = re.compile(

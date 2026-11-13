@@ -4,6 +4,7 @@ import os
 import re
 import json
 import cv2
+import dataclasses
 import hashlib
 import tempfile
 import threading
@@ -47,13 +48,19 @@ from huaweiocr.core.extract import (
     _normalize_part_no,
     _unknown_model_candidate_is_reasonable,
     extract_part_numbers_from_text,
-    extract_sn_from_barcode_candidate,
     extract_sn_from_text,
     filter_sn_lines,  # noqa: F401  (kept as scan2 module attribute for back-compat)
     normalize_model,
 )
 from huaweiocr.barcode.sn_rules import commit_sn_observations, reload_sn_rules
 from huaweiocr.core.model_learning import commit_model_observations
+from huaweiocr.core.part_no_sn_kinds import (
+    genuine_sn_kind_for_part_no,
+    load_part_no_sn_kinds,
+    record_part_no_sn_kinds,
+    repaired_sn_conflict,
+    sn_embedded_part_no,
+)
 
 # Simple log gating for CLI usage.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").lower()
@@ -548,7 +555,7 @@ def read_barcodes(img_path: str) -> list[str]:
 
 
 def _lines_contain_part_no(lines: list[str]) -> bool:
-    return any(PART_NO_PAYLOAD_RE.search(str(line or "").upper()) for line in lines or [])
+    return any(extract_part_numbers_from_text(str(line or "")) for line in lines or [])
 
 
 def _part_no_pixel_repair(img_path: str) -> list[str]:
@@ -1760,11 +1767,87 @@ def _sn_barcode_failure_result(barcode_report, barcode_raw: str, meta: dict, has
         return "", f"[BARCODE_PARSE_FAIL] {barcode_raw}", "barcode_parse_fail", meta
     if status == "quality_reject":
         return "", "[BARCODE_QUALITY_REJECT]", "barcode_quality_reject", meta
+    if status == "part_no_conflict":
+        return "", f"[BARCODE_PART_NO_CONFLICT] {barcode_raw}", "barcode_part_no_conflict", meta
     if results:
         return "", f"[BARCODE] {barcode_raw}", "barcode_no_match", meta
     if has_sn_path:
         return "", "", "barcode_decoder_miss", meta
     return "", "", "none", meta
+
+
+def _genuine_barcode_hit(report) -> bool:
+    return (
+        report is not None
+        and getattr(report, "status", "") == "hit"
+        and getattr(report, "decoder_name", "") != "code128_pixel_repair"
+    )
+
+
+def _cross_check_sn_with_part_no(
+    keys, records, sn_results, sn_reports, part_no_by_key, part_no_src_by_key, ocr_jobs,
+    part_no_scan_miss_keys=None,
+) -> list[tuple[str, str]]:
+    """Reject pixel-repaired SNs that contradict the label PartNo.
+
+    Genuine decodes are trusted: they supply SN-family evidence per PartNo and,
+    for "21" + PartNo serials, the PartNo itself when the PartNo crop was
+    unreadable.  Returns (part_no, kind) evidence to persist.
+    """
+    def label_part_no(key):
+        return part_no_by_key.get(key) or _normalize_part_no(records[key].get("part_no", ""))
+
+    observations = []
+    kinds_by_part_no = load_part_no_sn_kinds()
+    for key in keys:
+        report = sn_reports.get(key)
+        if not _genuine_barcode_hit(report):
+            continue
+        sn_code = sn_results.get(key, ("",))[0]
+        part_no = label_part_no(key)
+        if not part_no:
+            part_no = sn_embedded_part_no(sn_code)
+            if not part_no:
+                continue
+            part_no_by_key[key] = part_no
+            part_no_src_by_key[key] = "sn_barcode"
+            if part_no_scan_miss_keys is not None:
+                part_no_scan_miss_keys.discard(key)
+        kind = genuine_sn_kind_for_part_no(sn_code, part_no)
+        if kind:
+            kinds_by_part_no.setdefault(part_no, set()).add(kind)
+            observations.append((part_no, kind))
+
+    for key in keys:
+        report = sn_reports.get(key)
+        if (
+            getattr(report, "status", "") != "hit"
+            or getattr(report, "decoder_name", "") != "code128_pixel_repair"
+        ):
+            continue
+        sn_code = sn_results.get(key, ("",))[0]
+        part_no = label_part_no(key)
+        reason = repaired_sn_conflict(sn_code, part_no, kinds_by_part_no.get(part_no, ()))
+        if not reason:
+            continue
+        rejected = dataclasses.replace(report, status="part_no_conflict", sn="")
+        sn_reports[key] = rejected
+        meta = rejected.to_meta()
+        meta["ocr_text_found"] = False
+        meta["barcode_part_no_conflict"] = reason
+        append_sensitive_debug(
+            f"[SN][PART_NO_CONFLICT] {key} sn={sn_code} part_no={part_no} reason={reason}"
+        )
+        sn_results[key] = (
+            "",
+            f"[BARCODE_PART_NO_CONFLICT] {_format_barcode_report(rejected)}",
+            "barcode_part_no_conflict",
+            meta,
+        )
+        item = records[key]
+        if ocr_jobs is not None and (item.get("sn_path") or item.get("label_crop")):
+            ocr_jobs.append(("sn", key, item, rejected))
+    return observations
 
 
 def _unknown_sn_candidate_from_barcode_report(barcode_report) -> str:
@@ -2390,6 +2473,12 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 if not part_no:
                     part_no_scan_miss_keys.add(key)
 
+    sn_kind_observations = _cross_check_sn_with_part_no(
+        keys, records, sn_results, sn_reports, part_no_by_key, part_no_src_by_key,
+        ocr_jobs if ocr_fallback else None,
+        part_no_scan_miss_keys,
+    )
+
     part_no_key_groups = {}
     for key, part_no in part_no_by_key.items():
         if key not in model_results and part_no:
@@ -2777,6 +2866,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             stats["records"] += 1
 
     finalize_rates(stats)
+
+    record_part_no_sn_kinds(sn_kind_observations)
 
     sn_learning_result = commit_sn_observations(sn_learning_observations)
     stats["sn_families_learned"] = len(sn_learning_result.get("promoted", []))

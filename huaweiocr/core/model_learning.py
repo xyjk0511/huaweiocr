@@ -13,12 +13,13 @@ try:
 except ImportError:
     from huaweiocr.io.paths_runtime import get_user_data_dir
 
+from huaweiocr.core.extract import is_generic_part_no
+
 
 _LOCK = threading.RLock()
 _TTL_SECONDS = 30 * 86400
 _MAX_CANDIDATES = 128
 _MAX_EVIDENCE = 16
-_PART_NO_RE = re.compile(r"(?:500|980)\d{5}")
 _MODEL_RE = re.compile(r"[A-Z][A-Z0-9-]{1,23}")
 
 
@@ -106,7 +107,7 @@ def commit_model_observations(
             part_no = re.sub(r"\D", "", str(observation.get("part_no", "")))
             model = re.sub(r"[^0-9A-Z-]", "", str(observation.get("model", "")).upper())
             label_id = str(observation.get("label_id", "") or "").strip()
-            if not _PART_NO_RE.fullmatch(part_no) or not _MODEL_RE.fullmatch(model) or not re.search(r"\d", model):
+            if not is_generic_part_no(part_no) or not _MODEL_RE.fullmatch(model) or not re.search(r"\d", model):
                 result["rejected"].append(
                     {"part_no": part_no, "model": model, "reason": "invalid_pair"}
                 )

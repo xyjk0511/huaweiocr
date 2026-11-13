@@ -406,7 +406,20 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             sn_barcode.extract_sn_from_payload("S21980131704ES6000762"),
             "21980131704ES6000762",
         )
-        self.assertEqual(sn_barcode.extract_sn_from_payload("21970131704ES6000762"), "")
+        # Any 8-digit PartNo is accepted structurally; the pipeline cross-checks
+        # the embedded PartNo against the label.
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("2102312ABC4ES6000762"), ""
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("21970131704ES6000762"),
+            "21970131704ES6000762",
+        )
+        self.assertEqual(
+            sn_barcode.extract_sn_from_payload("S2112345678LDS1234567"),
+            "2112345678LDS1234567",
+        )
+        self.assertEqual(sn_barcode.extract_sn_from_payload("2212345678LDS1234567"), "")
 
     def test_standard_sn_family_inference_covers_980_part_no_prefix(self):
         from huaweiocr.barcode import sn_rules
@@ -417,8 +430,10 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         legacy = sn_rules.infer_standard_sn_family("21500871494ERB006054")
         self.assertEqual(legacy["id"], "p11-erb-d6")
         self.assertTrue(legacy["mask"].startswith("215########ERB"))
-        self.assertIsNone(sn_rules.infer_standard_sn_family("21970131704ER6000762"))
-        self.assertIsNone(sn_rules.infer_standard_sn_family("21981234567ES1234567"))
+        generic = sn_rules.infer_standard_sn_family("21970131704ER6000762")
+        self.assertEqual(generic["mask"], "21#########ER#######")
+        self.assertEqual(generic["id"], "p11-21-er-d7")
+        self.assertIsNone(sn_rules.infer_standard_sn_family("22970131704ER6000762"))
 
     def test_serial_field_marker_is_not_stripped_inside_sn_suffix(self):
         for payload, expected in (
@@ -1716,7 +1731,7 @@ class Scan2BarcodeAccountingTest(unittest.TestCase):
             with mock.patch.object(
                 scan2,
                 "try_model_from_part_no_crop",
-                return_value=("", "part_no:59999999", "part_no_no_match"),
+                return_value=("", "part_no:599999", "part_no_no_match"),
             ) as part_no_scan:
                 with mock.patch.object(
                     scan2,

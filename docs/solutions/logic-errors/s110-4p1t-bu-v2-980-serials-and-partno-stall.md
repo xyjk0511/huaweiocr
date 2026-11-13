@@ -19,6 +19,7 @@ related_components:
   - huaweiocr/core/profile.py
   - huaweiocr/detect/crop_pipeline.py
   - huaweiocr/recognition/pipeline.py
+  - huaweiocr/core/part_no_sn_kinds.py
 tags: [huaweiocr, stage2, sn-parsing, part-no, performance, pixel-repair]
 ---
 
@@ -52,7 +53,28 @@ same crop again. A handful of such labels stalled a batch for many minutes.
   after it is spent, further PartNo crop variants are skipped. Readable labels decode in well under 1 s and
   never reach the budget.
 
+## Follow-up: generic PartNo/SN rules with a label-local cross-check (2026-11-13)
+
+Hard-coded prefixes meant every new product needed a code change, so the rules are now structural:
+
+- SN prefix is `21[0-9]{8,9}` (any 8-digit PartNo). `SS` stays bound to its two known prefixes because a
+  structurally valid false `SS` decode was seen before.
+- PartNo: the 500/980 series are matched as before; any other 8-digit value is accepted only as a standalone
+  token that is not a date (`YYYYMMDD`) or a repeated digit (`extract_part_numbers_from_text`). PartNo pixel
+  repair and stripe rescue still require the 500/980 series, so they cannot invent a new PartNo.
+- `huaweiocr/core/part_no_sn_kinds.py` + `_cross_check_sn_with_part_no` in the recognition pipeline:
+  genuine (non-pixel-repair) SN decodes record which SN family ("21"+PartNo or "4E") each PartNo uses, in
+  the batch and in `part_no_sn_kinds.json` in the user data dir (`SCAN2_PART_NO_SN_KINDS_PATH` overrides).
+  A pixel-repaired SN is rejected and sent to OCR when its embedded PartNo differs from the label PartNo,
+  or when it is a 4E serial and that PartNo has only been seen with "21" serials. Rejections are counted in
+  `sn_barcode_part_no_conflicts`, not as barcode hits. A genuine "21" SN also supplies the PartNo when the
+  PartNo crop is unreadable.
+
+Evidence: in the frozen baseline all 377 genuine "21" SNs embed the label PartNo; the 6 conflicting values
+were all pixel repairs (three `4E26...` on AP162E labels, three `215...ER...` with the wrong PartNo).
+
 ## Remaining risk
 
-Pixel repair can still forge a `4E26` serial from an SN barcode that is physically unreadable. A label-local
-PartNo-to-SN-family consistency check would block this but needs the SN family of each product.
+- A pixel-repaired 4E serial is only caught once a genuine decode of the same PartNo has been seen (in the
+  batch or earlier). The first unreadable label of a new product can still get a forged 4E value.
+- With no label PartNo, a structurally valid SN of any "21" prefix is accepted without a cross-check.

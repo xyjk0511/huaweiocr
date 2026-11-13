@@ -122,7 +122,8 @@ def _print_recognition_metrics(stats):
         if field == "sn":
             print("  - error_distribution:")
             for name in ("barcode_fail", "ocr_fail", "regex_fail", "sn_barcode_parse_failures",
-                         "sn_barcode_decoder_misses", "sn_barcode_ambiguous", "sn_barcode_quality_rejects"):
+                         "sn_barcode_decoder_misses", "sn_barcode_ambiguous", "sn_barcode_quality_rejects",
+                         "sn_barcode_part_no_conflicts"):
                 print(f"    - {name.removeprefix('sn_')}: {stats.get(name, 0)}")
 
 

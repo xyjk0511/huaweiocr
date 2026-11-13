@@ -21,7 +21,10 @@ except Exception:  # pragma: no cover
     np = None
 
 
-SN20_PREFIX_PATTERN = r"21(?:5[0-9]{7,8}|980[0-9]{5,6})"
+# Huawei 20-char SNs embed the label PartNo: "21" + 8-digit PartNo + optional
+# digit + marker + suffix.  Any 8-digit PartNo is accepted so new products do
+# not need a code change; the pipeline cross-checks the embedded PartNo.
+SN20_PREFIX_PATTERN = r"21[0-9]{8,9}"
 SN20_BODY_PATTERN = (
     rf"(?:{SN20_PREFIX_PATTERN}(?:ER[A-Z]?|LDR[A-Z]?|LDS|SRA|AGQ[A-Z])[0-9]{{6,7}}"
     rf"|215001084(?:32|52)SS[0-9]{{7}})"
@@ -251,16 +254,17 @@ def _strip_serial_field_marker(cleaned: str) -> str:
     """Drop the 'S' serial-field marker in front of a 20-char SN.
 
     Only strip at a position where an SN actually starts: an ES/LDS/SS marker
-    followed by a suffix that begins with 215/21980 (e.g. 21500108432SS2198567)
+    followed by a suffix that begins with "21" (e.g. 21500108432SS2198567)
     must not cut the real SN off.
     """
     if _starts_with_sn20(cleaned):
         return cleaned
-    positions = sorted(i for i in (cleaned.find("S215"), cleaned.find("S21980")) if i >= 0)
-    for index in positions:
+    index = cleaned.find("S21")
+    while index >= 0:
         rest = cleaned[index + 1:]
         if _starts_with_sn20(rest):
             return rest
+        index = cleaned.find("S21", index + 1)
     # Legacy behaviour for payloads whose SN is only recognized later
     # (e.g. learned families): strip at the first S215.
     if "S215" in cleaned:
@@ -346,7 +350,7 @@ def _source_rank(source_region: str) -> int:
 
 
 def _sn_value_rank(sn: str) -> tuple[int, int]:
-    if sn.startswith(("215", "21980")):
+    if sn.startswith("21"):
         return (0, -len(sn))
     if sn.startswith("4E"):
         return (1, -len(sn))
