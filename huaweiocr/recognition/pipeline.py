@@ -142,6 +142,7 @@ def configure_paths(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, d
 OCR_MODULE = None
 OCR_ENGINE = None
 OCR_ENGINE_LOCK = threading.Lock()
+OCR_MODULE_LOCK = threading.Lock()
 OCR_INFERENCE_LOCK = threading.Lock()
 OCR_PREWARM_LOCK = threading.Lock()
 OCR_THREAD_LOCAL = threading.local()
@@ -159,15 +160,21 @@ OCR_WARMUP_PNG = (
 
 def _load_ocr_module():
     global OCR_MODULE
-    if OCR_MODULE is None:
-        import ocr as ocr_module
+    if OCR_MODULE is not None:
+        return OCR_MODULE
+    # Serialize the slow first import: when the prewarm thread is mid-import,
+    # a concurrent `import ocr` from a scan worker can be handed the partially
+    # initialized module by Python's import deadlock handling.
+    with OCR_MODULE_LOCK:
+        if OCR_MODULE is None:
+            import ocr as ocr_module
 
-        OCR_MODULE = ocr_module
-        if hasattr(OCR_MODULE, "set_log_sink"):
-            try:
-                OCR_MODULE.set_log_sink(LOG_SINK)
-            except Exception:
-                pass
+            if hasattr(ocr_module, "set_log_sink"):
+                try:
+                    ocr_module.set_log_sink(LOG_SINK)
+                except Exception:
+                    pass
+            OCR_MODULE = ocr_module
     return OCR_MODULE
 
 

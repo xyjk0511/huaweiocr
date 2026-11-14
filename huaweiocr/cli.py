@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 from huaweiocr.io.images import SUPPORTED_IMAGE_EXTS, list_images
@@ -127,6 +128,32 @@ def _print_recognition_metrics(stats):
                 print(f"    - {name.removeprefix('sn_')}: {stats.get(name, 0)}")
 
 
+def _start_ocr_prewarm(scan2):
+    """Load the OCR engine while Stage1/Stage2 cropping runs.
+
+    Importing PaddleOCR takes tens of seconds; scan2 waits on the same engine
+    lock, so overlapping it with cropping only removes idle time.
+    """
+    fallback_enabled = getattr(scan2, "scan_ocr_fallback_enabled", None)
+    prewarm = getattr(scan2, "prewarm_ocr_engine", None)
+    if not callable(fallback_enabled) or not callable(prewarm) or not fallback_enabled():
+        return None
+    # A thread-local engine built here would be invisible to scan workers.
+    if getattr(scan2, "OCR_THREAD_LOCAL_MODE", False):
+        return None
+    from huaweiocr.io.envutil import env_flag_default
+
+    if not env_flag_default("HUAWEIOCR_PREWARM_OCR", True):
+        return None
+    thread = threading.Thread(
+        target=prewarm,
+        name="HuaweiOCR-OCR-Prewarm",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -185,6 +212,7 @@ def main() -> int:
 
     summary["image_count"] = total_images
 
+    prewarm_thread = None
     try:
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
@@ -193,6 +221,7 @@ def main() -> int:
 
         crop.set_log_level(args.log_level)
         scan2.set_log_level(args.log_level)
+        prewarm_thread = _start_ocr_prewarm(scan2)
 
         print("===== [1/2] Crop labels & model/sn fields =====")
         t0 = time.perf_counter()
@@ -256,6 +285,11 @@ def main() -> int:
             traceback.print_exc()
         return finish(1, error=f"{exc.__class__.__name__}: {exc}")
     finally:
+        # Never let the interpreter shut down while the daemon thread is still
+        # inside Paddle's native initialization (all-barcode batches can finish
+        # before the prewarm does).
+        if prewarm_thread is not None:
+            prewarm_thread.join()
         if args.pause:
             input("\nPress Enter to exit...")
 

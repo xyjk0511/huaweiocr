@@ -29,7 +29,8 @@ def load_scan2_module():
 
 
 def start_ocr_prewarm_thread(log=None):
-    default_prewarm = _env_flag_default("SCAN2_OCR_FALLBACK", False)
+    # Match scan2.scan_ocr_fallback_enabled(), which defaults to on.
+    default_prewarm = _env_flag_default("SCAN2_OCR_FALLBACK", True)
     if not _env_flag_default("HUAWEIOCR_PREWARM_OCR", default_prewarm):
         return None
 

@@ -6,7 +6,9 @@ import types
 import warnings
 import inspect
 import threading
+import importlib
 import importlib.machinery
+import importlib.util
 from contextlib import nullcontext
 
 from win_subprocess import hide_subprocess_windows
@@ -251,7 +253,99 @@ def ensure_torch_import_compat():
     return torch_stub
 
 
+class _LazyLangchainClass(type):
+    """Metaclass for stand-ins that resolve to the real LangChain class.
+
+    Calling, attribute access (classmethods), isinstance and issubclass all
+    import the real class on first use and swap it into the module slot.
+    """
+
+    def _lazy_real(cls):
+        real = getattr(importlib.import_module(cls._lazy_module), cls._lazy_attr)
+        slot = sys.modules.get(cls._lazy_slot)
+        if slot is not None and getattr(slot, cls.__name__, None) is cls:
+            setattr(slot, cls.__name__, real)
+        return real
+
+    def __call__(cls, *args, **kwargs):
+        return cls._lazy_real()(*args, **kwargs)
+
+    def __getattr__(cls, name):
+        if name.startswith("_lazy") or name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(cls._lazy_real(), name)
+
+    def __instancecheck__(cls, obj):
+        return isinstance(obj, cls._lazy_real())
+
+    def __subclasscheck__(cls, sub):
+        return issubclass(sub, cls._lazy_real())
+
+
+def _lazy_langchain_class(name: str, slot: str, module: str, attr: str):
+    return _LazyLangchainClass(name, (), {
+        "__module__": slot,
+        "_lazy_slot": slot,
+        "_lazy_module": module,
+        "_lazy_attr": attr,
+    })
+
+
+def _install_langchain_stand_ins():
+    if importlib.util.find_spec("langchain") is None:
+        return
+    import langchain
+
+    if not hasattr(langchain, "__path__"):
+        return
+    stand_ins = (
+        ("langchain.docstore", None, None),
+        ("langchain.docstore.document", "Document",
+         ("langchain_core.documents", "Document")),
+        ("langchain.text_splitter", "RecursiveCharacterTextSplitter",
+         ("langchain_text_splitters", "RecursiveCharacterTextSplitter")),
+    )
+    real_prefixes = []
+    for name, cls_name, target in stand_ins:
+        if any(name == p or name.startswith(p + ".") for p in real_prefixes):
+            continue
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules[parent_name]
+        mod = getattr(parent, attr, None) or sys.modules.get(name)
+        if mod is None:
+            if importlib.util.find_spec(name) is not None:
+                # A LangChain version that still ships this module: leave it
+                # (and its children) to paddlex rather than shadowing it.
+                real_prefixes.append(name)
+                continue
+            mod = types.ModuleType(name)
+            mod.__path__ = []
+            mod.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=True)
+            sys.modules[name] = mod
+        setattr(parent, attr, mod)
+        if cls_name and not hasattr(mod, cls_name):
+            setattr(mod, cls_name, _lazy_langchain_class(cls_name, name, *target))
+
+
+def ensure_langchain_import_compat():
+    """Keep paddlex's import-time LangChain shim from loading transformers.
+
+    paddlex.__init__ resolves langchain.docstore.document.Document and
+    langchain.text_splitter.RecursiveCharacterTextSplitter eagerly when
+    LangChain is installed; langchain_text_splitters imports transformers,
+    which costs ~50 s in a dev environment.  Only PP-ChatOCR pipelines use
+    them, so pre-populate the slots with lazy stand-ins that resolve to the
+    real classes on first use.  No-op without LangChain; a broken LangChain
+    install must never stop label OCR from loading.
+    """
+    try:
+        _install_langchain_stand_ins()
+    except Exception:
+        pass
+
+
 ensure_torch_import_compat()
+ensure_langchain_import_compat()
 
 import paddle  # noqa: E402  (torch compat shim must run before paddle imports)
 from paddleocr import PaddleOCR  # noqa: E402
