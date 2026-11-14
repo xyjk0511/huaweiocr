@@ -96,6 +96,14 @@ at ~1.5 s per label, so they were not adopted). So the QR is now read first:
   known model lets PartNo crops skip the slow decode chain (only the quick
   zxing read runs); when no crop decodes, the QR PartNo is used
   (`part_no_source = label_qr` in the manifest).
+- Stage2 field detection is skipped for such labels
+  (`CROP_STAGE2_QR_SKIP_FIELDS=0` disables): the manifest row carries the
+  label crop and QR PartNo only (`stage2_fields_skipped = label_qr`), with no
+  SN/PartNo/model field crops. Trade-off: the "QR PartNo equals Stage2 PartNo"
+  guard below becomes trivially true for these labels; on the baseline it had
+  never disagreed. If recognition still rejects the QR, SN falls back to
+  scanning and OCR on the label crop (still label-local). Crop time on a
+  20-photo sample: ~36 s -> ~19 s, identical results.
 - Recognition (`SCAN2_LABEL_QR_FIRST=0` disables): a label with exactly one QR
   payload, whose PartNo agrees with the Stage2 PartNo and maps to a known
   model, and whose SN no other crop of the same photo reads, takes SN and

@@ -156,6 +156,8 @@ def record_stage1_reject(reason: str, crop_img=None, img_path: str = "", index: 
 def _stage2_result_summary(result: dict | None) -> str:
     if not result:
         return "未保留"
+    if result.get("stage2_fields_skipped") == "label_qr":
+        return "标签二维码已给出 PartNo，跳过字段裁剪"
     hits = []
     if result.get("part_no_path"):
         hits.append("PartNo")
@@ -3866,6 +3868,39 @@ def _stage2_should_retry_rot180(candidate):
     return False
 
 
+def stage2_qr_skip_fields_enabled():
+    return _env_flag_default("CROP_STAGE2_QR_SKIP_FIELDS", True)
+
+
+def _stage2_label_qr_only_row(label_img_path, qr_part_no):
+    """Manifest row for a label whose own QR already gives a known PartNo.
+
+    Recognition takes SN and PartNo from that QR (``qr_first``), so the field
+    detector and field crops would go unused.  If recognition still rejects
+    the QR (e.g. a neighbour label reads the same SN), it falls back to
+    scanning and OCR on this label crop, which stays label-local.
+    """
+    base = os.path.splitext(os.path.basename(label_img_path))[0]
+    return {
+        "label_id": base,
+        "label_crop": label_img_path,
+        "original_image_path": original_path_for_label_id(base),
+        "model_path": None,
+        "sn_path": None,
+        "part_no_path": None,
+        "model_conf": None,
+        "sn_conf": None,
+        "part_no_conf": None,
+        "part_no": qr_part_no,
+        "part_no_codes": [qr_part_no],
+        "part_no_source": "label_qr",
+        "stage2_rotation": 0,
+        "model_crop_source": "",
+        "part_no_crop_source": "label_qr",
+        "stage2_fields_skipped": "label_qr",
+    }
+
+
 def stage2_crop_fields(label_img_path):
     budget = _stage2_part_no_budget_seconds()
     _STAGE2_PART_NO_BUDGET.budget = budget if budget > 0 else None
@@ -3886,6 +3921,8 @@ def _stage2_crop_fields_impl(label_img_path):
 
     qr_part_no = _stage2_label_qr_part_no(img)
     _STAGE2_LABEL_QR.part_no = qr_part_no
+    if qr_part_no and stage2_qr_skip_fields_enabled():
+        return _stage2_label_qr_only_row(label_img_path, qr_part_no)
     preds = _stage2_infer_field_preds(img, label_img_path)
     candidates = [_stage2_build_candidate(img, preds, rotation=0)]
 

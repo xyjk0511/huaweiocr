@@ -332,6 +332,29 @@ class PipelineLabelCodeCheckTest(unittest.TestCase):
         fast.assert_called_once()
         slow.assert_called_once()
 
+    def test_stage2_skips_field_detector_when_label_qr_gives_known_part_no(self):
+        import crop
+
+        img = np.full((40, 200, 3), 255, dtype=np.uint8)
+        label = os.path.join("labels", "photo.jpg__label_1.png")
+        with mock.patch.object(crop, "read_image", return_value=img), \
+                mock.patch.object(crop, "_stage2_label_qr_part_no", return_value="50087149"), \
+                mock.patch.object(crop, "_stage2_infer_field_preds", side_effect=RuntimeError("detector")) as infer:
+            row = crop.stage2_crop_fields(label)
+            self.assertEqual(row["part_no"], "50087149")
+            self.assertEqual(row["part_no_source"], "label_qr")
+            self.assertEqual(row["label_crop"], label)
+            self.assertIsNone(row["sn_path"])
+            infer.assert_not_called()
+            with mock.patch.dict(os.environ, {"CROP_STAGE2_QR_SKIP_FIELDS": "0"}):
+                with self.assertRaisesRegex(RuntimeError, "detector"):
+                    crop.stage2_crop_fields(label)
+        with mock.patch.object(crop, "read_image", return_value=img), \
+                mock.patch.object(crop, "_stage2_label_qr_part_no", return_value=""), \
+                mock.patch.object(crop, "_stage2_infer_field_preds", side_effect=RuntimeError("detector")):
+            with self.assertRaisesRegex(RuntimeError, "detector"):
+                crop.stage2_crop_fields(label)
+
     def test_label_qr_sources_count_as_barcode_hits(self):
         from huaweiocr.recognition.metrics import new_stats, record_sn_metrics
 
