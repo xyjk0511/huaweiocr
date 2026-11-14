@@ -2145,11 +2145,39 @@ def _unverified_repair_keys(keys, sn_results, sn_reports) -> list[str]:
     return out
 
 
-def _ocr_sn_for_repair_check(path: str, label_id: str):
-    """Plain OCR read of the SN crop, ignoring the (repaired) barcode."""
+def _textline_confirms_sn(path: str, expected: str) -> str:
+    """Return the text line when a confident quick read of one view of the SN
+    line spells exactly ``expected``; otherwise ""."""
+    if not path or not expected:
+        return ""
+    img = load_for_ocr_color(path)
+    if img is None:
+        return ""
+    try:
+        texts = _load_ocr_module().ocr_sn_textline_candidates(img)
+    except Exception as exc:
+        append_debug(f"[SN][REPAIR_CHECK][TEXTLINE] {exc.__class__.__name__}")
+        return ""
+    for item in texts:
+        if item.get("score", 0) >= 0.90 and extract_sn_from_text(item.get("text", "")) == expected:
+            return item["text"]
+    return ""
+
+
+def _ocr_sn_for_repair_check(path: str, label_id: str, expected: str = ""):
+    """Plain OCR read of the SN crop, ignoring the (repaired) barcode.
+
+    An exact, confident quick text-line read of ``expected`` (the repaired SN)
+    already confirms the repair, so the slow full-crop OCR only runs when the
+    quick read is missing or disagrees.
+    """
     empty = _SnBarcodeReport(status="decoder_miss")
     meta = empty.to_meta()
     meta["ocr_text_found"] = False
+    text = _textline_confirms_sn(path, expected)
+    if text:
+        meta["ocr_text_found"] = True
+        return expected, text, "ocr", meta
     return recognize_sn_ocr_after_barcode(path, label_id=label_id, barcode_report=empty, meta=meta)
 
 
@@ -3063,6 +3091,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         elif kind == "sn_verify":
             result = _ocr_sn_for_repair_check(
                 item.get("sn_path") or item.get("label_crop", ""), key,
+                expected=sn_results.get(key, ("",))[0],
             )
         else:
             result = recognize_sn_ocr_after_barcode(

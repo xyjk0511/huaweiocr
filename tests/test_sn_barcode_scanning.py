@@ -179,6 +179,26 @@ class BarcodeDecoderReliabilityTest(unittest.TestCase):
                 self.assertTrue(result[3]["ocr_text_found"])
                 self.assertEqual(detect.called, not accepted)
 
+    def test_repair_check_skips_full_ocr_when_quick_read_matches_repair(self):
+        scan2 = _import_scan2()
+        sn = "21500871494ERB012345"
+        for candidates, expected_sn, full_ocr in (
+            ([{"text": "S/N: " + sn, "score": 0.95}, {"text": "NN: 2150087149", "score": 0.97}], sn, False),
+            ([{"text": "S/N: 21500871494ERB012346", "score": 0.99}], "21500871494ERB012399", True),
+            ([{"text": "S/N: " + sn, "score": 0.5}], "21500871494ERB012399", True),
+        ):
+            with self.subTest(candidates=candidates):
+                module = types.SimpleNamespace(ocr_sn_textline_candidates=lambda img: candidates)
+                with mock.patch.object(scan2, "_load_ocr_module", return_value=module), mock.patch.object(
+                    scan2, "load_for_ocr_color", return_value=np.full((40, 160, 3), 255, dtype=np.uint8),
+                ), mock.patch.object(
+                    scan2, "ocr_text_with_details", return_value=("S/N: 21500871494ERB012399", "", []),
+                ) as detect:
+                    result = scan2._ocr_sn_for_repair_check("sn.png", "k", expected=sn)
+                self.assertEqual(result[0], expected_sn)
+                self.assertTrue(result[3]["ocr_text_found"])
+                self.assertEqual(detect.called, full_ocr)
+
     def test_barcode_module_import_survives_missing_pyzbar(self):
         module_name = "barcode_without_pyzbar_test"
         # barcode.py 已是别名垫片，导入期行为要从实现文件本身验证。
@@ -1174,6 +1194,22 @@ class SnBarcodeSelectionTest(unittest.TestCase):
 
         self.assertEqual(report.status, "decoder_miss")
         self.assertEqual(report.attempts, 7)
+
+    def test_default_budget_caps_sn_crop_but_not_label_only(self):
+        img = np.full((50, 120, 3), 255, dtype=np.uint8)
+        env = {"SN_BARCODE_MAX_DECODER_ATTEMPTS": "7", "SN_BARCODE_SN_MAX_DECODER_ATTEMPTS": "3"}
+        for source, expected in (("sn", 3), ("label", 7)):
+            candidates = [sn_barcode.CandidateImage(img, source, f"{source}.{i}", "raw") for i in range(10)]
+            with self.subTest(source=source), mock.patch.dict(os.environ, env), mock.patch.object(
+                sn_barcode, "_read_image", return_value=img,
+            ), mock.patch.object(sn_barcode, "generate_candidate_images", return_value=candidates), mock.patch.object(
+                sn_barcode, "diagnose_quality", return_value=[],
+            ), mock.patch.object(sn_barcode, "_decode_pyzbar", return_value=([], [])), mock.patch.object(
+                sn_barcode, "_decode_zxingcpp", return_value=([], []),
+            ), mock.patch.object(sn_barcode, "_decode_cli", return_value=([], [])):
+                report = sn_barcode.scan_sn_barcodes([(source, f"{source}.png")])
+                self.assertEqual(report.status, "decoder_miss")
+                self.assertEqual(report.attempts, expected)
 
 class SnBarcodeFailedPayloadSuppressionTest(unittest.TestCase):
     def test_repeated_parse_failure_payload_is_reported_and_suppresses_later_decoders(self):

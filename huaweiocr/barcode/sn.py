@@ -43,6 +43,9 @@ NON_SN_PREFIX_RE = re.compile(
 DEFAULT_MAX_CANDIDATES = 96
 DEFAULT_MAX_DECODER_ATTEMPTS = 96
 DEFAULT_LABEL_MAX_DECODER_ATTEMPTS = 48
+# On the 500-label baseline every SN-crop hit came within 4 attempts; the rest
+# of the 96-attempt budget only delayed labels whose SN barcode is unreadable.
+DEFAULT_SN_CROP_MAX_DECODER_ATTEMPTS = 32
 DEFAULT_MIN_BARCODE_WIDTH = 120
 DEFAULT_MIN_BARCODE_HEIGHT = 22
 DEFAULT_BLUR_VARIANCE = 18.0
@@ -144,8 +147,11 @@ def decoder_attempt_budget_for_source(
     max_decoder_attempts: int,
     *,
     has_primary_sn_source: bool = False,
+    sn_max_decoder_attempts: int | None = None,
 ) -> int:
     budget = max(1, int(max_decoder_attempts))
+    if str(source).lower() == "sn" and sn_max_decoder_attempts:
+        return min(budget, max(1, int(sn_max_decoder_attempts)))
     if str(source).lower() == "label" and has_primary_sn_source:
         label_budget = _env_int(
             "SN_BARCODE_LABEL_MAX_DECODER_ATTEMPTS",
@@ -1165,8 +1171,12 @@ def scan_sn_barcodes(
 ) -> SnBarcodeReport:
     if max_candidates is None:
         max_candidates = _env_int("SN_BARCODE_MAX_CANDIDATES", DEFAULT_MAX_CANDIDATES)
+    sn_max_decoder_attempts = None
     if max_decoder_attempts is None:
         max_decoder_attempts = _env_int("SN_BARCODE_MAX_DECODER_ATTEMPTS", DEFAULT_MAX_DECODER_ATTEMPTS)
+        sn_max_decoder_attempts = _env_int(
+            "SN_BARCODE_SN_MAX_DECODER_ATTEMPTS", DEFAULT_SN_CROP_MAX_DECODER_ATTEMPTS,
+        )
 
     all_results: list[DecoderResult] = []
     quality_issues: list[dict[str, Any]] = []
@@ -1230,6 +1240,7 @@ def scan_sn_barcodes(
             source,
             max_decoder_attempts,
             has_primary_sn_source=has_primary_sn_source,
+            sn_max_decoder_attempts=sn_max_decoder_attempts,
         )
         states.append(
             {
