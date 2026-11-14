@@ -1808,11 +1808,28 @@ def decode_raw_part_no_crop(crop_img, label_id=""):
             )
 
 
+def _write_scan_candidate(crop_img, prefix, label_id=""):
+    """Write a crop to a fresh temp dir; returns (dir, path) or (None, None).
+
+    Do not replace an existing mkstemp() file: on Windows, antivirus or
+    indexing services can hold a freshly created empty .png open, and the
+    rename onto it then fails with WinError 32 for every crop of a batch.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix=prefix)
+    tmp_path = os.path.join(tmp_dir, "candidate.png")
+    if save_png(tmp_path, crop_img):
+        return tmp_dir, tmp_path
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tag = f"{label_id} " if label_id else ""
+    _log(f"警告：扫码临时图片写入失败，跳过：{tag}{tmp_path}", "warn")
+    return None, None
+
+
 def _decode_raw_part_no_crop_once(crop_img, label_id=""):
-    fd, tmp_path = tempfile.mkstemp(prefix="part_no_scan_", suffix=".png")
-    os.close(fd)
+    tmp_dir, tmp_path = _write_scan_candidate(crop_img, "part_no_scan_", label_id)
+    if tmp_path is None:
+        return []
     try:
-        save_png_required(tmp_path, crop_img, "part no scan candidate")
         import scan2 as scan2_module
 
         codes = scan2_module.read_part_no_barcodes(tmp_path, allow_pixel_repair=True)
@@ -1821,10 +1838,7 @@ def _decode_raw_part_no_crop_once(crop_img, label_id=""):
         _log(f"WARN: Part No扫码失败：{tag}{exc.__class__.__name__}: {exc}", "debug")
         return []
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     out = []
     seen = set()
@@ -1845,10 +1859,10 @@ def decode_model_crop(crop_img, label_id=""):
     if crop_img is None:
         return []
 
-    fd, tmp_path = tempfile.mkstemp(prefix="model_scan_", suffix=".png")
-    os.close(fd)
+    tmp_dir, tmp_path = _write_scan_candidate(crop_img, "model_scan_", label_id)
+    if tmp_path is None:
+        return []
     try:
-        save_png_required(tmp_path, crop_img, "model scan candidate")
         import scan2 as scan2_module
 
         model, _raw = scan2_module.try_model_from_barcode(tmp_path)
@@ -1857,10 +1871,7 @@ def decode_model_crop(crop_img, label_id=""):
         _log(f"WARN: Model扫码失败：{tag}{exc.__class__.__name__}: {exc}", "debug")
         return []
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     model = str(model or "").strip()
     return [model] if model else []

@@ -21,8 +21,21 @@ PART_NO_MODEL_MAP = {
     "98012404": "S110-8T",
     "98012406": "S110-8P1T",
     "98013170": "S110-4P1T-BU-V2",
+    "50087270": "AP162E",
 }
-KNOWN_MODEL_CODES = set(PART_NO_MODEL_MAP.values())
+# HUAWEI eKit (eKitEngine) models listed on Huawei product pages and
+# distributor catalogues (checked 2026-11-13).  Their PartNos are not public,
+# so they are known model names only; PartNo mappings are learned from labels.
+EKIT_MODEL_CODES = {
+    "AP263", "AP361", "AP362", "AP661", "AP761",
+    "AR303", "AR303W",
+    "S110-8P2ST", "S110-16LP2SR", "S110-24LP2SR", "S110-24T2SR",
+    "S220-24P4X", "S220-24T4X", "S220-48P4X", "S220-48T4X", "S220-48P4S", "S220-48T4S",
+    "S310-24P4X", "S310-24T4X", "S310-48P4X", "S310-48T4X", "S310-24T4S", "S310-48T4S", "S310-48P4S",
+    "S310S-4P8UN2X", "S310S-8P4UN2X",
+    "S380-L4T1T", "S380-S8T2T", "S380-H8T3ST",
+}
+KNOWN_MODEL_CODES = set(PART_NO_MODEL_MAP.values()) | EKIT_MODEL_CODES
 KNOWN_MODEL_CODES_UPPER = {code.upper() for code in KNOWN_MODEL_CODES}
 
 BUILTIN_PROFILE = {

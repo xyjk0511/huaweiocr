@@ -130,5 +130,21 @@ class PipelineCrossCheckTest(unittest.TestCase):
         self.assertEqual(stats["sn_barcode_part_no_conflicts"], 1)
 
 
+class ModelCodeRuleTest(unittest.TestCase):
+    def test_accepts_ekit_and_ar_model_shapes(self):
+        from huaweiocr.core.extract import MODEL_CODE_ACCEPT_RE
+
+        for code in ("AP162E", "AP361", "AR180PRO", "AR303W", "AR651W-8P", "AR6140E-9G-2AC",
+                     "S110-4P1T-BU-V2", "S310S-4P8UN2X", "S380-H8T3ST"):
+            self.assertTrue(MODEL_CODE_ACCEPT_RE.fullmatch(code), code)
+        for text in ("E3", "S110", "S310S", "MODEL", "2150087149"):
+            self.assertIsNone(MODEL_CODE_ACCEPT_RE.fullmatch(text), text)
+
+    def test_ekit_models_are_recognized_from_ocr_text(self):
+        self.assertEqual(pipeline.extract_model_from_text("MODEL: S220-48P4X"), "S220-48P4X")
+        self.assertEqual(pipeline.extract_model_from_text("Model: AP361 Wi-Fi 6"), "AP361")
+        self.assertTrue(pipeline.model_code_is_plausible("AR303W"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1263,6 +1263,29 @@ class CropFieldPaddingTests(unittest.TestCase):
             self.assertEqual(out["part_no_codes"], ["50087147"])
             self.assertEqual(out["part_no"], "50087147")
 
+    def test_decode_raw_part_no_crop_survives_locked_existing_temp_files(self):
+        # Antivirus/indexers can hold a freshly created empty .png open, so a
+        # rename onto an existing temp file fails with WinError 32.  The scan
+        # candidate must be written to a new name instead.
+        part_no_crop = np.full((40, 160, 3), 255, dtype=np.uint8)
+        fake_scan2 = types.SimpleNamespace(read_part_no_barcodes=mock.Mock(return_value=["50087288"]))
+        real_replace = os.replace
+
+        def locked_replace(src, dst):
+            if os.path.exists(dst):
+                raise PermissionError(32, "file is being used by another process", dst)
+            return real_replace(src, dst)
+
+        with mock.patch.dict(sys.modules, {"scan2": fake_scan2}), mock.patch.object(
+            crop.os, "replace", side_effect=locked_replace,
+        ):
+            codes = crop.decode_raw_part_no_crop(part_no_crop, label_id="unit")
+
+        self.assertEqual(codes, ["50087288"])
+        scanned_path = fake_scan2.read_part_no_barcodes.call_args[0][0]
+        self.assertFalse(os.path.exists(scanned_path))
+        self.assertFalse(os.path.exists(os.path.dirname(scanned_path)))
+
     def test_decode_raw_part_no_crop_enables_repair_fallback(self):
         part_no_crop = np.full((40, 160, 3), 255, dtype=np.uint8)
         fake_scan2 = types.SimpleNamespace(

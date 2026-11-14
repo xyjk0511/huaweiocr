@@ -24,7 +24,8 @@ KNOWN_MODEL_CODES = set(_PROFILE["known_model_codes"])
 KNOWN_MODEL_CODES_UPPER = {code.upper() for code in KNOWN_MODEL_CODES}
 PART_NO_MODEL_MAP = dict(_PROFILE["part_no_model_map"])
 MODEL_CODE_ACCEPT_RE = re.compile(
-    r"(?:AP[0-9]{3,4}E|AR[0-9]{3,4}(?:PRO)?|S[0-9]{3,4}-[A-Z0-9]+)",
+    r"(?:(?:AP[0-9]{3,4}[A-Z]{0,2}|AR[0-9]{3,4}(?:PRO|[A-Z]{1,3})?)(?:-[A-Z0-9]{1,8}){0,3}"
+    r"|S[0-9]{3,4}[A-Z]?(?:-[A-Z0-9]{1,8}){1,3})",
     re.I,
 )
 
