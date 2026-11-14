@@ -124,7 +124,7 @@ def _print_recognition_metrics(stats):
             print("  - error_distribution:")
             for name in ("barcode_fail", "ocr_fail", "regex_fail", "sn_barcode_parse_failures",
                          "sn_barcode_decoder_misses", "sn_barcode_ambiguous", "sn_barcode_quality_rejects",
-                         "sn_barcode_part_no_conflicts", "sn_label_qr_rescues",
+                         "sn_barcode_part_no_conflicts", "sn_label_qr_first", "sn_label_qr_rescues",
                          "sn_label_qr_conflicts", "part_no_product_conflicts",
                          "sn_repair_ocr_conflicts"):
                 print(f"    - {name.removeprefix('sn_')}: {stats.get(name, 0)}")

@@ -29,6 +29,7 @@ def new_stats() -> dict:
         "sn_barcode_quality_rejects": 0,
         "sn_barcode_part_no_conflicts": 0,
         "sn_label_qr_rescues": 0,
+        "sn_label_qr_first": 0,
         "sn_label_qr_conflicts": 0,
         "part_no_product_conflicts": 0,
         "sn_repair_ocr_conflicts": 0,
@@ -49,8 +50,10 @@ def record_sn_metrics(stats: dict, input_available: bool, code: str, source: str
         stats["sn_repair_ocr_conflicts"] += 1
     if source in {"barcode", "barcode_label_qr", "barcode_qr_conflict"}:
         stats["sn_barcode_hits"] += 1
-        if source == "barcode_label_qr":
+        if source == "barcode_label_qr" and meta.get("label_qr_check") == "rescued":
             stats["sn_label_qr_rescues"] += 1
+        elif source == "barcode_label_qr":
+            stats["sn_label_qr_first"] += 1
         elif source == "barcode_qr_conflict":
             stats["sn_label_qr_conflicts"] += 1
     elif code and source in {"barcode_ocr_consensus", "ocr_repair_conflict"}:

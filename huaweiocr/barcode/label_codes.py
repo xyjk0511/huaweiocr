@@ -55,6 +55,18 @@ class LabelCodes:
         sns = [q.sn for q in self.qr if (q.part_no == part_no if part_no else True)]
         return list(dict.fromkeys(sns))
 
+    def sole_qr(self) -> LabelQr | None:
+        """The label's QR when the crop holds exactly one, with a PartNo.
+
+        Two different payloads mean the crop also caught a neighbour label,
+        so neither can be attributed to this label on its own.
+        """
+        payloads = {(q.part_no, q.sn) for q in self.qr}
+        if len(payloads) != 1:
+            return None
+        qr = self.qr[0]
+        return qr if qr.part_no else None
+
     def label_product_codes(self) -> list[str]:
         """Distinct EAN-13/UPC-A codes when they can belong to one label.
 
@@ -147,15 +159,19 @@ def read_label_codes(path: str, *, thorough: bool = False) -> LabelCodes:
     ``thorough`` adds upscaled retries when the plain read finds no QR; use it
     only for labels whose SN evidence is weak, since it costs ~0.5 s per label.
     """
-    codes = LabelCodes()
     if cv2 is None or not path:
+        return LabelCodes()
+    return read_label_codes_image(_read_image(path), thorough=thorough)
+
+
+def read_label_codes_image(image: Any, *, thorough: bool = False) -> LabelCodes:
+    """``read_label_codes`` for a label crop already in memory (BGR)."""
+    codes = LabelCodes()
+    if cv2 is None or image is None:
         return codes
     try:
         import zxingcpp
     except Exception:
-        return codes
-    image = _read_image(path)
-    if image is None:
         return codes
     fmt = zxingcpp.BarcodeFormat
     try:

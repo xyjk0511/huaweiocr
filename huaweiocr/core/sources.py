@@ -58,6 +58,7 @@ _SOURCE_KEYS = {
     "part_no_hint": "source_part_no",
     "part_no_barcode": "source_part_no",
     "part_no_learned": "source_part_no",
+    "part_no_label_qr": "source_part_no",
     "barcode_label_qr": "source_barcode_label_qr",
     "barcode_qr_conflict": "source_barcode_qr_conflict",
     "part_no_product_conflict": "source_part_no_product_conflict",

@@ -1896,9 +1896,80 @@ def _label_qr_report(report, qr_sn, variant):
     )
 
 
+def label_qr_first_enabled() -> bool:
+    return _env_flag_default("SCAN2_LABEL_QR_FIRST", True)
+
+
+def _read_all_label_codes(keys, records, workers=1) -> dict:
+    """QR + EAN/UPC codes of every label crop (QR retries included)."""
+    targets = [key for key in keys if records[key].get("label_crop")]
+
+    def read(key):
+        try:
+            return read_label_codes(records[key]["label_crop"], thorough=True)
+        except Exception as exc:
+            append_debug(f"[LABEL_CODES][ERROR] {key} {exc.__class__.__name__}: {exc}")
+            return None
+
+    return {
+        key: codes
+        for key, codes in zip(targets, _map_ordered(targets, read, workers))
+        if codes is not None
+    }
+
+
+def _apply_label_qr_first(
+    keys, records, codes_by_key, sn_results, sn_reports, part_no_by_key, part_no_src_by_key,
+    model_results,
+) -> set:
+    """Take SN and PartNo straight from the label QR, skipping barcode scans.
+
+    Only when the crop holds exactly one QR payload, its PartNo agrees with
+    any PartNo Stage2 decoded and maps to a known model, and no other label
+    crop of the same photo reads the same SN (a neighbour's QR).  On the
+    500-label baseline all 452 QR reads matched the verified SN and PartNo.
+    Returns the keys handled this way.
+    """
+    def photo(key):
+        return records[key].get("original_image_path") or key
+
+    claims = {}
+    for key, codes in codes_by_key.items():
+        for sn in {q.sn for q in codes.qr}:
+            claims.setdefault((photo(key), sn), set()).add(key)
+
+    handled = set()
+    for key in keys:
+        codes = codes_by_key.get(key)
+        qr = codes.sole_qr() if codes is not None else None
+        if qr is None:
+            continue
+        manifest_part_no = records[key].get("part_no", "")
+        if manifest_part_no and manifest_part_no != qr.part_no:
+            continue
+        if claims.get((photo(key), qr.sn), set()) - {key}:
+            continue
+        model_code, _part_no = model_from_part_no_text(qr.part_no)
+        if not model_code:
+            continue
+        report = _label_qr_report(None, qr.sn, qr.variant)
+        sn_reports[key] = report
+        meta = report.to_meta()
+        meta["ocr_text_found"] = False
+        meta["label_qr_check"] = "qr_first"
+        sn_results[key] = (qr.sn, f"[LABEL_QR] {qr.sn}", "barcode_label_qr", meta)
+        if not manifest_part_no:
+            part_no_by_key[key] = qr.part_no
+            part_no_src_by_key[key] = "label_qr"
+            model_results[key] = (model_code, f"[LABEL_QR] {qr.part_no}", "part_no_label_qr")
+        handled.add(key)
+        append_sensitive_debug(f"[SN][LABEL_QR_FIRST] {key} sn={qr.sn} part_no={qr.part_no}")
+    return handled
+
+
 def _cross_check_with_label_codes(
     keys, records, sn_results, sn_reports, part_no_by_key, part_no_src_by_key,
-    ocr_jobs, product_conflicts, part_no_scan_miss_keys=None, workers=1,
+    ocr_jobs, product_conflicts, part_no_scan_miss_keys=None, workers=1, codes_by_key=None,
 ) -> list[tuple[str, str]]:
     """Cross-check SN/PartNo against the label's QR code and EAN/UPC codes.
 
@@ -1931,11 +2002,12 @@ def _cross_check_with_label_codes(
     def label_part_no(key):
         return part_no_by_key.get(key) or _normalize_part_no(records[key].get("part_no", ""))
 
-    codes_by_key = {
-        key: codes
-        for key, codes in zip(targets, _map_ordered(targets, read, workers))
-        if codes is not None
-    }
+    if codes_by_key is None:
+        codes_by_key = {
+            key: codes
+            for key, codes in zip(targets, _map_ordered(targets, read, workers))
+            if codes is not None
+        }
 
     # Pass 1: one candidate QR SN per label, and who else claims each SN.
     qr_by_key = {}
@@ -1969,6 +2041,8 @@ def _cross_check_with_label_codes(
             if key in sn_results:
                 sn_results[key][3]["label_qr_check"] = "claimed_by_other_label"
             append_sensitive_debug(f"[SN][LABEL_QR_SHARED] {key} qr={qr_sn} current={current!r}")
+            continue
+        if key in sn_results and sn_results[key][3].get("label_qr_check") == "qr_first":
             continue
         if not label_part_no(key):
             qr_part_nos = {q.part_no for q in codes.qr if q.sn == qr_sn and q.part_no}
@@ -2454,6 +2528,8 @@ def _load_manifest_records():
             if part_no_codes:
                 record["part_no"] = part_no_codes[0]
                 record["part_no_codes"] = part_no_codes
+                if item.get("part_no_source") == "label_qr":
+                    record["part_no_source"] = "label_qr"
             original_path = item.get("original_image_path") or item.get("image_path")
             if original_path:
                 record["original_image_path"] = original_path
@@ -2665,19 +2741,32 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     part_no_first = scan_part_no_first_enabled()
     progress_logs = scan_progress_log_enabled()
 
+    label_codes_by_key = None
+    qr_first_keys = set()
+    if label_code_check_enabled():
+        label_codes_by_key = _read_all_label_codes(keys, records, barcode_workers)
+        if label_qr_first_enabled():
+            qr_first_keys = _apply_label_qr_first(
+                keys, records, label_codes_by_key, sn_results, sn_reports,
+                part_no_by_key, part_no_src_by_key, model_results,
+            )
+
     for key in keys:
         item = records[key]
         manifest_part_no = item.get("part_no", "")
         if part_no_first and manifest_part_no:
+            part_no_src = "label_qr" if item.get("part_no_source") == "label_qr" else "part_no_barcode"
             part_no_by_key[key] = manifest_part_no
-            part_no_src_by_key[key] = "part_no_barcode"
+            part_no_src_by_key[key] = part_no_src
             model_code, part_no = model_from_part_no_text(manifest_part_no)
             if model_code:
                 model_results[key] = (
                     model_code,
-                    f"[PART_NO_BARCODE] {part_no}",
-                    "part_no_barcode",
+                    f"[{part_no_src.upper()}] {part_no}",
+                    "part_no_label_qr" if part_no_src == "label_qr" else "part_no_barcode",
                 )
+        if key in qr_first_keys:
+            continue
         if part_no_first and item.get("part_no_path") and key not in part_no_by_key:
             first_barcode_jobs.append(("part_no_model", key, item))
         if item.get("sn_path") or (scan_label_without_sn and item.get("label_crop")):
@@ -2771,6 +2860,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         product_observations = _cross_check_with_label_codes(
             keys, records, sn_results, sn_reports, part_no_by_key, part_no_src_by_key,
             ocr_jobs, product_conflicts, part_no_scan_miss_keys, barcode_workers,
+            codes_by_key=label_codes_by_key,
         )
 
     if ocr_fallback and repair_ocr_check_enabled():
@@ -3147,6 +3237,8 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             review = []
             if sn_src == "barcode_qr_conflict":
                 review.append(f"sn_label_qr_mismatch:{sn_meta.get('label_qr_sn', '')}")
+            elif sn_src == "barcode_label_qr" and sn_meta.get("label_qr_check") == "claimed_by_other_label":
+                review.append("sn_label_qr_shared")
             repair_check = sn_meta.get("sn_repair_check", "")
             if repair_check == "ocr_conflict":
                 review.append(f"sn_repair_ocr_mismatch:{sn_meta.get('sn_repair_other', '')}")

@@ -95,6 +95,7 @@ class CropFieldPaddingTests(unittest.TestCase):
                     entries,
                 )
                 self.assertIsNotNone(out)
+                crop._wait_preview_writes()
                 self.assertTrue(os.path.exists(out))
 
     def test_infer_with_resize_prefers_local_original_path_for_stage1_pt_model(self):

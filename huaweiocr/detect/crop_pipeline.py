@@ -69,6 +69,24 @@ from huaweiocr.core.geometry import (
 from envutil import env_flag_default as _env_flag_default
 from envutil import env_float_default as _env_float_default
 
+# Re-exported for callers and tests that reach these helpers through the
+# legacy ``crop`` module (crop.py aliases this module).
+_LEGACY_CROP_REEXPORTS = (
+    crop_1d_barcode_box,
+    model_crop_barcode_box,
+    model_crop_has_complete_1d_barcode,
+    _part_no_selected_barcode_overlaps_band,
+    _part_no_two_band_has_lower_neighbor,
+    _part_no_has_text_above_band,
+    _part_no_cutoff_before_two_band_neighbor,
+    _part_no_primary_barcode_box,
+    _part_no_crop_text_neighbor_top,
+    trim_part_no_crop_before_lower_text_neighbor,
+    _white_band_is_clean,
+    _part_no_crop_embedded_prefix,
+    _barcode_like_boxes_from_mask,
+)
+
 try:
     from inference_sdk import InferenceHTTPClient
 except ImportError:
@@ -472,7 +490,41 @@ def _stage1_save_preview_image(img, img_path, entries, rotation_deg=0):
     preview = _stage1_draw_preview_image(img, entries, rotation_deg=rotation_deg)
     if preview is None:
         return None
-    return save_png_required(stage1_preview_path_for_image(img_path), preview, "stage1 preview")
+    # A full-photo PNG takes ~0.5 s to encode and nothing in the pipeline
+    # reads it back, so write it in the background; main() waits for it.
+    # Each pending preview holds a full-photo copy (~36 MB), so at most
+    # _PREVIEW_MAX_PENDING may wait; further callers block until one is written.
+    path = stage1_preview_path_for_image(img_path)
+    global _PREVIEW_WRITER
+    _PREVIEW_SLOTS.acquire()
+    try:
+        with _PREVIEW_WRITES_LOCK:
+            if _PREVIEW_WRITER is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                _PREVIEW_WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preview_png")
+            future = _PREVIEW_WRITER.submit(save_png_required, path, preview, "stage1 preview")
+            _PREVIEW_WRITES.append(future)
+    except BaseException:
+        _PREVIEW_SLOTS.release()
+        raise
+    future.add_done_callback(lambda _f: _PREVIEW_SLOTS.release())
+    return path
+
+
+_PREVIEW_MAX_PENDING = 3
+_PREVIEW_SLOTS = threading.BoundedSemaphore(_PREVIEW_MAX_PENDING)
+_PREVIEW_WRITER = None
+_PREVIEW_WRITES = []
+_PREVIEW_WRITES_LOCK = threading.Lock()
+
+
+def _wait_preview_writes():
+    with _PREVIEW_WRITES_LOCK:
+        pending = list(_PREVIEW_WRITES)
+        _PREVIEW_WRITES.clear()
+    for future in pending:
+        future.result()
 
 def add_slant_guard_to_box(img, box, max_px, top=True, bottom=True, angle_deg=SLANT_GUARD_ANGLE_DEG):
     if box is None or max_px <= 0:
@@ -1774,6 +1826,33 @@ def normalize_part_no_codes(codes):
 
 
 _STAGE2_PART_NO_BUDGET = threading.local()
+_STAGE2_LABEL_QR = threading.local()
+
+
+def stage2_label_qr_enabled():
+    return _env_flag_default("CROP_STAGE2_LABEL_QR", True)
+
+
+def _stage2_label_qr_part_no(img):
+    """PartNo from the label's own QR code when it maps to a known model.
+
+    Measured on the 500-label baseline: every QR read (452) carried the
+    label's verified PartNo and SN, and none came from a neighbour label.
+    """
+    if not stage2_label_qr_enabled():
+        return ""
+    try:
+        from huaweiocr.barcode.label_codes import read_label_codes_image
+        import scan2 as scan2_module
+
+        qr = read_label_codes_image(img, thorough=True).sole_qr()
+        if qr is None:
+            return ""
+        model, _part_no = scan2_module.model_from_part_no_text(qr.part_no)
+    except Exception as exc:
+        _log(f"WARN: 标签二维码读取失败：{exc.__class__.__name__}: {exc}", "debug")
+        return ""
+    return qr.part_no if model else ""
 
 
 def _stage2_part_no_budget_seconds():
@@ -1800,6 +1879,13 @@ def decode_raw_part_no_crop(crop_img, label_id=""):
         return []
     started = time.monotonic()
     try:
+        if getattr(_STAGE2_LABEL_QR, "part_no", ""):
+            # The label QR already gave a PartNo with a known model: a crop
+            # that the quick read cannot decode would only run the slow
+            # fallback chain (~1-3 s) to find the same value.
+            import scan2 as scan2_module
+
+            return scan2_module._read_part_no_fast(crop_img)
         return _decode_raw_part_no_crop_once(crop_img, label_id=label_id)
     finally:
         if getattr(_STAGE2_PART_NO_BUDGET, "budget", None) is not None:
@@ -3784,11 +3870,13 @@ def stage2_crop_fields(label_img_path):
     budget = _stage2_part_no_budget_seconds()
     _STAGE2_PART_NO_BUDGET.budget = budget if budget > 0 else None
     _STAGE2_PART_NO_BUDGET.spent = 0.0
+    _STAGE2_LABEL_QR.part_no = ""
     try:
         return _stage2_crop_fields_impl(label_img_path)
     finally:
         _STAGE2_PART_NO_BUDGET.budget = None
         _STAGE2_PART_NO_BUDGET.spent = 0.0
+        _STAGE2_LABEL_QR.part_no = ""
 
 
 def _stage2_crop_fields_impl(label_img_path):
@@ -3796,6 +3884,8 @@ def _stage2_crop_fields_impl(label_img_path):
     if img is None:
         return None
 
+    qr_part_no = _stage2_label_qr_part_no(img)
+    _STAGE2_LABEL_QR.part_no = qr_part_no
     preds = _stage2_infer_field_preds(img, label_img_path)
     candidates = [_stage2_build_candidate(img, preds, rotation=0)]
 
@@ -3830,6 +3920,11 @@ def _stage2_crop_fields_impl(label_img_path):
     if part_no_crop is not None and "part_no_raw_codes" not in selected and not part_no_codes:
         part_no_raw_codes = decode_raw_part_no_crop(part_no_crop, label_id=base)
         part_no_codes = normalize_part_no_codes(part_no_raw_codes)
+    if not part_no_codes and qr_part_no:
+        part_no_codes = [qr_part_no]
+        out["part_no"] = qr_part_no
+        out["part_no_codes"] = part_no_codes
+        out["part_no_source"] = "label_qr"
     if not part_no_codes:
         recovered_crop, recovered_raw_codes, recovered_codes = recover_part_no_crop_from_original_context(
             label_img_path,
@@ -4046,6 +4141,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         return result
 
     stage2_results = _map_ordered(all_label_crops, run_stage2_job, stage2_workers)
+    _wait_preview_writes()
     with open(MANIFEST_PATH, "a", encoding="utf-8") as f:
         for lp, r in zip(all_label_crops, stage2_results):
             if not r:

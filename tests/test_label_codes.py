@@ -63,6 +63,13 @@ class LabelCodesTest(unittest.TestCase):
         )
         self.assertEqual(LabelCodes(products=["6901443456956", "6901443456963"]).label_product_codes(), [])
 
+    def test_sole_qr_needs_one_payload_with_part_no(self):
+        one = LabelQr("50087149", "A")
+        self.assertEqual(LabelCodes(qr=[one, one]).sole_qr(), one)
+        self.assertIsNone(LabelCodes(qr=[one, LabelQr("50087149", "B")]).sole_qr())
+        self.assertIsNone(LabelCodes(qr=[LabelQr("", "A")]).sole_qr())
+        self.assertIsNone(LabelCodes().sole_qr())
+
     def test_qr_sns_follow_label_part_no(self):
         codes = LabelCodes(qr=[LabelQr("50087149", "A"), LabelQr("98013170", "B"), LabelQr("", "C")])
         self.assertEqual(codes.qr_sns_for_part_no("50087149"), ["A"])
@@ -275,14 +282,68 @@ class PipelineLabelCodeCheckTest(unittest.TestCase):
         self.assertEqual(conflicts, {"w1": "50087149", "w2": "50087149", "w3": "50087149"})
         self.assertEqual(observations, [("98013170", "6901443479078")] * 2)
 
+    def test_qr_first_takes_sn_and_part_no_from_a_trusted_label_qr(self):
+        qr = {
+            "match": LabelQr("50087149", "2150087149LDS5014813"),
+            "other_part": LabelQr("50087149", "2150087149LDS5014814"),
+            "no_manifest": LabelQr("98013170", "21980131704ES6000352"),
+            "unknown": LabelQr("12345678", "2112345678ES0000001"),
+            "dup1": LabelQr("50087149", "2150087149LDS5015367"),
+            "dup2": LabelQr("50087149", "2150087149LDS5015367"),
+            "two": LabelQr("50087149", "2150087149LDS5015363"),
+        }
+        codes = {key: LabelCodes(qr=[value]) for key, value in qr.items()}
+        codes["two"].qr.append(LabelQr("50087149", "2150087149LDS5015481"))
+        records = {key: {"label_crop": key, "original_image_path": key} for key in qr}
+        records["match"]["part_no"] = "50087149"
+        records["other_part"]["part_no"] = "50087288"
+        records["dup1"]["original_image_path"] = records["dup2"]["original_image_path"] = "photo.jpg"
+        known = {"50087149": "AP162E", "98013170": "S110-4P1T-BU-V2"}
+        sn_results, sn_reports, part_no_by_key, part_no_src, models = {}, {}, {}, {}, {}
+        with mock.patch.object(pipeline, "model_from_part_no_text",
+                               lambda text: (known.get(text, ""), text)):
+            handled = pipeline._apply_label_qr_first(
+                sorted(qr), records, codes, sn_results, sn_reports, part_no_by_key, part_no_src, models,
+            )
+        self.assertEqual(handled, {"match", "no_manifest"})
+        self.assertEqual(sn_results["match"][0], "2150087149LDS5014813")
+        self.assertEqual(sn_results["match"][2], "barcode_label_qr")
+        self.assertEqual(sn_results["match"][3]["label_qr_check"], "qr_first")
+        self.assertEqual(sn_reports["match"].decoder_name, "label_qr")
+        self.assertNotIn("match", part_no_by_key)
+        self.assertEqual(part_no_by_key["no_manifest"], "98013170")
+        self.assertEqual(part_no_src["no_manifest"], "label_qr")
+        self.assertEqual(models["no_manifest"][0], "S110-4P1T-BU-V2")
+        self.assertEqual(models["no_manifest"][2], "part_no_label_qr")
+
+    def test_crop_part_no_skips_slow_decode_when_label_qr_known(self):
+        import crop
+        import scan2
+
+        img = np.full((40, 200, 3), 255, dtype=np.uint8)
+        with mock.patch.object(scan2, "_read_part_no_fast", return_value=[]) as fast, \
+                mock.patch.object(crop, "_decode_raw_part_no_crop_once", return_value=["slow"]) as slow:
+            crop._STAGE2_LABEL_QR.part_no = "50087149"
+            try:
+                self.assertEqual(crop.decode_raw_part_no_crop(img), [])
+            finally:
+                crop._STAGE2_LABEL_QR.part_no = ""
+            self.assertEqual(crop.decode_raw_part_no_crop(img), ["slow"])
+        fast.assert_called_once()
+        slow.assert_called_once()
+
     def test_label_qr_sources_count_as_barcode_hits(self):
         from huaweiocr.recognition.metrics import new_stats, record_sn_metrics
 
         stats = new_stats()
-        record_sn_metrics(stats, True, "21500871494ERB017591", "barcode_label_qr", {"barcode_status": "hit"})
+        record_sn_metrics(stats, True, "21500871494ERB017591", "barcode_label_qr",
+                          {"barcode_status": "hit", "label_qr_check": "rescued"})
         record_sn_metrics(stats, True, "2150087149LDS5015385", "barcode_qr_conflict", {"barcode_status": "hit"})
-        self.assertEqual(stats["sn_barcode_hits"], 2)
+        record_sn_metrics(stats, True, "2150087149LDS5014813", "barcode_label_qr",
+                          {"barcode_status": "hit", "label_qr_check": "qr_first"})
+        self.assertEqual(stats["sn_barcode_hits"], 3)
         self.assertEqual(stats["sn_label_qr_rescues"], 1)
+        self.assertEqual(stats["sn_label_qr_first"], 1)
         self.assertEqual(stats["sn_label_qr_conflicts"], 1)
         self.assertEqual(stats["sn_ocr_recoveries"], 0)
 

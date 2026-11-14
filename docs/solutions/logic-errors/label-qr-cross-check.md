@@ -84,6 +84,26 @@ fused value contradicting the label PartNo keeps the repair. A wider window
 (0.03) already flipped the `ERB` case. No OCR read marks it
 `sn_repair_unverified`.
 
+## QR first (speed)
+
+With QR retries, 452 of the 500 baseline label crops yield a QR (394 plain,
+58 after upscaling); every one carried the verified SN and PartNo, and no crop
+held a neighbour's QR. The misses are crops that cut the QR off or QR codes
+too small and blurred to decode (stronger upscales/thresholds rescued 6 of 48
+at ~1.5 s per label, so they were not adopted). So the QR is now read first:
+
+- Stage2 (`CROP_STAGE2_LABEL_QR=0` disables): a sole QR whose PartNo maps to a
+  known model lets PartNo crops skip the slow decode chain (only the quick
+  zxing read runs); when no crop decodes, the QR PartNo is used
+  (`part_no_source = label_qr` in the manifest).
+- Recognition (`SCAN2_LABEL_QR_FIRST=0` disables): a label with exactly one QR
+  payload, whose PartNo agrees with the Stage2 PartNo and maps to a known
+  model, and whose SN no other crop of the same photo reads, takes SN and
+  PartNo from the QR and skips SN/PartNo barcode scans
+  (`label_qr_check = qr_first`, counted in `sn_label_qr_first` and as a
+  barcode hit). Codes are read once and reused by the cross-check.
+- Stage1 preview PNGs are written in the background.
+
 ## Lesson
 
 A check that only validates structure (embedded PartNo) cannot catch digit
