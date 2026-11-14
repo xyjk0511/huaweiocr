@@ -951,10 +951,14 @@ class SnBarcodeSelectionTest(unittest.TestCase):
             return []
 
         fake_candidate = types.SimpleNamespace(text="4E2630137607", score=0.12)
+        close_candidate = types.SimpleNamespace(text="4E2630177607", score=0.135)
+        far_candidate = types.SimpleNamespace(text="4E2677177607", score=0.2)
         fake_repair = types.SimpleNamespace(
             parse_templates=lambda spec: template_specs.append(spec) or [[[]]],
             compile_regex_or_empty=lambda pattern: pattern,
-            decode_image=lambda *_args, **_kwargs: ([fake_candidate], [], "template"),
+            decode_image=lambda *_args, **_kwargs: (
+                [fake_candidate, close_candidate, far_candidate], [], "template",
+            ),
         )
 
         with mock.patch.dict(
@@ -983,6 +987,8 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(report.source_region, "sn.code128_pixel_repair")
         self.assertEqual(read_paths, ["sn.png"])
         self.assertEqual(template_specs, ["4E26########"])
+        repair = [r for r in report.results if r.decoder_name == "code128_pixel_repair"][0]
+        self.assertEqual(repair.alternatives, ("4E2630137607", "4E2630177607"))
 
     def test_direct_unknown_sn_defers_pixel_repair_for_ocr_consensus(self):
         img = np.full((50, 120, 3), 255, dtype=np.uint8)

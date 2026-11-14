@@ -54,6 +54,13 @@ from huaweiocr.core.extract import (
 )
 from huaweiocr.barcode.sn_rules import commit_sn_observations, reload_sn_rules
 from huaweiocr.core.model_learning import commit_model_observations
+from huaweiocr.barcode.label_codes import read_label_codes
+from huaweiocr.barcode.sn import DecoderResult as _DecoderResult, SnBarcodeReport as _SnBarcodeReport
+from huaweiocr.core.part_no_products import (
+    load_product_owners,
+    product_part_no_conflict,
+    record_part_no_products,
+)
 from huaweiocr.core.part_no_sn_kinds import (
     genuine_sn_kind_for_part_no,
     load_part_no_sn_kinds,
@@ -1857,6 +1864,278 @@ def _cross_check_sn_with_part_no(
     return observations
 
 
+def label_code_check_enabled() -> bool:
+    return _env_flag_default("SCAN2_LABEL_CODE_CHECK", True)
+
+
+# PartNo sources backed by a real decode of the label's own PartNo/SN barcode,
+# usable as product-code learning evidence.
+_TRUSTED_PART_NO_SOURCES = {"part_no_barcode", "sn_barcode"}
+
+
+def _label_qr_report(report, qr_sn, variant):
+    result = _DecoderResult(
+        decoder_name="label_qr",
+        raw_text=qr_sn,
+        source="label",
+        source_region=f"label.qr.{variant}",
+        barcode_type="QRCode",
+    )
+    if report is None:
+        report = _SnBarcodeReport(status="decoder_miss")
+    return dataclasses.replace(
+        report,
+        status="hit",
+        sn=qr_sn,
+        raw_text=qr_sn,
+        source="label",
+        source_region=result.source_region,
+        decoder_name="label_qr",
+        decoded_count=max(int(getattr(report, "decoded_count", 0) or 0), 1),
+        results=list(getattr(report, "results", []) or []) + [result],
+    )
+
+
+def _cross_check_with_label_codes(
+    keys, records, sn_results, sn_reports, part_no_by_key, part_no_src_by_key,
+    ocr_jobs, product_conflicts, part_no_scan_miss_keys=None, workers=1,
+) -> list[tuple[str, str]]:
+    """Cross-check SN/PartNo against the label's QR code and EAN/UPC codes.
+
+    * The ISO 15434 QR code carries PartNo + SN with error correction.  With a
+      known label PartNo only a QR with that same PartNo counts.  It replaces a
+      weak SN (pixel repair, or none so far) and flags a genuine Code128 SN
+      that disagrees with it for review without changing it.
+    * A crop can catch a neighbour label's QR.  SNs are unique, so a QR SN that
+      another label from the same source photo also reads (or genuinely
+      decoded) is never used to rescue or flag this label.
+    * EAN-13/UPC-A codes are learned per PartNo; a label whose codes clearly
+      belong to another PartNo (persisted evidence plus this batch, minus the
+      label itself) is recorded in ``product_conflicts`` (key -> that PartNo)
+      and does not feed learning.
+    Only the label crop is read (label-local evidence).  Returns
+    (part_no, product code) observations to persist.
+    """
+    targets = [key for key in keys if records[key].get("label_crop")]
+    if not targets:
+        return []
+
+    def read(key):
+        weak = not _genuine_barcode_hit(sn_reports.get(key))
+        try:
+            return read_label_codes(records[key]["label_crop"], thorough=weak)
+        except Exception as exc:
+            append_debug(f"[LABEL_CODES][ERROR] {key} {exc.__class__.__name__}: {exc}")
+            return None
+
+    def label_part_no(key):
+        return part_no_by_key.get(key) or _normalize_part_no(records[key].get("part_no", ""))
+
+    codes_by_key = {
+        key: codes
+        for key, codes in zip(targets, _map_ordered(targets, read, workers))
+        if codes is not None
+    }
+
+    # Pass 1: one candidate QR SN per label, and who else claims each SN.
+    qr_by_key = {}
+    for key, codes in codes_by_key.items():
+        part_no = label_part_no(key)
+        qr_sns = codes.qr_sns_for_part_no(part_no)
+        if len(qr_sns) == 1:
+            qr_by_key[key] = qr_sns[0]
+    # A crop can only catch a neighbour from the same source photo; the same
+    # label photographed twice legitimately repeats its SN across photos.
+    def photo(key):
+        return records[key].get("original_image_path") or key
+
+    claims = {}
+    for key, qr_sn in qr_by_key.items():
+        claims.setdefault((photo(key), qr_sn), set()).add(key)
+    for key in keys:
+        if _genuine_barcode_hit(sn_reports.get(key)):
+            sn_code = sn_results.get(key, ("",))[0]
+            if sn_code:
+                claims.setdefault((photo(key), sn_code), set()).add(key)
+
+    # Pass 2: apply QR evidence.
+    rescued = set()
+    for key, qr_sn in qr_by_key.items():
+        codes = codes_by_key[key]
+        report = sn_reports.get(key)
+        genuine = _genuine_barcode_hit(report)
+        current = sn_results.get(key, ("",))[0]
+        if claims.get((photo(key), qr_sn), set()) - {key}:
+            if key in sn_results:
+                sn_results[key][3]["label_qr_check"] = "claimed_by_other_label"
+            append_sensitive_debug(f"[SN][LABEL_QR_SHARED] {key} qr={qr_sn} current={current!r}")
+            continue
+        if not label_part_no(key):
+            qr_part_nos = {q.part_no for q in codes.qr if q.sn == qr_sn and q.part_no}
+            if len(qr_part_nos) == 1:
+                part_no_by_key[key] = qr_part_nos.pop()
+                part_no_src_by_key[key] = "label_qr"
+                if part_no_scan_miss_keys is not None:
+                    part_no_scan_miss_keys.discard(key)
+        if genuine:
+            if current and current != qr_sn:
+                code, raw, _src, meta = sn_results[key]
+                meta = dict(meta, label_qr_sn=qr_sn, label_qr_check="conflict")
+                sn_results[key] = (code, raw, "barcode_qr_conflict", meta)
+                append_sensitive_debug(f"[SN][LABEL_QR_CONFLICT] {key} barcode={current} qr={qr_sn}")
+            elif current:
+                sn_results[key][3]["label_qr_check"] = "confirmed"
+        elif current == qr_sn:
+            sn_results[key][3]["label_qr_check"] = "confirmed"
+        else:
+            variant = next(q.variant for q in codes.qr if q.sn == qr_sn)
+            new_report = _label_qr_report(report, qr_sn, variant)
+            sn_reports[key] = new_report
+            meta = new_report.to_meta()
+            meta["ocr_text_found"] = False
+            meta["label_qr_check"] = "rescued"
+            meta["label_qr_replaced"] = current
+            sn_results[key] = (qr_sn, f"[LABEL_QR] {qr_sn}", "barcode_label_qr", meta)
+            rescued.add(key)
+            append_sensitive_debug(f"[SN][LABEL_QR] {key} sn={qr_sn} replaced={current!r}")
+
+    if rescued and ocr_jobs is not None:
+        ocr_jobs[:] = [job for job in ocr_jobs if not (job[0] == "sn" and job[1] in rescued)]
+
+    # Product codes: rivals may draw on persisted + batch evidence (minus the
+    # label itself), but a PartNo's own support only counts persisted evidence,
+    # so unverified pairings in this batch cannot vouch for each other.  Only
+    # non-conflicting labels are learned.
+    persisted = load_product_owners()
+    owners = {code: dict(counts) for code, counts in persisted.items()}
+    batch = {}
+    for key, codes in codes_by_key.items():
+        part_no = label_part_no(key)
+        product_codes = codes.label_product_codes()
+        if part_no and product_codes and part_no_src_by_key.get(key, "") in _TRUSTED_PART_NO_SOURCES:
+            batch[key] = (part_no, product_codes)
+            for code in product_codes:
+                counts = owners.setdefault(code, {})
+                counts[part_no] = counts.get(part_no, 0) + 1
+    observations = []
+    for key, codes in codes_by_key.items():
+        part_no = label_part_no(key)
+        product_codes = codes.label_product_codes()
+        if not part_no or not product_codes:
+            continue
+        own = batch.get(key)
+        view = owners
+        if own:
+            view = {code: dict(owners.get(code, {})) for code in product_codes}
+            for code in own[1]:
+                view[code][own[0]] -= 1
+        other = product_part_no_conflict(part_no, product_codes, view, persisted)
+        if other:
+            product_conflicts[key] = other
+            append_sensitive_debug(
+                f"[PART_NO][PRODUCT_CONFLICT] {key} part_no={part_no} codes={product_codes} owner={other}"
+            )
+        elif own:
+            observations.extend((own[0], code) for code in own[1])
+    return observations
+
+
+def repair_ocr_check_enabled() -> bool:
+    return _env_flag_default("SCAN2_REPAIR_OCR_CHECK", True)
+
+
+# Pairs OCR commonly swaps.  A repair/OCR mismatch made only of these is more
+# likely an OCR slip (ERB read as ER8) than a wrong pixel repair.
+_OCR_CONFUSABLE = {frozenset(pair) for pair in ("8B", "0D", "0O", "5S", "1I", "2Z", "6G")}
+
+
+def _ocr_slip_only(repaired: str, ocr_sn: str) -> bool:
+    return len(repaired) == len(ocr_sn) and all(
+        a == b or frozenset((a, b)) in _OCR_CONFUSABLE for a, b in zip(repaired, ocr_sn)
+    )
+
+
+def _unverified_repair_keys(keys, sn_results, sn_reports) -> list[str]:
+    """Labels whose SN rests on Code128 pixel repair alone (no QR agreement)."""
+    out = []
+    for key in keys:
+        report = sn_reports.get(key)
+        if (
+            getattr(report, "status", "") != "hit"
+            or getattr(report, "decoder_name", "") != "code128_pixel_repair"
+        ):
+            continue
+        meta = sn_results.get(key, ("", "", "", {}))[3] or {}
+        if meta.get("label_qr_check") != "confirmed":
+            out.append(key)
+    return out
+
+
+def _ocr_sn_for_repair_check(path: str, label_id: str):
+    """Plain OCR read of the SN crop, ignoring the (repaired) barcode."""
+    empty = _SnBarcodeReport(status="decoder_miss")
+    meta = empty.to_meta()
+    meta["ocr_text_found"] = False
+    return recognize_sn_ocr_after_barcode(path, label_id=label_id, barcode_report=empty, meta=meta)
+
+
+def _repair_alternatives(report) -> tuple[str, ...]:
+    for result in getattr(report, "results", []) or []:
+        if getattr(result, "decoder_name", "") == "code128_pixel_repair":
+            return tuple(getattr(result, "alternatives", ()) or ())
+    return ()
+
+
+def _fuse_repair_with_ocr(repaired: str, ocr_sn: str, alternatives) -> str:
+    """Per position: the repair's character where all close repair candidates
+    agree on it, otherwise the OCR character."""
+    alts = [alt for alt in alternatives if len(alt) == len(repaired)] or [repaired]
+    return "".join(
+        rep if all(alt[i] == rep for alt in alts) else ocr
+        for i, (rep, ocr) in enumerate(zip(repaired, ocr_sn))
+    )
+
+
+def _apply_repair_ocr_check(key, ocr_result, sn_results, part_no, kinds, alternatives=()) -> None:
+    """Compare a pixel-repaired SN with an independent OCR read.
+
+    Pixel repair can return a checksum-valid but wrong serial (one digit off),
+    so a disagreement is always sent to review.  Where the close repair
+    candidates (``alternatives``) disagree among themselves, the OCR character
+    is used; where they agree, the repair stands, since OCR also misreads
+    (4E25A read as 4E26A).  Differences made only of OCR-confusable characters
+    or an OCR value contradicting the label PartNo keep the repair.
+    """
+    code, raw, src, meta = sn_results[key]
+    ocr_sn, _text, ocr_src, _meta = ocr_result
+    if not str(ocr_src or "").startswith("ocr"):
+        ocr_sn = ""
+    meta = dict(meta)
+    if not ocr_sn:
+        meta["sn_repair_check"] = "unverified"
+    elif ocr_sn == code:
+        meta["sn_repair_check"] = "ocr_confirmed"
+    else:
+        meta["sn_repair_check"] = "ocr_conflict"
+        fused = ""
+        if len(ocr_sn) == len(code) and not _ocr_slip_only(code, ocr_sn):
+            fused = _fuse_repair_with_ocr(code, ocr_sn, alternatives)
+        if (
+            fused
+            and fused != code
+            and extract_sn_from_text(fused) == fused
+            and not repaired_sn_conflict(fused, part_no, kinds)
+        ):
+            meta["sn_repair_other"] = code
+            meta["sn_repair_ocr_sn"] = ocr_sn
+            append_sensitive_debug(f"[SN][REPAIR_OCR] {key} repaired={code} ocr={ocr_sn} -> {fused}")
+            sn_results[key] = (fused, raw, "ocr_repair_conflict", meta)
+            return
+        meta["sn_repair_other"] = ocr_sn
+        append_sensitive_debug(f"[SN][REPAIR_OCR] {key} repaired={code} ocr={ocr_sn} -> repaired")
+    sn_results[key] = (code, raw, src, meta)
+
+
 def _unknown_sn_candidate_from_barcode_report(barcode_report) -> str:
     if barcode_report is None:
         return ""
@@ -2486,6 +2765,20 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
         part_no_scan_miss_keys,
     )
 
+    product_observations = []
+    product_conflicts = {}
+    if label_code_check_enabled():
+        product_observations = _cross_check_with_label_codes(
+            keys, records, sn_results, sn_reports, part_no_by_key, part_no_src_by_key,
+            ocr_jobs, product_conflicts, part_no_scan_miss_keys, barcode_workers,
+        )
+
+    if ocr_fallback and repair_ocr_check_enabled():
+        for key in _unverified_repair_keys(keys, sn_results, sn_reports):
+            item = records[key]
+            if item.get("sn_path") or item.get("label_crop"):
+                ocr_jobs.append(("sn_verify", key, item, None))
+
     part_no_key_groups = {}
     for key, part_no in part_no_by_key.items():
         if key not in model_results and part_no:
@@ -2677,6 +2970,10 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     result = label_result
                 elif not result[0] and label_result[1]:
                     result = label_result
+        elif kind == "sn_verify":
+            result = _ocr_sn_for_repair_check(
+                item.get("sn_path") or item.get("label_crop", ""), key,
+            )
         else:
             result = recognize_sn_ocr_after_barcode(
                 item.get("sn_path") or item.get("label_crop", ""),
@@ -2688,6 +2985,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
             _log(f"[OCR完成] {_scan_job_label(kind, key)} -> {_ocr_job_result_summary(kind, result)}", "info")
         return kind, key, result
 
+    repair_kinds = None
     for kind, key, result in _map_ocr_ordered(
         ocr_jobs,
         run_ocr_job,
@@ -2752,6 +3050,16 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 model_src,
             ):
                 stats["model_part_no_learned"] += 1
+        elif kind == "sn_verify":
+            if repair_kinds is None:
+                repair_kinds = load_part_no_sn_kinds()
+                for obs_part_no, obs_kind in sn_kind_observations:
+                    repair_kinds.setdefault(obs_part_no, set()).add(obs_kind)
+            part_no = part_no_by_key.get(key) or _normalize_part_no(records[key].get("part_no", ""))
+            _apply_repair_ocr_check(
+                key, result, sn_results, part_no, repair_kinds.get(part_no, ()),
+                _repair_alternatives(sn_reports.get(key)),
+            )
         else:
             sn_results[key] = result
 
@@ -2836,6 +3144,23 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                     }
                 )
 
+            review = []
+            if sn_src == "barcode_qr_conflict":
+                review.append(f"sn_label_qr_mismatch:{sn_meta.get('label_qr_sn', '')}")
+            repair_check = sn_meta.get("sn_repair_check", "")
+            if repair_check == "ocr_conflict":
+                review.append(f"sn_repair_ocr_mismatch:{sn_meta.get('sn_repair_other', '')}")
+            elif repair_check == "unverified":
+                review.append("sn_repair_unverified")
+            if key in product_conflicts:
+                review.append(f"product_code_part_no_mismatch:{product_conflicts[key]}")
+                stats["part_no_product_conflicts"] += 1
+                if model_src.startswith("part_no"):
+                    model_src = "part_no_product_conflict"
+            review_reason = ";".join(review)
+            if review_reason:
+                _log(f"[{key}] 需复核：{review_reason}", "warn")
+
             out = {
                 "label_id": key,
                 "model": model_code,
@@ -2860,6 +3185,9 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 ],
                 "sn_problem": sn_problem,
                 "sn_problem_reason": sn_problem_reason,
+                "label_qr_check": sn_meta.get("label_qr_check", ""),
+                "sn_repair_check": sn_meta.get("sn_repair_check", ""),
+                "review_reason": review_reason,
             }
 
             _log(
@@ -2875,6 +3203,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     finalize_rates(stats)
 
     record_part_no_sn_kinds(sn_kind_observations)
+    record_part_no_products(product_observations)
 
     sn_learning_result = commit_sn_observations(sn_learning_observations)
     stats["sn_families_learned"] = len(sn_learning_result.get("promoted", []))

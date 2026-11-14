@@ -48,13 +48,18 @@ DEFAULT_MIN_BARCODE_HEIGHT = 22
 DEFAULT_BLUR_VARIANCE = 18.0
 DEFAULT_DESKEW_ANGLES = (0, -4, 4, -8, 8)
 DEFAULT_DECODERS = ("pyzbar", "zxingcpp")
+# 4E SNs are "4E2" + year digit + month (1-9/A-C) + 7 digits; a fixed "4E26"
+# forged 2025-dated labels (4E25A..., 4E25C...) into 2026 serials.
 DEFAULT_PIXEL_REPAIR_TEMPLATE = (
-    "4E26########,###########ER@######,###########ES#######,"
+    "4E2#*#######,###########ER@######,###########ES#######,"
     "21500108432SS#######,21500108452SS#######"
 )
 DEFAULT_PIXEL_REPAIR_LENGTHS = "12,20"
 DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE = 0.24
 DEFAULT_PIXEL_REPAIR_MIN_MARGIN = 0.0
+# Candidates within this score of the winner count as plausible alternatives;
+# positions where they disagree are the ones the repair is unsure about.
+DEFAULT_PIXEL_REPAIR_ALT_WINDOW = 0.02
 _PIXEL_REPAIR_LOCK = threading.Lock()
 
 
@@ -171,6 +176,8 @@ class DecoderResult:
     confidence: float | None = None
     rect: tuple[int, int, int, int] | None = None
     barcode_type: str = ""
+    # Pixel repair only: candidates scoring close to the winner (winner first).
+    alternatives: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1136,6 +1143,11 @@ def _pixel_repair_decode_path(source: str, path: str) -> tuple[list[DecoderResul
             rotation=0,
             confidence=max(0.0, 1.0 - score),
             barcode_type="CODE128",
+            alternatives=tuple(
+                str(getattr(item, "text", "") or "")
+                for item in candidates
+                if float(getattr(item, "score", 1.0)) <= score + DEFAULT_PIXEL_REPAIR_ALT_WINDOW
+            ),
         )
     ], 1, []
 

@@ -477,6 +477,13 @@ class App(tk.Tk):
             lines.append(self.strings["issue_missing_model_prefix"] + self.strings["issue_joiner"].join(missing_model))
         if missing_both:
             lines.append(self.strings["issue_missing_both_prefix"] + self.strings["issue_joiner"].join(missing_both))
+        review = [
+            str(row.get("label_id", ""))
+            for row in getattr(self, "result_rows", None) or []
+            if isinstance(row, dict) and row.get("review_reason")
+        ]
+        if review:
+            lines.append(self.strings["issue_review_prefix"] + self.strings["issue_joiner"].join(review))
         if not lines:
             lines.append(self.strings["issue_none"])
         return "\n".join(lines)

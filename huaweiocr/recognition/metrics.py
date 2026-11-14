@@ -28,6 +28,10 @@ def new_stats() -> dict:
         "sn_barcode_ambiguous": 0,
         "sn_barcode_quality_rejects": 0,
         "sn_barcode_part_no_conflicts": 0,
+        "sn_label_qr_rescues": 0,
+        "sn_label_qr_conflicts": 0,
+        "part_no_product_conflicts": 0,
+        "sn_repair_ocr_conflicts": 0,
         "sn_problem": 0,
         "regex_fail": 0,
         "barcode_fail": 0,
@@ -41,9 +45,15 @@ def record_sn_metrics(stats: dict, input_available: bool, code: str, source: str
     stats["sn_total"] += 1
     status = meta.get("barcode_status", "not_attempted")
     stats["sn_barcode_attempts"] += int(meta.get("barcode_attempts", 0) or 0)
-    if source == "barcode":
+    if meta.get("sn_repair_check") == "ocr_conflict":
+        stats["sn_repair_ocr_conflicts"] += 1
+    if source in {"barcode", "barcode_label_qr", "barcode_qr_conflict"}:
         stats["sn_barcode_hits"] += 1
-    elif code and source == "barcode_ocr_consensus":
+        if source == "barcode_label_qr":
+            stats["sn_label_qr_rescues"] += 1
+        elif source == "barcode_qr_conflict":
+            stats["sn_label_qr_conflicts"] += 1
+    elif code and source in {"barcode_ocr_consensus", "ocr_repair_conflict"}:
         stats["sn_ocr_recoveries"] += 1
     elif code and source.startswith("ocr") and status in {
         "decoder_miss", "parse_failure", "ambiguous", "quality_reject", "part_no_conflict",

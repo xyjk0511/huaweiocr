@@ -73,14 +73,25 @@ def part_no_sn_kinds_path() -> str:
     return os.path.join(get_user_data_dir(), "part_no_sn_kinds.json")
 
 
-def _read_state(path: str) -> dict[str, dict[str, int]]:
+def _read_state(path: str, *, strict: bool = False) -> dict[str, dict[str, int]]:
+    """Load the store; ``strict`` raises OSError when an existing file is unusable.
+
+    Writers use ``strict`` so a corrupt or locked file is left alone instead of
+    being replaced by the current batch's counts only.
+    """
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        if strict:
+            raise OSError(f"unreadable learning store: {path}") from exc
         return {}
     raw = data.get("part_no_sn_kinds") if isinstance(data, dict) else None
     if not isinstance(raw, dict):
+        if strict:
+            raise OSError(f"unexpected learning store layout: {path}")
         return {}
     out: dict[str, dict[str, int]] = {}
     for part_no, counts in raw.items():
@@ -134,7 +145,7 @@ def record_part_no_sn_kinds(observations: Iterable[tuple[str, str]]) -> int:
     path = part_no_sn_kinds_path()
     try:
         with _LOCK:
-            state = _read_state(path)
+            state = _read_state(path, strict=True)
             for part_no, kind in pairs:
                 counts = state.setdefault(part_no, {})
                 counts[kind] = counts.get(kind, 0) + 1
