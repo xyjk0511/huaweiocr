@@ -14,6 +14,15 @@
 - `run_summary.20260706_source_rerun.json` — 当前源码同日重跑的 run_summary，
   与参照结果对比：**500/500 label 完全对齐，model/sn 值 0 差异**。
 
+### 2026-11-13 修正
+
+旧版应用的参照结果里有 11 个 SN 是错的（像素修复伪造的号、隔壁标签串号、
+`4E26` 模板把 2025 年号改成 2026 年号）。这 11 行已按新代码结果
+（`batch_runs/baseline_check_20261113m`）改正 `sn` 和 `sn_src`，每个值都对照
+标签图片、标签二维码或独立 OCR 核实过：天津静海 label_5、孝感 label_6、
+郑州 label_4、青岛 label_5、张家口 label_2/4/5、驻马店 label_7/13、
+上海 label_5、松原 label_4。`model` 未改。
+
 ## 自动化命令（推荐）
 
 `tools/check_baseline_regression.py` 把下面的验证步骤 + 判定标准都自动化了：

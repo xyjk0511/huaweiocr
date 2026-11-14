@@ -41,7 +41,8 @@ COMPARED_FIELDS = ("model", "sn")
 # Sources that come from an actual barcode decode with no OCR involvement.
 # barcode_visual and barcode_ocr_consensus both require OCR (see the
 # model_barcode_hits fix in scan2.py) so they belong to the "other" family.
-BARCODE_FAMILY_SOURCES = {"barcode", "part_no_barcode"}
+# barcode_label_qr / barcode_qr_conflict are label QR decodes (no OCR).
+BARCODE_FAMILY_SOURCES = {"barcode", "part_no_barcode", "barcode_label_qr", "barcode_qr_conflict"}
 
 
 def _source_family(src: str) -> str:
