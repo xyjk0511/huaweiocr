@@ -145,6 +145,10 @@ class ModelCodeRuleTest(unittest.TestCase):
         self.assertEqual(pipeline.extract_model_from_text("Model: AP361 Wi-Fi 6"), "AP361")
         self.assertTrue(pipeline.model_code_is_plausible("AR303W"))
 
+    def test_s110_8p1t_v2_is_recognized_from_ocr_text(self):
+        text = "Part No.: 98013165 Rev: Qty:1 PCS SN:21980131654ES6000178 Model: S110-8P1T-V2 DeSC.:"
+        self.assertEqual(pipeline.extract_model_from_text(text), "S110-8P1T-V2")
+
 
 if __name__ == "__main__":
     unittest.main()

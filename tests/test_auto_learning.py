@@ -210,6 +210,10 @@ class ModelLearningTest(unittest.TestCase):
         self.assertEqual(scan2.extract_anchored_unknown_model("Model: AR999\n"), "AR999")
         self.assertEqual(scan2.extract_anchored_unknown_model("description AR999"), "")
         self.assertEqual(scan2.extract_anchored_unknown_model("MODEL: DESCRIPTION"), "")
+        # Whole-label OCR joins the fields onto one line (outbound photo 泉州).
+        joined = "Part No.: 98013165 Qty:1 PCS SN:21980131654ES6000178 Model: S110-9P9T-V9 DeSC.: S110"
+        self.assertEqual(scan2.extract_anchored_unknown_model(joined), "S110-9P9T-V9")
+        self.assertEqual(scan2.extract_anchored_unknown_model("SUBMODEL: AR999"), "")
 
     def test_model_pair_promotes_after_two_physical_sources(self):
         from huaweiocr.core.model_learning import commit_model_observations
@@ -246,6 +250,21 @@ class ModelLearningTest(unittest.TestCase):
             second["promoted"],
             [{"part_no": "50099999", "model": "AR999"}],
         )
+
+    def test_model_pair_promotes_from_two_labels_with_different_sns_in_one_photo(self):
+        from huaweiocr.core.model_learning import commit_model_observations
+
+        def obs(label, sn):
+            return {"part_no": "98013165", "model": "S110-9P9T-V9", "label_id": label,
+                    "original_image_path": "C:/photos/qz.jpg", "sn": sn}
+
+        same_label = commit_model_observations(
+            [obs("qz__label_3", "21980131654ES6000178"), obs("qz__label_4", "21980131654ES6000178")]
+        )
+        self.assertEqual(same_label["promoted"], [])
+
+        result = commit_model_observations([obs("qz__label_6", "21980131654ES6000276")])
+        self.assertEqual(result["promoted"], [{"part_no": "98013165", "model": "S110-9P9T-V9"}])
 
     def test_conflicting_models_do_not_promote(self):
         from huaweiocr.core.model_learning import commit_model_observations

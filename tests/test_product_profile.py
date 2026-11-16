@@ -46,9 +46,11 @@ class ProductProfileTest(unittest.TestCase):
         self.assertIn("S380-S8P2T", builtin["known_model_codes"])
         self.assertEqual(profile.KNOWN_MODEL_CODES, set(builtin["known_model_codes"]))
         self.assertEqual("S110-4P1T-BU-V2", builtin["part_no_model_map"]["98013170"])
-        self.assertEqual(16, len(builtin["part_no_model_map"]))
+        # Printed on the label of outbound photo 泉州 (2026-11-16).
+        self.assertEqual("S110-8P1T-V2", builtin["part_no_model_map"]["98013165"])
+        self.assertEqual(17, len(builtin["part_no_model_map"]))
         self.assertEqual("AP162E", builtin["part_no_model_map"]["50087270"])
-        self.assertEqual(41, len(builtin["known_model_codes"]))
+        self.assertEqual(42, len(builtin["known_model_codes"]))
         for code in ("AP361", "AR303W", "S220-48P4X", "S310S-4P8UN2X", "S380-H8T3ST"):
             self.assertIn(code, builtin["known_model_codes"])
 

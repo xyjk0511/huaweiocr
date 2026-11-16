@@ -131,6 +131,8 @@ def commit_model_observations(
                 candidate.setdefault("source_keys", []),
                 _source_key(observation.get("original_image_path"), label_id),
             )
+            sn = re.sub(r"[^0-9A-Z]", "", str(observation.get("sn", "")).upper())
+            _append_unique(candidate.setdefault("sns", []), sn)
 
         models_by_part_no: dict[str, set[str]] = {}
         for candidate in candidates.values():
@@ -149,9 +151,15 @@ def commit_model_observations(
                 )
                 result["pending"].append(dict(candidate))
                 continue
+            # Two physical labels: either two source photos, or two labels with
+            # different SNs (one photo often holds several units of a model;
+            # two overlapping crops of one label share an SN and do not count).
             if (
                 len(set(candidate.get("label_ids", []))) >= 2
-                and len(set(candidate.get("source_keys", []))) >= 2
+                and (
+                    len(set(candidate.get("source_keys", []))) >= 2
+                    or len(set(candidate.get("sns", []))) >= 2
+                )
             ):
                 result["promoted"].append({"part_no": part_no, "model": model})
                 promoted_keys.append(key)

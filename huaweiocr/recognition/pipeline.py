@@ -1170,8 +1170,11 @@ def extract_unknown_model_candidate(text: str) -> str:
     return extract_model_candidate_from_text(text, allow_unknown=True)
 
 
+# OCR of a whole label crop often joins the label lines into one line
+# ("Part No.: ... SN: ... Model: S110-8P1T-V2 Desc.: ..."), so the MODEL
+# field label only needs a word boundary, not a line start.
 MODEL_FIELD_TOKEN_RE = re.compile(
-    r"(?:^|[\r\n])\s*MODEL\s*[:：]\s*([A-Z][A-Z0-9-]{1,23})(?![A-Z0-9-])",
+    r"(?<![A-Z0-9])MODEL\s*[:：]\s*([A-Z][A-Z0-9-]{1,23})(?![A-Z0-9-])",
     re.I,
 )
 
@@ -2781,6 +2784,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
     part_no_src_by_key = {}
     part_no_map_updates = set()
     model_learning_observations = []
+    final_sn_by_key = {}
     model_candidate_keys = set()
     sn_learning_observations = []
     part_no_scan_miss_keys = set()
@@ -3340,8 +3344,12 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
 
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
             stats["records"] += 1
+            final_sn_by_key[key] = sn_code
 
     finalize_rates(stats)
+    # Model learning counts distinct physical labels by their final SN.
+    for observation in model_learning_observations:
+        observation.setdefault("sn", final_sn_by_key.get(observation.get("label_id"), ""))
 
     record_part_no_sn_kinds(sn_kind_observations)
     record_part_no_products(product_observations)
