@@ -9,6 +9,7 @@ import hashlib
 import tempfile
 import threading
 import time
+import traceback
 import numpy as np
 from pathlib import Path
 from huaweiocr.core.parallel import map_ordered as _map_ordered
@@ -165,8 +166,11 @@ OCR_WARMUP_PNG = (
 )
 
 
+OCR_IMPORT_ERROR = None
+
+
 def _load_ocr_module():
-    global OCR_MODULE
+    global OCR_MODULE, OCR_IMPORT_ERROR
     if OCR_MODULE is not None:
         return OCR_MODULE
     # Serialize the slow first import: when the prewarm thread is mid-import,
@@ -174,7 +178,23 @@ def _load_ocr_module():
     # initialized module by Python's import deadlock handling.
     with OCR_MODULE_LOCK:
         if OCR_MODULE is None:
-            import ocr as ocr_module
+            # PaddleX refuses a second initialization in one process, so a
+            # retry after a failed first import only reports "PDX has already
+            # been initialized" and hides the real cause. Re-raise the first
+            # failure instead.
+            if OCR_IMPORT_ERROR is not None:
+                exc, detail = OCR_IMPORT_ERROR
+                raise RuntimeError(
+                    "OCR 引擎首次加载失败（需重启程序才能重试）："
+                    f"{exc.__class__.__name__}: {exc}\n{detail}"
+                ) from exc
+            try:
+                import ocr as ocr_module
+            except BaseException as exc:
+                detail = traceback.format_exc()
+                OCR_IMPORT_ERROR = (exc, detail)
+                append_debug(f"[OCR][IMPORT][ERROR]\n{detail}")
+                raise
 
             if hasattr(ocr_module, "set_log_sink"):
                 try:

@@ -170,6 +170,41 @@ class ConcurrentOcrModuleLoadTest(unittest.TestCase):
         for module in results:
             self.assertEqual(module.ocr_one_image(), "ok")
 
+    def test_retry_after_failed_first_import_reports_the_original_error(self):
+        from huaweiocr.recognition import pipeline
+
+        attempts = []
+
+        class FailingOcrFinder:
+            def find_spec(self, name, path=None, target=None):
+                if name != "ocr":
+                    return None
+                return importlib.util.spec_from_loader(name, self)
+
+            def create_module(self, spec):
+                return None
+
+            def exec_module(self, module):
+                attempts.append(module)
+                if len(attempts) == 1:
+                    raise OSError("first failure: missing dll")
+                # Mimic PaddleX: a second initialization in one process fails.
+                raise RuntimeError("PDX has already been initialized.")
+
+        with mock.patch.object(pipeline, "OCR_MODULE", None), \
+                mock.patch.object(pipeline, "OCR_IMPORT_ERROR", None), \
+                mock.patch.object(pipeline, "append_debug", lambda _line: None), \
+                mock.patch.dict(sys.modules, {}), \
+                mock.patch.object(sys, "meta_path", [FailingOcrFinder()] + sys.meta_path):
+            sys.modules.pop("ocr", None)
+            with self.assertRaises(OSError):
+                pipeline._load_ocr_module()
+            with self.assertRaises(RuntimeError) as ctx:
+                pipeline._load_ocr_module()
+        self.assertEqual(len(attempts), 1)
+        self.assertIn("first failure: missing dll", str(ctx.exception))
+        self.assertNotIn("PDX", str(ctx.exception))
+
 
 class CliOcrPrewarmTest(unittest.TestCase):
     def _scan2(self, fallback=True):
