@@ -4130,6 +4130,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
             "manifest_rows": 0,
             "ok_any": 0,
             "ok_both": 0,
+            "label_qr_count": 0,
             "stage1_dir": STAGE1_DIR,
             "stage1_preview_dir": STAGE1_PREVIEW_DIR,
             "stage2_dir": STAGE2_DIR,
@@ -4166,6 +4167,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     model_count = 0
     part_no_count = 0
     sn_count = 0
+    label_qr_count = 0
     manifest_rows = 0
     stage2_dropped = 0
     progress_logs = crop_progress_log_enabled()
@@ -4187,6 +4189,12 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
                 continue
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             manifest_rows += 1
+
+            # Labels whose QR already gave the PartNo skip field detection on
+            # purpose; they are not misses and recognition reads the QR.
+            if r.get("stage2_fields_skipped") == "label_qr":
+                label_qr_count += 1
+                continue
 
             has_model = bool(r.get("model_path"))
             has_part_no = bool(r.get("part_no_path"))
@@ -4212,6 +4220,8 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
     _log(f"\n标签裁剪完成：Stage1 原始裁剪 {stage1_crop_count} 个；Stage2 有效保留 {manifest_rows} 个", "info")
     if stage2_dropped:
         _log(f"Stage2 过滤并删除 {stage2_dropped} 个无效 Stage1 标签裁剪", "info")
+    if label_qr_count:
+        _log(f"标签二维码直读（跳过字段裁剪，不计入缺失）：{label_qr_count} 个", "info")
     _log(
         f"字段裁剪统计：至少识别到一个字段 {ok_any} 个；型号线索(型号或PartNo)和SN都识别到 {ok_both} 个；"
         f"model={model_count} part_no={part_no_count} sn={sn_count}",
@@ -4234,6 +4244,7 @@ def main(input_dir=None, out_dir=None, log_level="info", clean=False):
         "model_count": model_count,
         "part_no_count": part_no_count,
         "sn_count": sn_count,
+        "label_qr_count": label_qr_count,
         "stage1_dir": STAGE1_DIR,
         "stage1_preview_dir": STAGE1_PREVIEW_DIR,
         "stage2_dir": STAGE2_DIR,

@@ -1454,6 +1454,43 @@ class CropTempFileTest(unittest.TestCase):
             self.assertNotIn("[2/4][字段开始] image_01.jpg__label_1", joined)
             self.assertNotIn("[2/4][字段开始] image_01.jpg__label_2", joined)
 
+    def test_main_does_not_file_label_qr_skips_as_misses(self):
+        crop = _import_crop()
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "out")
+            os.makedirs(input_dir)
+            with open(os.path.join(input_dir, "image_01.jpg"), "wb") as f:
+                f.write(b"image")
+            label_paths = [
+                os.path.join(out_dir, "stage1_labels", f"image_01.jpg__label_{i}.png")
+                for i in (1, 2)
+            ]
+
+            def fake_stage1(_img_path):
+                for label_path in label_paths:
+                    os.makedirs(os.path.dirname(label_path), exist_ok=True)
+                    with open(label_path, "wb") as f:
+                        f.write(b"label")
+                return list(label_paths)
+
+            def fake_stage2(label_path):
+                row = {"label_id": os.path.basename(label_path)[:-4], "label_crop": label_path,
+                       "model_path": None, "sn_path": None, "part_no_path": None}
+                if label_path.endswith("__label_1.png"):
+                    row.update(part_no="98012403", stage2_fields_skipped="label_qr")
+                return row
+
+            with mock.patch.object(crop, "crop_worker_count", return_value=1), \
+                    mock.patch.object(crop, "stage1_crop_labels", side_effect=fake_stage1), \
+                    mock.patch.object(crop, "stage2_crop_fields", side_effect=fake_stage2):
+                stats = crop.main(input_dir=input_dir, out_dir=out_dir, clean=True, log_level="error")
+
+            miss_both = os.listdir(os.path.join(out_dir, "stage2_fields", "miss_both"))
+            self.assertEqual(miss_both, ["image_01.jpg__label_2.png"])
+            self.assertEqual(stats["label_qr_count"], 1)
+            self.assertEqual(stats["label_count"], 2)
+
     def test_save_png_required_raises_when_write_fails(self):
         crop = _import_crop()
         with tempfile.TemporaryDirectory() as root:
