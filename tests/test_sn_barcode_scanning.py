@@ -955,6 +955,69 @@ class SnBarcodeSelectionTest(unittest.TestCase):
         self.assertEqual(read_paths, ["sn.png"])
         self.assertEqual(fallback_paths, ["sn.png"])
 
+    def test_sn_pixel_repair_rejects_near_tie_and_weak_score_by_default(self):
+        # 泉州 S110 label: the wrong repair 21770171657ES7000273 won by 0.004.
+        cases = {
+            "near_tie": [
+                types.SimpleNamespace(text="21770171657ES7000273", score=0.191),
+                types.SimpleNamespace(text="21777271757ES7000277", score=0.195),
+            ],
+            "weak_score": [
+                types.SimpleNamespace(text="4E2670030027", score=0.21),
+                types.SimpleNamespace(text="4E2670070027", score=0.25),
+            ],
+        }
+        for name, candidates in cases.items():
+            with self.subTest(name):
+                fake_repair = types.SimpleNamespace(
+                    parse_templates=lambda spec: [[[]]],
+                    compile_regex_or_empty=lambda pattern: pattern,
+                    decode_image=lambda *_a, _c=candidates, **_k: (_c, [], "template"),
+                )
+                env = {k: v for k, v in os.environ.items() if not k.startswith("SN_BARCODE_REPAIR_")}
+                with mock.patch.dict(os.environ, env, clear=True):
+                    with mock.patch.dict(sys.modules, {"linear_barcode_repair": fake_repair}):
+                        with mock.patch.object(sn_barcode.os.path, "exists", return_value=True):
+                            results, attempts, errors = sn_barcode._pixel_repair_decode_path("sn", "sn.png")
+                self.assertEqual(results, [])
+                self.assertEqual(attempts, 1)
+                self.assertTrue(errors and "reject" in errors[0], errors)
+
+    def test_sn_pixel_repair_drops_candidates_with_another_part_no(self):
+        # Baseline 浙江 label_9: the runner-up differed only in its embedded
+        # PartNo, which made a correct repair look like a near tie.
+        candidates = [
+            types.SimpleNamespace(text="21500872884ERB006106", score=0.1201),
+            types.SimpleNamespace(text="21500772774ERB006106", score=0.128),
+            types.SimpleNamespace(text="21500872884ERB006108", score=0.1450),
+        ]
+        fake_repair = types.SimpleNamespace(
+            parse_templates=lambda spec: [[[]]],
+            compile_regex_or_empty=lambda pattern: pattern,
+            decode_image=lambda *_a, **_k: (list(candidates), [], "template"),
+        )
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SN_BARCODE_REPAIR_")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.dict(sys.modules, {"linear_barcode_repair": fake_repair}):
+                with mock.patch.object(sn_barcode.os.path, "exists", return_value=True):
+                    without, _, _ = sn_barcode._pixel_repair_decode_path("sn", "sn.png")
+                    with_part_no, _, _ = sn_barcode._pixel_repair_decode_path("sn", "sn.png", "50087288")
+                    wrong_part_no, _, _ = sn_barcode._pixel_repair_decode_path("sn", "sn.png", "98013165")
+        self.assertEqual(without, [])
+        self.assertEqual([r.raw_text for r in with_part_no], ["21500872884ERB006106"])
+        self.assertEqual(wrong_part_no, [])
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.dict(sys.modules, {"linear_barcode_repair": fake_repair}):
+                with mock.patch.object(sn_barcode.os.path, "exists", return_value=True):
+                    by_table, _, _ = sn_barcode._pixel_repair_decode_path(
+                        "sn", "sn.png", "", frozenset({"50087288", "98013165"}),
+                    )
+        self.assertEqual([r.raw_text for r in by_table], ["21500872884ERB006106"])
+        self.assertFalse(sn_barcode._fits_label_part_no("82222238394ES4050648", "", frozenset({"50087149"})))
+        self.assertTrue(sn_barcode._fits_label_part_no("4E2690030029", "", frozenset({"50087149"})))
+        self.assertEqual(sn_barcode._label_part_no_from_payloads({"50087288", "AP362E"}), "50087288")
+        self.assertEqual(sn_barcode._label_part_no_from_payloads({"50087288", "50087147"}), "")
+
     def test_sn_pixel_repair_runs_before_label_source_after_first_sn_miss(self):
         img = np.full((50, 120, 3), 255, dtype=np.uint8)
         read_paths = []

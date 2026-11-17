@@ -58,8 +58,11 @@ DEFAULT_PIXEL_REPAIR_TEMPLATE = (
     "21500108432SS#######,21500108452SS#######"
 )
 DEFAULT_PIXEL_REPAIR_LENGTHS = "12,20"
-DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE = 0.24
-DEFAULT_PIXEL_REPAIR_MIN_MARGIN = 0.0
+# Measured on the 500 baseline SN crops (repair run on every crop): the
+# old 0.24 / no-margin gate accepted 493 with 132 wrong; 0.20 / 0.010 accepts
+# 342 with 8 wrong.  Near-ties are guesses, so they fall through to OCR.
+DEFAULT_PIXEL_REPAIR_ACCEPT_SCORE = 0.20
+DEFAULT_PIXEL_REPAIR_MIN_MARGIN = 0.010
 # Candidates within this score of the winner count as plausible alternatives;
 # positions where they disagree are the ones the repair is unsure about.
 DEFAULT_PIXEL_REPAIR_ALT_WINDOW = 0.02
@@ -1076,7 +1079,29 @@ def _fallback_decode_path(
     return results, 1, []
 
 
-def _pixel_repair_decode_path(source: str, path: str) -> tuple[list[DecoderResult], int, list[str]]:
+def _label_part_no_from_payloads(payloads: Iterable[str]) -> str:
+    """The label's 8-digit PartNo when the known payloads name exactly one."""
+    part_nos = {value for value in payloads if len(value) == 8 and value.isdigit()}
+    return next(iter(part_nos)) if len(part_nos) == 1 else ""
+
+
+def _fits_label_part_no(text: str, part_no: str, known_part_nos=frozenset()) -> bool:
+    # 20-char Huawei SNs start with "21" + the label PartNo; 12-char "4E"
+    # SNs carry no PartNo to compare.  Without the label PartNo, the embedded
+    # one must at least be a PartNo the product table knows.
+    value = str(text or "").strip().upper()
+    if len(value) != 20:
+        return True
+    if part_no:
+        return value.startswith("21" + part_no)
+    if known_part_nos:
+        return value.startswith("21") and value[2:10] in known_part_nos
+    return True
+
+
+def _pixel_repair_decode_path(
+    source: str, path: str, part_no: str = "", known_part_nos=frozenset(),
+) -> tuple[list[DecoderResult], int, list[str]]:
     if not _env_flag_default("SN_BARCODE_PIXEL_REPAIR", True):
         return [], 0, []
     allowed_sources = {
@@ -1125,6 +1150,13 @@ def _pixel_repair_decode_path(source: str, path: str) -> tuple[list[DecoderResul
     except Exception as exc:
         return [], 1, [f"code128_pixel_repair_error:{exc.__class__.__name__}"]
 
+    if part_no or known_part_nos:
+        # A candidate whose embedded PartNo cannot belong to this label is not
+        # its SN; dropping it keeps it from masking a clear winner.
+        candidates = [
+            item for item in candidates
+            if _fits_label_part_no(getattr(item, "text", ""), part_no, known_part_nos)
+        ]
     if not candidates:
         return [], 1, []
 
@@ -1168,7 +1200,9 @@ def scan_sn_barcodes(
     debug_dir: str = "",
     early_exit: bool = True,
     known_non_sn_payloads: Iterable[str] | None = None,
+    known_part_nos: Iterable[str] | None = None,
 ) -> SnBarcodeReport:
+    known_part_nos = frozenset(str(value) for value in (known_part_nos or ()))
     if max_candidates is None:
         max_candidates = _env_int("SN_BARCODE_MAX_CANDIDATES", DEFAULT_MAX_CANDIDATES)
     sn_max_decoder_attempts = None
@@ -1276,6 +1310,8 @@ def scan_sn_barcodes(
                 repair, repair_attempts, repair_errors = _pixel_repair_decode_path(
                     state["source"],
                     state["path"],
+                    _label_part_no_from_payloads(known_non_sn_clean),
+                    known_part_nos,
                 )
                 attempts += repair_attempts
                 decoder_errors.extend(repair_errors)

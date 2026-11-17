@@ -1412,6 +1412,7 @@ def _scan_sn_barcode_report(
         debug_dir=_debug_candidate_dir(),
         early_exit=allow_early_exit,
         known_non_sn_payloads=known_non_sn_payloads,
+        known_part_nos=get_part_no_model_map().keys(),
     )
 
 

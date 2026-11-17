@@ -119,9 +119,9 @@ def _drop_orphan_dist_info(analysis):
     import importlib.metadata
     import re
 
-    bundled = {name.split('.')[0] for name, _src, _kind in analysis.pure}
-    bundled |= {dest.replace('\\', '/').split('/')[0] for dest, _src, _kind in analysis.binaries}
-    bundled |= {dest.replace('\\', '/').split('/')[0] for dest, _src, _kind in analysis.datas}
+    bundled = {entry[0].split('.')[0] for entry in analysis.pure}
+    for entry in list(analysis.binaries) + list(analysis.datas):
+        bundled.add(entry[0].replace('\\', '/').split('/')[0])
     tops_by_dist = {}
     for top, dists in importlib.metadata.packages_distributions().items():
         for dist in dists:
