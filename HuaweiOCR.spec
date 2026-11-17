@@ -110,6 +110,41 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+
+def _drop_orphan_dist_info(analysis):
+    # Hooks copy dist-info for packages we exclude (sklearn, scipy, torch...).
+    # PaddleX's is_dep_available() trusts that metadata and then imports the
+    # missing module, so OCR init dies with "No module named 'sklearn'".
+    import importlib.metadata
+    import re
+
+    bundled = {name.split('.')[0] for name, _src, _kind in analysis.pure}
+    bundled |= {dest.replace('\\', '/').split('/')[0] for dest, _src, _kind in analysis.binaries}
+    bundled |= {dest.replace('\\', '/').split('/')[0] for dest, _src, _kind in analysis.datas}
+    tops_by_dist = {}
+    for top, dists in importlib.metadata.packages_distributions().items():
+        for dist in dists:
+            tops_by_dist.setdefault(re.sub(r'[-_.]+', '_', dist).lower(), set()).add(top)
+    kept, dropped = [], set()
+    for entry in analysis.datas:
+        first = entry[0].replace('\\', '/').split('/')[0]
+        if first.endswith('.dist-info'):
+            dist = re.sub(r'[-_.]+', '_', first[:-len('.dist-info')].rsplit('-', 1)[0]).lower()
+            tops = tops_by_dist.get(dist)
+            if tops and not (tops & bundled):
+                dropped.add(first)
+                continue
+        kept.append(entry)
+    analysis.datas = kept
+    print('Dropped dist-info of unbundled packages: ' + ', '.join(sorted(dropped)))
+    if 'sklearn' not in bundled and any(
+        e[0].replace('\\', '/').lower().startswith('scikit_learn') for e in kept
+    ):
+        raise RuntimeError('scikit_learn dist-info is still bundled without sklearn')
+
+
+_drop_orphan_dist_info(a)
 pyz = PYZ(a.pure)
 
 exe = EXE(

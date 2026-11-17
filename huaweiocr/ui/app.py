@@ -214,6 +214,28 @@ def _self_check():
             f.write("\n".join(_mask_path_text(line) for line in lines) + "\n")
     except Exception:
         pass
+
+
+def _smoke_load_ocr() -> int:
+    """Packaging check: load the OCR engine once, log the outcome, return an exit code."""
+    if getattr(sys, "frozen", False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        load_pipeline_modules()
+        from huaweiocr.recognition import pipeline
+
+        pipeline._load_ocr_module()
+        line, code = "ocr_load=ok", 0
+    except BaseException as exc:
+        line, code = f"ocr_load=fail err={exc!r}\n{traceback.format_exc()}", 1
+    try:
+        with open(os.path.join(base_dir, "self_check.log"), "a", encoding="utf-8") as f:
+            f.write(_mask_path_text(line) + "\n")
+    except Exception:
+        pass
+    return code
 # ============== GUI 主窗体 ==============
 class App(tk.Tk):
     def __init__(self, strings=None):
@@ -660,6 +682,8 @@ def main(lang: str = "zh"):
     except Exception:
         pass
     _self_check()
+    if os.environ.get("HUAWEIOCR_SMOKE_OCR") == "1":
+        sys.exit(_smoke_load_ocr())
     app = App(strings=get_strings(lang))
     app.mainloop()
 
