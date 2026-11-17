@@ -411,6 +411,47 @@ class ModelLearningTest(unittest.TestCase):
             ["part_no_barcode", "part_no_barcode"],
         )
 
+    def test_unknown_model_from_special_ocr_rule_still_feeds_learning(self):
+        # S380-S8P2T has its own OCR rule, which returns the model even when it
+        # is not a known code; it used to be rejected as invalid_ocr_file.
+        stage2 = os.path.join(self.temp_dir.name, "stage2_fields")
+        model_dir = os.path.join(stage2, "model")
+        sn_dir = os.path.join(stage2, "sn")
+        os.makedirs(model_dir)
+        os.makedirs(sn_dir)
+        with open(os.path.join(stage2, "manifest.jsonl"), "w", encoding="utf-8") as manifest:
+            for stem in ("photo_a", "photo_b"):
+                label_id = f"{stem}__label_1"
+                model_path = os.path.join(model_dir, f"{label_id}__model.png")
+                open(model_path, "wb").close()
+                manifest.write(json.dumps({
+                    "label_id": label_id, "model_path": model_path, "part_no": "98099999",
+                    "original_image_path": os.path.join(self.temp_dir.name, f"{stem}.jpg"),
+                }) + "\n")
+        map_path = os.path.join(self.temp_dir.name, "map.json")
+        env = {
+            "SCAN2_PARALLEL": "0",
+            "SCAN2_MODEL_BARCODE": "0",
+            "SCAN2_SCAN_LABEL_WITHOUT_SN": "0",
+            "SCAN2_PART_NO_MODEL_MAP_PATH": map_path,
+            "SCAN2_LEARNED_MODEL_CODES_PATH": os.path.join(self.temp_dir.name, "models.json"),
+        }
+        out_path = os.path.join(self.temp_dir.name, "out.jsonl")
+        with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+            scan2, "recognize_model_ocr",
+            return_value=("S380-Z9P9T", "Model: S380-Z9P9T\n", "ocr_file"),
+        ):
+            stats = scan2.main(model_dir=model_dir, sn_dir=sn_dir, out_jsonl=out_path,
+                               debug_log=os.path.join(self.temp_dir.name, "debug.log"))
+
+        with open(out_path, "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual([row["model"] for row in rows], ["S380-Z9P9T", "S380-Z9P9T"])
+        self.assertEqual([row["model_src"] for row in rows], ["ocr_candidate", "ocr_candidate"])
+        self.assertEqual(stats["model_part_no_learned"], 1)
+        with open(map_path, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["98099999"]["model"], "S380-Z9P9T")
+
     def test_two_source_model_barcode_candidate_learns_without_ocr(self):
         stage2 = os.path.join(self.temp_dir.name, "stage2_fields")
         model_dir = os.path.join(stage2, "model")

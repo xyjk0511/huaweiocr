@@ -167,6 +167,9 @@ OCR_WARMUP_PNG = (
 
 
 OCR_IMPORT_ERROR = None
+# PartNo sources trusted enough to pair with a MODEL read for auto-learning:
+# a decoded PartNo barcode, or the label's error-corrected ISO 15434 QR.
+MODEL_LEARNING_PART_NO_SOURCES = frozenset({"part_no_barcode", "label_qr"})
 
 
 def _load_ocr_module():
@@ -3037,7 +3040,7 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 model_src == "barcode_no_match"
                 and candidate_model
                 and part_no_by_key.get(key)
-                and part_no_src_by_key.get(key) == "part_no_barcode"
+                and part_no_src_by_key.get(key) in MODEL_LEARNING_PART_NO_SOURCES
             ):
                 model_code = normalize_model(candidate_model)
                 model_results[key] = (model_code, model_raw, "barcode_candidate")
@@ -3150,12 +3153,18 @@ def main(out_dir=None, model_dir=None, sn_dir=None, out_jsonl=None, debug_log=No
                 if consensus_model:
                     result = (consensus_model, consensus_raw, consensus_src)
                     model_code, model_raw, model_src = result
-            if not model_code:
+            # A special-case OCR rule can return a model that is not (yet) a
+            # known code; it would be rejected at output, so let the anchored
+            # MODEL field feed learning in that case too.
+            if not model_code or (
+                not model_code_is_plausible(model_code)
+                and not model_from_part_no_text(part_no_by_key.get(key, ""))[0]
+            ):
                 candidate_model = extract_anchored_unknown_model(model_raw)
                 if (
                     candidate_model
                     and part_no_by_key.get(key)
-                    and part_no_src_by_key.get(key) == "part_no_barcode"
+                    and part_no_src_by_key.get(key) in MODEL_LEARNING_PART_NO_SOURCES
                 ):
                     model_code = normalize_model(candidate_model)
                     model_src = "ocr_candidate"
